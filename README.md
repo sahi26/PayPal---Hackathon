@@ -43,30 +43,30 @@ In modern high-trust contracting, payment disputes occur when deliverables canno
 ## 🏛️ System Architecture
 
 ```mermaid
-graph TD
-    subgraph Client Application [Frontend - Angular]
-        UI[Corporate Responsive Dashboard]
-        Cam[Hardware-Enforced Live Camera]
-        Drop[Authentic Digital Deliverable Dropzone]
-        Rev[AI Scope Revision Desk]
+flowchart TD
+    subgraph ClientApp ["Frontend (Angular)"]
+        UI["Corporate Responsive Dashboard"]
+        Cam["Hardware-Enforced Live Camera"]
+        Drop["Authentic Digital Deliverable Dropzone"]
+        Rev["AI Scope Revision Desk"]
     end
 
-    subgraph API Gateway [Backend - FastAPI]
-        Router[FastAPI REST API]
-        CVEngine[Anti-Spoofing CV Engine]
-        WMEngine[AI Watermark Scanner]
-        Gemini[Google Gemini Multimodal AI]
-        PayPalSvc[PayPal REST SDK Client]
+    subgraph APIGateway ["Backend (FastAPI)"]
+        Router["FastAPI REST API"]
+        CVEngine["Anti-Spoofing CV Engine"]
+        WMEngine["AI Watermark Scanner"]
+        Gemini["Google Gemini Multimodal AI"]
+        PayPalSvc["PayPal REST Client"]
     end
 
-    subgraph Data & Storage
-        DB[(PostgreSQL / SQLite Fallback)]
-        Ledger[Immutable SHA-256 Audit Ledger]
+    subgraph Storage ["Data & Storage"]
+        DB[("PostgreSQL / SQLite")]
+        Ledger["Immutable Audit Ledger"]
     end
 
-    subgraph External FinTech & AI
-        PP[PayPal Sandbox REST API]
-        GenAI[Google AI Studio / Gemini Vision]
+    subgraph External ["External Services"]
+        PP["PayPal Sandbox REST API"]
+        GenAI["Google Gemini API"]
     end
 
     UI --> Router
@@ -81,8 +81,8 @@ graph TD
     Router --> DB
     Router --> Ledger
 
-    CVEngine -.->|Moiré & Bezel Check| Router
-    WMEngine -.->|SynthID / DALL-E Scan| Router
+    CVEngine -.-> Router
+    WMEngine -.-> Router
     Gemini -.-> GenAI
     PayPalSvc -.-> PP
 ```
@@ -296,19 +296,19 @@ sequenceDiagram
     API->>PP: Create PayPal Checkout Order
     PP-->>API: Checkout Order Link
     API-->>Web: Launch PayPal Modal
-    Buyer->>PP: Authorize $ Escrow Deposit
+    Buyer->>PP: Authorize Escrow Deposit
     PP-->>API: Escrow Funds Locked (STATUS: APPROVED)
 
     Note over Contractor,AI: Phase 3: Milestone Fulfillment & Forensic Audit
-    Contractor->>Web: Live Camera Capture / Upload Clean Deliverable
+    Contractor->>Web: Live Camera Capture or Upload Clean Deliverable
     Web->>API: POST /api/projects/{id}/evidence
-    API->>AI: Run Moiré Anti-Spoofing & AI Watermark Inspection
-    alt Screen Spoofing / AI Watermark Detected
-        AI-->>API: FAILED (Confidence <= 20%, Flags: Moiré/Bezel/SynthID)
+    API->>AI: Run Anti-Spoofing & AI Watermark Inspection
+    alt Screen Spoofing or AI Watermark Detected
+        AI-->>API: Flagged (Confidence <= 20%, Moire or Bezel or SynthID Detected)
         API-->>Web: Status: POSSIBLE_MISMATCH (Escrow Locked)
-        Web-->>Contractor: Alert: Recapture Live Proof / Upload Clean Deliverable
+        Web-->>Contractor: Alert: Recapture Live Proof or Upload Clean Deliverable
     else Genuine Authentic Deliverable
-        AI-->>API: PASSED (Confidence >= 95%, Clean)
+        AI-->>API: Verified (Confidence >= 95%, Clean Deliverable)
         API-->>Web: Status: VERIFIED (Awaiting Buyer Review)
     end
 
@@ -316,13 +316,13 @@ sequenceDiagram
     alt Buyer Requests Resubmission
         Buyer->>Web: Reject Evidence with Feedback
         Web->>API: POST /api/milestones/{id}/reject
-        API-->>Web: Milestone reset to 'awaiting_resubmission'
+        API-->>Web: Milestone reset to awaiting_resubmission
     else Buyer Approves Deliverable
         Buyer->>Web: Approve Milestone
         Web->>API: POST /api/milestones/{id}/approve
         API->>PP: Capture & Disburse Milestone Escrow Amount
         PP-->>API: Payout Executed
-        API-->>Web: Funds Disbursed to Contractor; Milestone N+1 Unlocked
+        API-->>Web: Funds Disbursed to Contractor, Next Milestone Unlocked
     end
 ```
 
