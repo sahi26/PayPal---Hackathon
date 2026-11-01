@@ -1,0 +1,90 @@
+# =====================================================================
+# ProofLens .gitignore
+# =====================================================================
+
+# --- Environment & Sensitive Credentials ---
+.env
+.env.*
+*.env
+**/.env
+**/.env.*
+!*.env.example
+!**/.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+venv/
+*/venv/
+ENV/
+env/
+.venv/
+
+# --- Node / Angular ---
+node_modules/
+*/node_modules/
+.angular/
+*/.angular/
+out-tsc/
+*/out-tsc/
+dist/
+*/dist/
+.npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache
+
+# --- Database Files ---
+*.db
+*.sqlite
+*.sqlite3
+sql_app.db
+prooflens.db
+backend/sql_app.db
+backend/prooflens.db
+
+# --- Media Uploads & Evidence Files (Preserve folder via .gitkeep) ---
+uploads/*
+!uploads/.gitkeep
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# --- OS / Editor Metadata ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+
+# --- Logs & Tunnels ---
+*.log
+localtunnel.log

@@ -1,0 +1,43 @@
+@import 'ag-grid-community/styles/ag-grid.css';
+@import 'ag-grid-community/styles/ag-theme-quartz.css';
+
+:root {
+  --primary: #0070ba;
+  --primary-dark: #003087;
+  --primary-hover: #005ea6;
+  --accent-gold: #ffc439;
+  --bg-color: #f5f7fa;
+  --surface: #ffffff;
+  --text-main: #001435;
+  --text-muted: #545d68;
+  --border: #e1e7eb;
+  --success: #108a00;
+  --warning: #f59e0b;
+  --danger: #d9381e;
+  --radius: 12px;
+  --shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-main);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  font-size: 0.95rem;
+}
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: 0.95rem;
+}
