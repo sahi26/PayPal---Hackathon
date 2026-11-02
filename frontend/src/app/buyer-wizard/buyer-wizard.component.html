@@ -1,0 +1,646 @@
+<div class="wizard-page-shell">
+  <!-- Step 1: Basic Project Details -->
+  @if (step === 1) {
+    <div class="fintech-card wizard-form-card">
+      <div class="wizard-step-header">
+        <span class="status-badge badge-blue">Step 1 of 3 &bull; Project Specifications</span>
+        <h2 class="wizard-title">Initiate Escrow Agreement</h2>
+        <p class="wizard-desc">Describe what you need crafted or delivered. ProofLens AI translates your specifications into dispute-proof milestones and escrow release conditions.</p>
+      </div>
+
+      @if (errorMessage) {
+        <div class="error-banner">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#DC2626" stroke-width="2.5">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <span>{{ errorMessage }}</span>
+        </div>
+      }
+
+      <div class="form-grid-layout">
+        <div class="fintech-input-group span-full">
+          <label class="fintech-label">Project Title *</label>
+          <input type="text" [(ngModel)]="title" placeholder="e.g. Custom Oak Dining Table, React SaaS MVP, Master Bath Remodel" class="fintech-input" />
+        </div>
+
+        <div class="fintech-input-group">
+          <label class="fintech-label">Industry / Category *</label>
+          <input type="text" [(ngModel)]="industryType" placeholder="e.g. Woodworking, Software, Plumbing, Renovation" class="fintech-input" />
+        </div>
+
+        <div class="fintech-input-group">
+          <label class="fintech-label">Escrow Budget (USD) *</label>
+          <input type="number" [(ngModel)]="totalPrice" placeholder="e.g. 1500" class="fintech-input" />
+        </div>
+
+        <div class="fintech-input-group">
+          <label class="fintech-label">Target Completion Deadline *</label>
+          <input type="date" [(ngModel)]="deadline" class="fintech-input" />
+        </div>
+
+        <div class="fintech-input-group">
+          <label class="fintech-label">Your Email Address (Buyer) *</label>
+          <input type="email" [(ngModel)]="buyerEmail" placeholder="buyer@prooflens.com" class="fintech-input" />
+        </div>
+
+        <div class="fintech-input-group span-full">
+          <label class="fintech-label">Initial Scope Description &amp; Deliverables *</label>
+          <textarea [(ngModel)]="description" rows="4" placeholder="Describe the item, materials, dimensions, or deliverables you are ordering..." class="fintech-textarea"></textarea>
+        </div>
+      </div>
+
+      <div class="wizard-actions-bar">
+        <button (click)="initProject()" [disabled]="isLoading || !title || !description || !totalPrice || !deadline" class="btn-fintech btn-fintech-primary btn-lg w-full" [class.is-loading]="isLoading">
+          @if (isLoading) {
+            <span class="btn-spinner"></span>
+            <span>Initializing Project with Gemini AI...</span>
+          } @else {
+            <span>Consult AI Legal Assistant &rarr;</span>
+          }
+        </button>
+      </div>
+    </div>
+  }
+
+  <!-- Step 2: Interactive AI Scoping & Milestones -->
+  @if (step === 2) {
+    <div class="fintech-card wizard-form-card">
+      <div class="wizard-step-header">
+        <div class="step-title-cluster">
+          <span class="status-badge badge-indigo">Step 2 of 3 &bull; AI Scope &amp; Evidence Formulation</span>
+          <h2 class="wizard-title">AI Milestone Breakdown &amp; Baseline Evidence</h2>
+        </div>
+        <div class="project-pill-tag font-mono">
+          {{ title }} &bull; ${{ totalPrice }} USD
+        </div>
+      </div>
+      <p class="wizard-desc">ProofLens AI is asking clarifying questions to protect your escrow payment.</p>
+
+      <!-- Chat Stream -->
+      <div class="chat-viewport">
+        @for (msg of chatMessages; track $index) {
+          <div class="chat-message-row" [class.user-message]="msg.role === 'user'">
+            <div class="chat-sender-avatar" [class.ai-avatar]="msg.role === 'assistant'" [class.user-avatar]="msg.role === 'user'">
+              @if (msg.role === 'assistant') {
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                </svg>
+              } @else {
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                </svg>
+              }
+            </div>
+            <div class="chat-bubble-card" [class.user-bubble]="msg.role === 'user'">
+              <div class="bubble-sender-name">{{ msg.role === 'assistant' ? 'ProofLens Legal AI' : 'You (Buyer)' }}</div>
+              <div class="bubble-body-text">{{ msg.content }}</div>
+            </div>
+          </div>
+        }
+
+        @if (isLoading) {
+          <div class="chat-message-row">
+            <div class="chat-sender-avatar ai-avatar">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+              </svg>
+            </div>
+            <div class="chat-bubble-card typing-bubble">
+              <div class="typing-indicator">
+                <span></span><span></span><span></span>
+              </div>
+            </div>
+          </div>
+        }
+      </div>
+
+      <!-- Chat Composer (Multiline with auto-wrap and keyboard shortcuts) -->
+      <div class="chat-composer-card">
+        <textarea
+          [(ngModel)]="userMessage"
+          (keydown)="onUserMessageKeydown($event)"
+          [placeholder]="isDraftComplete ? 'Message AI to refine milestones or adjust terms... (Press Enter for new line, Ctrl+Enter to send)' : 'Answer questions, specify materials, or add technical requirements... (Press Enter for new line, Ctrl+Enter to send)'"
+          class="chat-composer-textarea"
+          rows="3"
+          [disabled]="isLoading"
+        ></textarea>
+
+        <div class="chat-composer-footer">
+          <div class="composer-meta">
+            <span class="composer-hint">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+              </svg>
+              <span>Press <kbd>Enter</kbd> for new line &bull; <kbd>Ctrl</kbd> + <kbd>Enter</kbd> to send</span>
+            </span>
+            @if (userMessage.trim().length > 0) {
+              <span class="composer-char-badge">{{ userMessage.length }} chars</span>
+            }
+          </div>
+
+          <div class="composer-actions">
+            @if (userMessage.trim().length > 0 && !isLoading) {
+              <button type="button" (click)="userMessage = ''" class="btn-composer-clear" title="Clear text">
+                Clear
+              </button>
+            }
+            <button
+              type="button"
+              (click)="sendClarification()"
+              [disabled]="!userMessage.trim() || isLoading"
+              class="btn-fintech btn-fintech-primary btn-composer-send"
+              [class.is-loading]="isLoading"
+            >
+              @if (isLoading) {
+                <span class="btn-spinner"></span>
+                <span>Refining...</span>
+              } @else {
+                <span>Send</span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                </svg>
+              }
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Milestones Breakdown (Locked when AI is complete) -->
+      @if (isDraftComplete && milestones.length > 0) {
+        <div class="milestones-results-panel">
+          <div class="panel-header-strip">
+            <div>
+              <span class="status-badge badge-emerald">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+                <span>Milestones Locked</span>
+              </span>
+              <h3 class="panel-title">Agreed Milestones &amp; Release Schedule</h3>
+            </div>
+            <div class="panel-budget-tag">
+              Total Allocation: <strong>${{ totalPrice }} USD</strong>
+            </div>
+          </div>
+
+          <div class="milestones-tree-list">
+            @for (ms of milestones; track $index) {
+              <div class="milestone-card-node">
+                <div class="node-sequence-col">
+                  <div class="step-num-circle">{{ $index + 1 }}</div>
+                  @if ($index < milestones.length - 1) {
+                    <div class="step-stem-line"></div>
+                  }
+                </div>
+
+                <div class="milestone-content-block">
+                  <div class="milestone-top-row">
+                    <span class="ms-title-text">{{ ms.title }}</span>
+                    <div class="ms-meta-chips">
+                      @if (ms.deadline) {
+                        <span class="status-badge badge-amber">Due: {{ ms.deadline }}</span>
+                      }
+                      <span class="ms-price-tag">
+                        @if (ms.price_allocation === 0) {
+                          <span class="zero-badge">Sign-off Only</span>$0.00 USD
+                        } @else {
+                          ${{ ms.price_allocation.toFixed(2) }} USD
+                        }
+                      </span>
+                    </div>
+                  </div>
+                  <p class="ms-desc-text">{{ ms.description }}</p>
+
+                  <div class="ms-proof-requirement-pill">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                    <span><strong>Verification Evidence Required:</strong> {{ ms.proof_required }}</span>
+                  </div>
+                </div>
+              </div>
+            }
+          </div>
+
+          <!-- Warranty Lock-In (Retainage Protection) Studio -->
+          <div class="warranty-lockin-card" [formGroup]="warrantyForm">
+            <div class="warranty-header-row">
+              <div class="warranty-title-col">
+                <div class="warranty-badge-cluster">
+                  <span class="status-badge" [ngClass]="isDigitalProject() ? 'badge-amber' : 'badge-emerald'">
+                    {{ isDigitalProject() ? 'DIGITAL SCOPE ADVISORY' : 'PHYSICAL DEFECT PROTECTION' }}
+                  </span>
+                  <span class="warranty-pill-tag">PayPal Payouts Escrow Vault</span>
+                </div>
+                <h4 class="warranty-card-title">Warranty Lock-In &amp; Retainage Hold</h4>
+                <p class="warranty-card-sub">
+                  Optionally reserve post-delivery escrow funds to verify against transit damage, undisclosed defects, or installation failure.
+                </p>
+              </div>
+
+              <div class="warranty-quick-stat">
+                <span class="stat-micro-label">ESCROW RETAINAGE</span>
+                <span class="stat-big-val">
+                  ${{ (warrantyForm.value.lockInAmount || 0).toFixed(2) }}
+                  <span class="currency-micro">USD</span>
+                </span>
+                @if (warrantyForm.value.lockInType !== 'NONE') {
+                  <span class="hold-days-tag">Held for {{ warrantyForm.value.lockInDays }} Days</span>
+                }
+              </div>
+            </div>
+
+            <!-- Conditional Project Type Advisory -->
+            @if (isDigitalProject()) {
+              <div class="digital-warning-banner">
+                <div class="warning-icon-box"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#D97706" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+                <div class="warning-content">
+                  <strong>Digital Scope Advisory:</strong>
+                  Retainage / Warranty Lock-In is <em>strongly discouraged</em> for purely digital deliverables (software code, graphic design, writing) to avoid scope-creep hostage situations. Consider strict milestone acceptance criteria instead.
+                </div>
+              </div>
+            } @else {
+              <div class="physical-recommend-banner">
+                <div class="recommend-icon-box"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#059669" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+                <div class="recommend-content">
+                  <strong>Recommended for Physical Deliverables:</strong>
+                  Protects both client and contractor against shipping transit damage, unboxing defects, or material failure before final retainage release.
+                </div>
+              </div>
+            }
+
+            <!-- Lock-in Mode Segmented Controller -->
+            <div class="warranty-mode-selector">
+              <label class="mode-selector-label">Retainage Hold Option:</label>
+              <div class="mode-btn-group">
+                <button
+                  type="button"
+                  (click)="onLockInTypeSelect('NONE')"
+                  class="mode-btn"
+                  [class.is-active]="warrantyForm.value.lockInType === 'NONE'"
+                >
+                  <span class="btn-check-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></span>
+                  <span>None (Standard Release)</span>
+                </button>
+
+                <button
+                  type="button"
+                  (click)="onLockInTypeSelect('FINAL_MILESTONE')"
+                  class="mode-btn"
+                  [class.is-active]="warrantyForm.value.lockInType === 'FINAL_MILESTONE'"
+                >
+                  <span class="btn-check-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></span>
+                  <span>Final Milestone Amount (${{ getFinalMilestoneAmount().toFixed(2) }})</span>
+                </button>
+
+                <button
+                  type="button"
+                  (click)="onLockInTypeSelect('CUSTOM')"
+                  class="mode-btn"
+                  [class.is-active]="warrantyForm.value.lockInType === 'CUSTOM'"
+                >
+                  <span class="btn-check-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></span>
+                  <span>Custom Retainage Amount</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Lock-In Amount & Hold Duration Inputs (visible if not NONE) -->
+            @if (warrantyForm.value.lockInType !== 'NONE') {
+              <div class="warranty-inputs-grid">
+                <div class="input-block">
+                  <label class="input-field-label">
+                    <span>Warranty Hold Window (Days Post-Delivery)</span>
+                    <span class="field-hint">Auto-releases via PayPal Payouts if no dispute filed</span>
+                  </label>
+                  <div class="input-addon-wrapper">
+                    <input
+                      type="number"
+                      formControlName="lockInDays"
+                      min="1"
+                      max="365"
+                      class="fintech-input-field"
+                      placeholder="14"
+                    />
+                    <span class="input-unit-tag">Days</span>
+                  </div>
+                </div>
+
+                @if (warrantyForm.value.lockInType === 'CUSTOM') {
+                  <div class="input-block">
+                    <label class="input-field-label">
+                      <span>Custom Retainage Amount ($ USD)</span>
+                      <span class="field-hint">Deducted from total budget; milestones split remainder</span>
+                    </label>
+                    <div class="input-addon-wrapper">
+                      <span class="currency-symbol">$</span>
+                      <input
+                        type="number"
+                        formControlName="lockInAmount"
+                        min="1"
+                        [max]="totalPrice || 10000"
+                        class="fintech-input-field with-prefix"
+                        placeholder="100.00"
+                        (input)="onCustomAmountInput($event)"
+                      />
+                      <span class="input-unit-tag">USD</span>
+                    </div>
+                  </div>
+                }
+              </div>
+
+              <!-- Budget Split & Auto-Balance Bar -->
+              <div class="budget-allocation-status-bar" [class.is-invalid]="!isWarrantyBudgetValid()">
+                <div class="budget-metric-item">
+                  <span class="metric-label">Total Escrow Budget:</span>
+                  <span class="metric-val">${{ (totalPrice || 0).toFixed(2) }}</span>
+                </div>
+                <div class="metric-divider">&minus;</div>
+                <div class="budget-metric-item">
+                  <span class="metric-label">Warranty Retainage Vault:</span>
+                  <span class="metric-val text-amber">${{ (warrantyForm.value.lockInAmount || 0).toFixed(2) }}</span>
+                </div>
+                <div class="metric-divider">=</div>
+                <div class="budget-metric-item">
+                  <span class="metric-label">Available for Milestones:</span>
+                  <span class="metric-val text-emerald">${{ getAvailableBudgetForMilestones().toFixed(2) }}</span>
+                </div>
+                <div class="budget-metric-item current-milestones-sum">
+                  <span class="metric-label">Current Milestones Total:</span>
+                  <span class="metric-val" [class.text-red]="!isWarrantyBudgetValid()" [class.text-emerald]="isWarrantyBudgetValid()">
+                    ${{ getMilestonesTotalSum().toFixed(2) }}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  (click)="autoBalanceMilestones()"
+                  class="btn-auto-balance"
+                  title="Evenly distribute the remaining available budget among milestones"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+                  </svg>
+                  <span>Auto-Balance Milestones</span>
+                </button>
+              </div>
+
+              @if (!isWarrantyBudgetValid()) {
+                <div class="budget-error-alert">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="8" x2="12" y2="12"/>
+                    <line x1="12" y1="16" x2="12.01" y2="16"/>
+                  </svg>
+                  <span>
+                    Milestone allocations (${{ getMilestonesTotalSum().toFixed(2) }}) plus Warranty Lock-In (${{ (warrantyForm.value.lockInAmount || 0).toFixed(2) }}) do not match the total budget (${{ (totalPrice || 0).toFixed(2) }}). Click "Auto-Balance Milestones" to align.
+                  </span>
+                </div>
+              }
+            }
+          </div>
+
+          <!-- Baseline Pre-Work Evidence Desk -->
+          <div class="baseline-studio-card">
+            <div class="studio-header">
+              <div class="studio-title-row">
+                <span class="status-badge" [ngClass]="isRenovation ? 'badge-amber' : 'badge-blue'">
+                  {{ isRenovation ? 'MANDATORY BASELINE EVIDENCE (AI AUDITED)' : 'BASELINE BEFORE-EVIDENCE' }}
+                </span>
+                <h4 class="studio-title">Pre-Work Site / Asset Baseline Verification</h4>
+              </div>
+              <p class="studio-desc">
+                @if (isRenovation) {
+                  The AI assistant identified this project as modifying an existing asset. A verifiable baseline photo must be secured before inviting the contractor.
+                } @else {
+                  This project is built from scratch. You can proceed directly or confirm no baseline applies.
+                }
+              </p>
+            </div>
+
+            <!-- Case 1: Already Captured -->
+            @if (beforeEvidenceCaptured) {
+              <div class="captured-success-card">
+                <div class="captured-badge-line">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#059669" stroke-width="2.5">
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+                  </svg>
+                  <strong>Cryptographic Baseline Proof Recorded</strong>
+                </div>
+                <div class="captured-content-layout">
+                  @if (beforeEvidenceItem?.file_path) {
+                    <img [src]="getEvidenceUrl(beforeEvidenceItem.file_path)" alt="Baseline" class="before-thumb" />
+                  }
+                  <div class="meta-texts">
+                    <span class="font-mono text-xs">SHA-256: {{ beforeEvidenceItem?.file_hash ? beforeEvidenceItem.file_hash.slice(0, 20) + '...' : 'Locked' }}</span>
+                    <span class="text-xs text-muted">Receipt: {{ beforeEvidenceItem?.server_receipt_timestamp || 'Server Authoritative' }}</span>
+                  </div>
+                </div>
+                <button type="button" (click)="retakeBeforeEvidence()" class="btn-fintech btn-fintech-secondary btn-sm">Retake Capture</button>
+              </div>
+            }
+
+            <!-- Case 2: Exemption Declared (Non-Renovation Only) -->
+            @if (!beforeEvidenceCaptured && beforeEvidenceExempt && !isRenovation) {
+              <div class="exemption-active-card">
+                <div class="exemption-header-line">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0070BA" stroke-width="2.2">
+                    <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+                  </svg>
+                  <strong>Exemption Active: Built from Scratch / Raw Stock</strong>
+                </div>
+                <p class="exemption-note">No pre-existing baseline applies. ProofLens AI will verify deliverables against specified dimensions and materials.</p>
+                <button type="button" (click)="beforeEvidenceExempt = false" class="btn-fintech btn-fintech-ghost btn-sm">Change Mind &amp; Capture Proof</button>
+              </div>
+            }
+
+            <!-- Case 3: Need to Capture or Declare -->
+            @if (!beforeEvidenceCaptured && !beforeEvidenceExempt) {
+              <div class="capture-workspace">
+                @if (projectDomain === 'physical' && isRenovation) {
+                  <div class="mandatory-cam-box">
+                    <div class="cam-instructions">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#D97706" stroke-width="2.2">
+                        <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+                      </svg>
+                      <span><strong>MANDATORY LIVE CAMERA BASELINE:</strong> Capture the physical site or room before renovation begins.</span>
+                    </div>
+                    <app-live-camera
+                      [projectId]="projectId"
+                      evidenceType="before_evidence"
+                      label="Capture Site Baseline"
+                      (evidenceUploaded)="onBeforeEvidenceCaptured($event)"
+                    ></app-live-camera>
+                  </div>
+                }
+
+                @if (projectDomain === 'physical' && !isRenovation) {
+                  <div class="scratch-choice-block">
+                    <p class="text-sm text-slate mb-3">This project is built from scratch. Choose your baseline verification option:</p>
+                    <div class="choice-buttons-row">
+                      <button
+                        type="button"
+                        (click)="declareScratchExemption()"
+                        [disabled]="isDeclaringExemption"
+                        class="btn-fintech btn-fintech-secondary"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                        </svg>
+                        <span>No Baseline Needed (Built from Scratch)</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        (click)="openLiveCameraCapture()"
+                        class="btn-fintech btn-fintech-secondary"
+                        [class.btn-fintech-primary]="isShowingLiveCamera"
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                          <circle cx="12" cy="13" r="4"/>
+                        </svg>
+                        <span>Optional: Capture Raw Material Stock</span>
+                      </button>
+                    </div>
+
+                    @if (isShowingLiveCamera) {
+                      <div class="mt-4">
+                        <app-live-camera
+                          [projectId]="projectId"
+                          evidenceType="before_evidence"
+                          label="Capture Raw Material Baseline"
+                          (evidenceUploaded)="onBeforeEvidenceCaptured($event)"
+                        ></app-live-camera>
+                      </div>
+                    }
+                  </div>
+                }
+
+                @if (projectDomain === 'digital' && isRenovation) {
+                  <div class="digital-upload-studio">
+                    <div class="digital-dropzone-box" (click)="fileInputRef.click()">
+                      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#0070BA" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                      </svg>
+                      <span class="dropzone-title">{{ digitalAssetFile ? digitalAssetFile.name : 'Upload Current Design, Logo, or Screenshots' }}</span>
+                      <span class="dropzone-sub">PNG, JPG, SVG, or PDF</span>
+                      <input
+                        #fileInputRef
+                        type="file"
+                        (change)="onDigitalFileSelected($event)"
+                        accept="image/png,image/jpeg,image/webp,image/svg+xml,application/pdf"
+                        class="hidden-file-input"
+                      />
+                    </div>
+
+                    <div class="fintech-input-group mt-3">
+                      <label class="fintech-label">Or Provide Current Website / Figma URL</label>
+                      <input
+                        type="url"
+                        [(ngModel)]="digitalAssetUrl"
+                        placeholder="https://example.com or Figma URL"
+                        class="fintech-input"
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      (click)="uploadDigitalBaselineAsset()"
+                      [disabled]="isUploadingDigitalAsset || (!digitalAssetFile && !digitalAssetUrl.trim())"
+                      class="btn-fintech btn-fintech-primary w-full mt-2"
+                    >
+                      {{ isUploadingDigitalAsset ? 'Securing Baseline Asset...' : 'Upload & Secure Baseline' }}
+                    </button>
+                  </div>
+                }
+
+                @if (projectDomain === 'digital' && !isRenovation) {
+                  <div class="scratch-choice-block">
+                    <p class="text-sm text-slate mb-3">Digital project fabricated from scratch. No prior digital baseline is required:</p>
+                    <button
+                      type="button"
+                      (click)="declareScratchExemption()"
+                      [disabled]="isDeclaringExemption"
+                      class="btn-fintech btn-fintech-secondary"
+                    >
+                      <span>Confirm Built from Scratch (No Baseline)</span>
+                    </button>
+                  </div>
+                }
+              </div>
+            }
+          </div>
+
+          <!-- Finalize CTA -->
+          <div class="finalize-cta-wrapper">
+            <button
+              (click)="finalizeDraft()"
+              [disabled]="isLoading || !canFinalizeDraft()"
+              class="btn-fintech btn-fintech-gold btn-lg w-full"
+              [class.is-loading]="isLoading"
+            >
+              @if (isLoading) {
+                <span class="btn-spinner"></span>
+                <span>Generating Agreement &amp; Cryptographic Link...</span>
+              } @else {
+                <span>Generate Agreement &amp; Invite Link &rarr;</span>
+              }
+            </button>
+            @if (!canFinalizeDraft()) {
+              <p class="warning-caption">
+                * Baseline proof or scratch confirmation is required before generating the invitation link.
+              </p>
+            }
+          </div>
+        </div>
+      }
+    </div>
+  }
+
+  <!-- Step 3: Success Screen with Invite Link -->
+  @if (step === 3) {
+    <div class="fintech-card success-share-card">
+      <div class="success-icon-badge">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3">
+          <polyline points="20 6 9 17 4 12"/>
+        </svg>
+      </div>
+      <h2 class="success-heading">Seller Invitation Created!</h2>
+      <p class="success-sub">Share this private link with your contractor/seller. When they open it, they can review the terms and join the negotiation room.</p>
+
+      <div class="share-link-box">
+        <input type="text" [value]="inviteUrl" readonly class="share-url-input font-mono" />
+        <button (click)="copyInviteLink()" class="btn-fintech btn-fintech-primary">
+          {{ copyBtnText }}
+        </button>
+      </div>
+
+      <div class="summary-chips-row mb-4">
+        <div class="summary-chip">
+          <span class="chip-label">Project:</span>
+          <span class="chip-val">{{ title }}</span>
+        </div>
+        <div class="summary-chip">
+          <span class="chip-label">Escrow Value:</span>
+          <span class="chip-val font-mono">${{ totalPrice }} USD</span>
+        </div>
+        <div class="summary-chip">
+          <span class="chip-label">Status:</span>
+          <span class="status-badge badge-indigo">INVITE SENT</span>
+        </div>
+      </div>
+
+      <div class="share-actions-row">
+        <button (click)="openSellerInvite()" class="btn-fintech btn-fintech-secondary">
+          <span>Preview Contractor View</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>
+        </button>
+        <button (click)="goToNegotiation()" class="btn-fintech btn-fintech-primary">
+          <span>Enter Negotiation Room</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+      </div>
+    </div>
+  }
+</div>

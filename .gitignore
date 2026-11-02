@@ -88,3 +88,10 @@ Thumbs.db
 # --- Logs & Tunnels ---
 *.log
 localtunnel.log
+
+*.db-shm
+*.db-wal
+sql_app.db-shm
+sql_app.db-wal
+backend/*.db-shm
+backend/*.db-wal

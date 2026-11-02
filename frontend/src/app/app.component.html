@@ -1,0 +1,428 @@
+<div class="main-shell">
+  <!-- Top Utility Ribbon: Security & Sandbox Notification -->
+  <div class="top-utility-ribbon">
+    <div class="ribbon-content">
+      <div class="ribbon-left">
+        <span class="security-shield">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+        </span>
+        <span class="ribbon-text"><strong>PayPal Escrow Protected</strong> &bull; Non-Custodial Multi-Milestone AI Verification Active</span>
+      </div>
+      <div class="ribbon-right">
+        <span class="pulse-indicator pulse-emerald"></span>
+        <span class="ribbon-tag">Sandbox Environment &bull; v2 API</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Enterprise Executive Navbar -->
+  <header class="pp-navbar">
+    <div class="nav-container">
+      <div class="nav-brand-group">
+        <a routerLink="/" class="brand-link" (click)="closeMobileMenu()">
+          <div class="pp-brand-icon">
+            <!-- Official PayPal Monogram Duo-tone -->
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
+              <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
+            </svg>
+          </div>
+          <div class="brand-text-col">
+            <div class="brand-title-row">
+              <span class="brand-title">ProofLens</span>
+              <span class="brand-badge-gold">ESCROW AI</span>
+            </div>
+            <span class="brand-tagline">Milestone Verification &amp; PayPal Settlement</span>
+          </div>
+        </a>
+
+        <!-- Desktop Navigation Items -->
+        <nav class="desktop-nav" aria-label="Main Navigation">
+          <a routerLink="/buyer" routerLinkActive="active-nav" class="nav-tab">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>
+            </svg>
+            <span>Buyer Console</span>
+          </a>
+
+          <a routerLink="/seller" routerLinkActive="active-nav" class="nav-tab">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+            </svg>
+            <span>Contractor Desk</span>
+          </a>
+
+          <a routerLink="/wizard" routerLinkActive="active-nav" class="nav-tab nav-tab-highlight">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>
+            </svg>
+            <span>New Escrow Project</span>
+          </a>
+        </nav>
+      </div>
+
+      <div class="nav-controls">
+        <!-- Live Sandbox State Indicator -->
+        <div class="sandbox-status-chip" title="Connected to PayPal Live Sandbox API">
+          <span class="pulse-indicator pulse-emerald"></span>
+          <span class="chip-text">PayPal Connected</span>
+        </div>
+
+        <!-- User Profile Trigger or Login Link -->
+        @if (currentUser) {
+          <button type="button" class="user-profile-btn" (click)="openAuthModal()" aria-haspopup="dialog" aria-label="Open User Profile">
+            <div class="avatar-badge" [class.avatar-seller]="currentUser.role_type === 'seller'">
+              {{ currentUser.full_name.charAt(0) || 'U' }}
+            </div>
+            <div class="user-info-snippet">
+              <span class="user-display-name">{{ currentUser.full_name }}</span>
+              <span class="role-chip" [class.role-seller]="currentUser.role_type === 'seller'">
+                {{ currentUser.role_type | uppercase }}
+              </span>
+            </div>
+            <svg class="chevron-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </button>
+        } @else {
+          <a routerLink="/login" class="btn-fintech btn-fintech-primary btn-sm">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#FFFFFF"/>
+            </svg>
+            <span>Log in with PayPal</span>
+          </a>
+        }
+
+        <!-- Mobile Menu Toggle Button -->
+        <button type="button" class="mobile-menu-toggle" (click)="toggleMobileMenu()" aria-label="Toggle navigation menu">
+          @if (mobileMenuOpen) {
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          } @else {
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
+          }
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Mobile Drawer Menu (Outside header to avoid backdrop-filter coordinate containment) -->
+  @if (mobileMenuOpen) {
+    <div class="mobile-drawer" (click)="closeMobileMenu()">
+      <nav class="mobile-drawer-content" (click)="$event.stopPropagation()">
+        <div class="mobile-drawer-top">
+          <div class="mobile-brand-row">
+            <div class="pp-brand-icon" style="width: 32px; height: 32px;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
+                <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
+              </svg>
+            </div>
+            <div class="brand-text-col">
+              <span class="brand-title" style="font-size: 1.1rem; color: #FFFFFF;">ProofLens</span>
+              <span class="brand-badge-gold" style="font-size: 0.65rem;">ESCROW AI</span>
+            </div>
+          </div>
+          <button type="button" class="btn-close-drawer" (click)="closeMobileMenu()" aria-label="Close menu">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="mobile-links-group">
+          <a routerLink="/buyer" routerLinkActive="mobile-active" (click)="closeMobileMenu()" class="mobile-link">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>
+            </svg>
+            <span>Buyer Console</span>
+          </a>
+          <a routerLink="/seller" routerLinkActive="mobile-active" (click)="closeMobileMenu()" class="mobile-link">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+            </svg>
+            <span>Contractor Desk</span>
+          </a>
+          <a routerLink="/wizard" routerLinkActive="mobile-active" (click)="closeMobileMenu()" class="mobile-link mobile-link-accent">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>
+            </svg>
+            <span>New Escrow Project</span>
+          </a>
+          <a routerLink="/login" routerLinkActive="mobile-active" (click)="closeMobileMenu()" class="mobile-link">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/>
+            </svg>
+            <span>PayPal Identity &amp; Auth Portal</span>
+          </a>
+        </div>
+
+        <div class="mobile-user-actions">
+          @if (currentUser) {
+            <div class="mobile-user-card">
+              <div class="avatar-badge" [class.avatar-seller]="currentUser.role_type === 'seller'">
+                {{ currentUser.full_name.charAt(0) || 'U' }}
+              </div>
+              <div class="user-info-text">
+                <div class="font-bold text-white">{{ currentUser.full_name }}</div>
+                <div class="text-xs" style="color: #94A3B8;">{{ currentUser.email }}</div>
+              </div>
+            </div>
+            <div class="mobile-role-buttons">
+              <button type="button" (click)="switchRole('buyer')" class="btn-fintech btn-fintech-secondary btn-sm" [class.btn-active-role]="currentUser.role_type === 'buyer'">
+                Buyer Mode
+              </button>
+              <button type="button" (click)="switchRole('seller')" class="btn-fintech btn-fintech-secondary btn-sm" [class.btn-active-role]="currentUser.role_type === 'seller'">
+                Contractor Mode
+              </button>
+            </div>
+            <button type="button" (click)="logout(); closeMobileMenu()" class="btn-mobile-logout">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+              <span>Sign Out</span>
+            </button>
+          } @else {
+            <a routerLink="/login" (click)="closeMobileMenu()" class="btn-fintech btn-fintech-primary" style="width: 100%; justify-content: center; gap: 0.5rem;">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#FFFFFF"/>
+              </svg>
+              <span>Log in with PayPal</span>
+            </a>
+          }
+        </div>
+      </nav>
+    </div>
+  }
+
+  <!-- Global Floating Toast Notification Banner -->
+  @if (authNotification) {
+    <div class="toast-container" role="alert" aria-live="polite">
+      <div class="toast-card" [class.toast-error]="authNotification.type === 'error'">
+        <div class="toast-icon-box">
+          @if (authNotification.type === 'error') {
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#DC2626" stroke-width="2.5">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+          } @else {
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#059669" stroke-width="2.5">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+            </svg>
+          }
+        </div>
+        <div class="toast-content">
+          <span class="toast-title">{{ authNotification.type === 'error' ? 'Authentication Alert' : 'PayPal Action Verified' }}</span>
+          <span class="toast-message">{{ authNotification.message }}</span>
+        </div>
+        <button type="button" (click)="authNotification = null" class="toast-close-btn" aria-label="Close notification">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  }
+
+  <!-- Main Application Content Area -->
+  <main class="page-viewport">
+    <router-outlet></router-outlet>
+  </main>
+
+  <!-- Enterprise Corporate Footer -->
+  <footer class="pp-footer">
+    <div class="footer-inner">
+      <div class="footer-left">
+        <div class="footer-brand">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
+            <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
+          </svg>
+          <span class="footer-title">ProofLens &bull; PayPal Escrow Protocol</span>
+        </div>
+        <p class="footer-copyright">
+          Built for PayPal Hackathon &bull; Cryptographically Verified Milestones, AI Computer Vision Analysis, and Zero-Risk Escrow Vaults.
+        </p>
+      </div>
+
+      <div class="footer-badges">
+        <div class="trust-badge">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#059669" stroke-width="2.5">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          <span>TLS 256-Bit Escrow Vault</span>
+        </div>
+        <div class="trust-badge">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#0070BA" stroke-width="2.5">
+            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+          </svg>
+          <span>PayPal Orders v2 API</span>
+        </div>
+        <div class="trust-badge">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#D97706" stroke-width="2.5">
+            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+          </svg>
+          <span>AI Vision Verification</span>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <!-- PayPal OAuth & Account Modal -->
+  @if (showAuthModal) {
+    <div class="modal-overlay" (click)="closeAuthModal()">
+      <div class="auth-modal-window modal-content-animated" (click)="$event.stopPropagation()">
+        <!-- Modal Header -->
+        <div class="auth-window-header">
+          <div class="auth-header-identity">
+            <div class="auth-icon-pod">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
+                <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
+                <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
+              </svg>
+            </div>
+            <div>
+              <h3 class="auth-modal-title">PayPal Identity &amp; Escrow Vault</h3>
+              <p class="auth-modal-subtitle">Secure OAuth 2.0 Credentials &amp; Session Management</p>
+            </div>
+          </div>
+          <button type="button" (click)="closeAuthModal()" class="auth-close-btn" aria-label="Close dialog">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Modal Body -->
+        <div class="auth-window-body">
+          @if (currentUser) {
+            <!-- Currently Active Session Details -->
+            <div class="current-session-banner">
+              <div class="user-big-avatar" [class.avatar-seller]="currentUser.role_type === 'seller'">
+                {{ currentUser.full_name.charAt(0) || 'P' }}
+              </div>
+              <div class="session-text-col">
+                <span class="session-status-label">
+                  <span class="pulse-indicator pulse-emerald"></span> Authenticated Session
+                </span>
+                <span class="session-user-name">{{ currentUser.full_name }}</span>
+                <span class="session-email font-mono">{{ currentUser.email }}</span>
+              </div>
+              <span class="status-badge" [ngClass]="currentUser.role_type === 'seller' ? 'badge-amber' : 'badge-blue'">
+                {{ currentUser.role_type | uppercase }}
+              </span>
+            </div>
+
+            <!-- Fast Track Persona Switcher (For Judges / Evaluators) -->
+            <div class="auth-section">
+              <h4 class="section-micro-title">Instant Persona Quick-Switch (Judge Demonstration)</h4>
+              <p class="section-micro-desc">Seamlessly test both sides of the escrow contract lifecycle in one click:</p>
+              
+              <div class="persona-switch-grid">
+                <button type="button" class="persona-card" [class.persona-active]="currentUser.role_type === 'buyer'" (click)="switchRole('buyer')">
+                  <div class="persona-header">
+                    <div class="persona-icon buyer-icon">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                      </svg>
+                    </div>
+                    <span class="persona-title">Verified Buyer</span>
+                  </div>
+                  <p class="persona-desc">Alex Morgan (Tech Startup Founder) &bull; Creates projects, deposits escrow funds, approves AI milestones.</p>
+                  <span class="persona-tag">buyer&#64;prooflens.com</span>
+                </button>
+
+                <button type="button" class="persona-card" [class.persona-active]="currentUser.role_type === 'seller'" (click)="switchRole('seller')">
+                  <div class="persona-header">
+                    <div class="persona-icon seller-icon">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+                      </svg>
+                    </div>
+                    <span class="persona-title">Master Contractor</span>
+                  </div>
+                  <p class="persona-desc">David Vance (Elite Engineering) &bull; Negotiates scope, captures live visual proof, receives PayPal releases.</p>
+                  <span class="persona-tag">seller&#64;prooflens.com</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="auth-action-row">
+              <button type="button" (click)="logout()" class="btn-fintech btn-fintech-danger btn-sm">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+                </svg>
+                <span>Sign Out</span>
+              </button>
+
+              <button type="button" (click)="closeAuthModal()" class="btn-fintech btn-fintech-primary btn-sm">
+                <span>Return to Workspace</span>
+              </button>
+            </div>
+          } @else {
+            <!-- Signed Out View -->
+            <div class="signed-out-prompt">
+              <p class="auth-lead-text">
+                Connect with PayPal Identity to unlock cryptographic milestone approvals and immediate sandbox escrow funding.
+              </p>
+
+              @if (oauthConfig?.oauth_url) {
+                <a [href]="oauthConfig.oauth_url" class="btn-fintech btn-fintech-primary btn-lg w-full mb-4">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                    <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#FFFFFF"/>
+                  </svg>
+                  <span>Authorize via Live PayPal Sandbox</span>
+                </a>
+              }
+
+              <!-- Fast Track Quick-Login -->
+              <div class="auth-section">
+                <h4 class="section-micro-title">Hackathon Fast-Track Evaluation</h4>
+                <div class="persona-switch-grid">
+                  <button type="button" class="persona-card" (click)="switchRole('buyer')">
+                    <div class="persona-header">
+                      <span class="persona-title">Instant Buyer Login</span>
+                    </div>
+                    <span class="persona-tag">buyer&#64;prooflens.com</span>
+                  </button>
+                  <button type="button" class="persona-card" (click)="switchRole('seller')">
+                    <div class="persona-header">
+                      <span class="persona-title">Instant Contractor Login</span>
+                    </div>
+                    <span class="persona-tag">seller&#64;prooflens.com</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Manual Code Input -->
+              <div class="manual-code-card">
+                <label class="fintech-label">Manual Authorization Code Exchange</label>
+                <div class="code-input-row">
+                  <input
+                    type="text"
+                    [(ngModel)]="customAuthCode"
+                    placeholder="Paste OAuth authorization code..."
+                    class="fintech-input"
+                  />
+                  <button
+                    type="button"
+                    (click)="loginWithCode(customAuthCode)"
+                    [disabled]="!customAuthCode.trim() || isAuthenticating"
+                    class="btn-fintech btn-fintech-secondary"
+                  >
+                    {{ isAuthenticating ? 'Exchanging...' : 'Verify' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          }
+        </div>
+      </div>
+    </div>
+  }
+</div>

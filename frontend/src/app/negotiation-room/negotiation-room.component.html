@@ -1,0 +1,1049 @@
+<div class="corporate-shell">
+      <!-- Loading State -->
+      @if (isLoading) {
+        <div class="loading-state">
+          <div class="corporate-spinner"></div>
+          <p>Connecting to Secure Escrow Negotiation Room...</p>
+        </div>
+      } @else if (projectData) {
+        <!-- Top Executive Bar -->
+        <header class="room-topbar">
+          <div class="topbar-left">
+            <button (click)="goBack()" class="btn-back-nav">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="19" y1="12" x2="5" y2="12"/>
+                <polyline points="12 19 5 12 12 5"/>
+              </svg>
+              <span>Back to Dashboard</span>
+            </button>
+            <div class="title-cluster">
+              <div class="title-meta-line">
+                <span class="project-id-badge">#PL-{{ projectData.project.id }}</span>
+                <span class="industry-badge">{{ projectData.project.industry_type || 'General' }}</span>
+                @if (getEffectiveProjectDeadline()) {
+                  <span class="deadline-pill">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                      <line x1="16" y1="2" x2="16" y2="6"/>
+                      <line x1="8" y1="2" x2="8" y2="6"/>
+                      <line x1="3" y1="10" x2="21" y2="10"/>
+                    </svg>
+                    <span>Target Due: {{ getEffectiveProjectDeadline() }}</span>
+                  </span>
+                }
+                <span class="status-pill" [attr.data-status]="projectData.project.status">
+                  {{ formatStatus(projectData.project.status) }}
+                </span>
+              </div>
+              <h1 class="project-title">{{ projectData.project.title }}</h1>
+            </div>
+          </div>
+
+          <div class="topbar-right">
+            <!-- Escrow Budget Box -->
+            <div class="budget-stat-box">
+              <span class="stat-label">PROTECTED ESCROW BUDGET</span>
+              <span class="stat-value">${{ Number(projectData.project.total_price).toFixed(2) }} <span class="currency-tag">USD</span></span>
+            </div>
+
+            <!-- Role Badge & Seamless Switcher -->
+            <div class="persona-badge" [class.is-buyer]="currentRole === 'buyer'" [class.is-seller]="currentRole === 'seller'">
+              <div class="persona-icon-box">
+                @if (currentRole === 'buyer') {
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                  </svg>
+                } @else {
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
+                    <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+                  </svg>
+                }
+              </div>
+              <div class="persona-text">
+                <span class="persona-role">{{ currentRole === 'buyer' ? 'Buyer Console' : 'Seller Console' }}</span>
+                <span class="persona-email">{{ currentRole === 'buyer' ? (projectData.project.buyer_email || 'buyer@prooflens.com') : (projectData.project.seller_email || 'seller@prooflens.com') }}</span>
+              </div>
+              <button (click)="toggleRole()" class="btn-role-switch" title="Toggle between Buyer and Seller perspectives">
+                <span>Switch</span>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <path d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/>
+                </svg>
+              </button>
+            </div>
+
+            <!-- Primary Agreement Action -->
+            <div class="topbar-action-zone">
+              @if (projectData.project.status === 'accepted') {
+                @if (isEscrowAuthorized()) {
+                  <div class="accepted-seal">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    <span>Terms Locked & Escrow Funded</span>
+                  </div>
+                  <button (click)="goToFulfillment()" class="btn-corporate-fulfillment">
+                    <span>Go to Fulfillment Desk &rarr;</span>
+                  </button>
+                } @else if (currentRole === 'buyer') {
+                  <button (click)="authorizeEscrowDeposit()" class="btn-corporate-accept" style="background: #0070ba; color: #ffffff;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.641.641 0 0 1 .632-.544h7.521c3.155 0 5.487 1.096 5.807 4.168.32 3.072-1.745 5.568-4.664 6.27-.408.098-.795.158-1.168.188l-1.072 6.804a.641.641 0 0 1-.632.544l-3.292.187z"/>
+                    </svg>
+                    <span>Authorize Escrow via PayPal (${{ Number(projectData.project.total_price).toFixed(2) }}) &rarr;&rarr;</span>
+                  </button>
+                  <button (click)="goToFulfillment()" class="btn-corporate-fulfillment">
+                    <span>Go to Fulfillment Desk &rarr;</span>
+                  </button>
+                } @else {
+                  <div class="buyer-awaiting-badge">
+                    <span class="pulse-mini-dot"></span>
+                    <span>Agreement Accepted &mdash; Awaiting Buyer Escrow Deposit</span>
+                  </div>
+                  <button (click)="goToFulfillment()" class="btn-corporate-fulfillment">
+                    <span>Go to Fulfillment Desk &rarr;</span>
+                  </button>
+                }
+              } @else if (currentRole === 'seller') {
+                <button
+                  type="button"
+                  (click)="openRejectModal()"
+                  [disabled]="isAccepting || isSubmittingRejection"
+                  class="btn-corporate-reject"
+                  title="Decline agreement terms and send feedback to the buyer"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="15" y1="9" x2="9" y2="15"/>
+                    <line x1="9" y1="9" x2="15" y2="15"/>
+                  </svg>
+                  <span>Reject Agreement</span>
+                </button>
+                <button
+                  (click)="acceptAgreement()"
+                  [disabled]="isAccepting"
+                  class="btn-corporate-accept"
+                  [class.is-loading]="isAccepting"
+                >
+                  @if (isAccepting) {
+                    <span class="btn-spinner"></span>
+                    <span>Locking Terms &amp; Generating Agreement...</span>
+                  } @else {
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    <span>Accept Agreement Terms</span>
+                  }
+                </button>
+              } @else {
+                <button
+                  (click)="acceptAgreement()"
+                  [disabled]="isAccepting"
+                  class="btn-corporate-accept"
+                  [class.is-loading]="isAccepting"
+                  style="background: #0070ba; color: #ffffff;"
+                >
+                  @if (isAccepting) {
+                    <span class="btn-spinner"></span>
+                    <span>Launching PayPal Escrow Authorization...</span>
+                  } @else {
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.641.641 0 0 1 .632-.544h7.521c3.155 0 5.487 1.096 5.807 4.168.32 3.072-1.745 5.568-4.664 6.27-.408.098-.795.158-1.168.188l-1.072 6.804a.641.641 0 0 1-.632.544l-3.292.187z"/>
+                    </svg>
+                    <span>Accept &amp; Fund Escrow via PayPal</span>
+                  }
+                </button>
+              }
+            </div>
+
+            <!-- Scope Change Request / Negotiation Desk (Positioned at the very LAST) -->
+            @if (isProjectActive() || projectData.project.status === 'accepted') {
+              <button (click)="openRevisionRoom()" class="btn-scope-change-nav" title="Request or view project scope changes and addenda">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+                <span>Request Scope Change</span>
+                @if (activeScopeChange && activeScopeChange.status !== 'ACCEPTED') {
+                  <span class="active-scope-badge-nav">{{ activeScopeChange.status === 'PENDING_FUNDS' ? 'Pending Escrow' : 'Negotiating' }}</span>
+                }
+              </button>
+            }
+          </div>
+        </header>
+
+        <!-- Contractor Rejection Notice Banner -->
+        @if (isProjectRejected()) {
+          <div class="agreement-rejected-banner">
+            <div class="warning-banner-icon" style="background: #fef2f2; border: 1px solid #fecaca;">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="15" y1="9" x2="9" y2="15"/>
+                <line x1="9" y1="9" x2="15" y2="15"/>
+              </svg>
+            </div>
+            <div class="warning-banner-text">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+                <strong style="color: #991b1b; font-size: 14px;">
+                  @if (currentRole === 'seller') {
+                    You Have Rejected Current Agreement Terms
+                  } @else {
+                    Contractor Declined Current Agreement Terms
+                  }
+                </strong>
+                <span class="status-chip-rejected">REJECTED</span>
+              </div>
+              <div class="rejection-reason-quote">
+                "{{ getContractorRejectionReason() }}"
+              </div>
+              <div class="warning-banner-sub" style="color: #7f1d1d; margin-top: 6px;">
+                @if (currentRole === 'buyer') {
+                  Please review the contractor's feedback above and adjust milestone deadlines, pricing, or scope in the negotiation box below.
+                } @else {
+                  Your feedback was transmitted to the buyer. You will be notified when the buyer counters or submits updated terms.
+                }
+              </div>
+            </div>
+          </div>
+        }
+
+        <!-- Persistent Milestone Deadline Approaching Warning Banner (Phase 4: Contractor Only for Active Projects) -->
+        @if (currentRole === 'seller' && isProjectActive() && activeAlert) {
+          <div class="persistent-deadline-warning-banner">
+            <div class="warning-banner-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#b45309" stroke-width="2.5">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+            </div>
+            <div class="warning-banner-text">
+              <strong>{{ activeAlert.message }}</strong>
+              <div class="warning-banner-sub">
+                Target Deadline: <strong>{{ activeAlert.formatted_deadline || activeAlert.deadline }}</strong>
+                @if (activeAlert.hours_remaining !== undefined && activeAlert.hours_remaining > 0) {
+                  &bull; ({{ activeAlert.hours_remaining }}h remaining)
+                }
+              </div>
+            </div>
+          </div>
+        }
+
+        <!-- Acceptance Banner -->
+        @if (projectData.project.status === 'accepted') {
+          <div class="celebration-card">
+            <div class="seal-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6 9H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h2M18 9h2a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-2"/>
+                <path d="M4 3h16v6a8 8 0 0 1-16 0V3z"/>
+                <path d="M12 17v4M8 21h8"/>
+              </svg>
+            </div>
+            <div style="flex: 1;">
+              <h3>Escrow Agreement Formally Accepted & Locked</h3>
+              <p>Both Buyer and Seller have formally ratified Version {{ projectData.agreement.version || 1 }}.0. PayPal escrow deposit is secured. Milestone releases will trigger upon verification of proof-of-work evidence.</p>
+            </div>
+            <button (click)="goToFulfillment()" class="btn-celebration-fulfillment">
+              Go to Milestone Fulfillment Desk &rarr;
+            </button>
+          </div>
+        }
+
+        <!-- Seller Notification: Updated terms received from buyer -->
+        @if (currentRole === 'seller' && projectData.project.status !== 'accepted' && (projectData.agreement.version > 1 || projectData.agreement.latest_buyer_message)) {
+          <div class="notification-banner seller-notice">
+            <div class="notice-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1d4ed8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+              </svg>
+            </div>
+            <div class="notice-body">
+              <strong>Updated Agreement Terms Received (Version {{ projectData.agreement.version || 1 }}.0)</strong>
+              <p>The Buyer has revised the terms to accommodate your specifications: <em>"{{ projectData.agreement.latest_buyer_message || 'Terms revised per negotiation.' }}"</em></p>
+              <div class="notice-cta">Please review the updated agreement on the left. Click <strong>Accept Agreement Terms</strong> above if acceptable.</div>
+            </div>
+          </div>
+        }
+
+        <!-- Buyer Notification: Seller requested changes -->
+        @if (currentRole === 'buyer' && projectData.project.status !== 'accepted' && projectData.agreement.latest_seller_message) {
+          <div class="notification-banner buyer-notice">
+            <div class="notice-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d97706" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+            </div>
+            <div class="notice-body">
+              <strong>Action Required: Contractor Requested Scope / Schedule Adjustment</strong>
+              <p>The Seller has submitted a modification request: <em>"{{ projectData.agreement.latest_seller_message }}"</em></p>
+              <div class="notice-cta">Use the <strong>AI Contract Revision Desk</strong> on the right to re-draft terms and send the updated agreement back to the seller.</div>
+            </div>
+          </div>
+        }
+
+        <!-- Success Banner when updated terms sent -->
+        @if (termsUpdateSuccessBanner) {
+          <div class="notification-banner success-notice">
+            <div class="notice-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <polyline points="16 9 12 15 8 11"/>
+              </svg>
+            </div>
+            <div class="notice-body">
+              <strong>Agreement Terms Successfully Updated & Dispatched</strong>
+              <p>Version {{ projectData.agreement.version }}.0 has been committed to the secure ledger. The seller can now review and accept the revised terms.</p>
+            </div>
+          </div>
+        }
+
+        <!-- Split Screen Main Layout -->
+        <main class="negotiation-workspace">
+          <!-- LEFT: Official Escrow Agreement Document (Statement of Work) -->
+          <section class="document-section">
+            <div class="corporate-card doc-card">
+              <div class="doc-header">
+                <div>
+                  <div class="doc-kicker">OFFICIAL ESCROW STATEMENT OF WORK</div>
+                  <h2>Master Service & Escrow Agreement</h2>
+                </div>
+                <div class="doc-version-tag">
+                  Version {{ projectData.agreement.version || 1 }}.0
+                </div>
+              </div>
+
+              <!-- Clause 1: Legal Terms -->
+              <div class="clause-box">
+                <div class="clause-heading">
+                  <div class="clause-title-cluster">
+                    <span class="clause-num">Section 1.0</span>
+                    <span class="clause-title">Scope of Deliverables & Milestones</span>
+                  </div>
+
+                  <!-- Real-time Budget Balancer Widget -->
+                  <div class="budget-balancer-bar">
+                    <div class="balancer-stat">
+                      <span class="balancer-label">Budget:</span>
+                      <strong class="balancer-val">${{ getTotalBudget().toFixed(2) }} USD</strong>
+                    </div>
+                    @if (projectData?.agreement?.lock_in_type === 'CUSTOM') {
+                      <div class="balancer-divider">&bull;</div>
+                      <div class="balancer-stat">
+                        <span class="balancer-label">Retainage:</span>
+                        <strong class="balancer-val" style="color: #6366F1;">${{ (projectData?.agreement?.lock_in_amount || 0).toFixed(2) }} USD</strong>
+                      </div>
+                    }
+                    <div class="balancer-divider">&bull;</div>
+                    <div class="balancer-stat">
+                      <span class="balancer-label">Milestones:</span>
+                      <strong class="balancer-val" [class.is-balanced]="isBudgetBalanced()" [class.is-unbalanced]="!isBudgetBalanced()">
+                        ${{ getAllocatedMilestonesTotal().toFixed(2) }} USD
+                      </strong>
+                    </div>
+                    @if (isBudgetBalanced()) {
+                      <span class="balanced-badge">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                          <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                        <span>100% Balanced</span>
+                      </span>
+                    } @else {
+                      <span class="unbalanced-badge">
+                        <span>Diff: ${{ Math.abs(getAvailableBudgetForMilestones() - getAllocatedMilestonesTotal()).toFixed(2) }}</span>
+                      </span>
+                    }
+                    <button type="button" (click)="resetMilestonesToEqualSplit()" class="btn-equal-split" title="Split remaining budget equally across milestones">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M16 16l3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1zM2 16l3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1z"/><line x1="7" y1="21" x2="17" y2="21"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="3" y1="7" x2="21" y2="7"/></svg>
+                      <span>Split Evenly</span>
+                    </button>
+                  </div>
+
+                  <!-- Warranty Lock-In (Retainage Protection) Clause Card -->
+                  <div class="room-warranty-box">
+                    <div class="warranty-box-left">
+                      <div class="warranty-box-label-row">
+                        <span class="status-badge" [ngClass]="projectData.project.project_domain === 'digital' ? 'badge-amber' : 'badge-emerald'">
+                          {{ projectData.project.project_domain === 'digital' ? 'Digital Deliverable' : 'Physical Protection' }}
+                        </span>
+                        <span class="warranty-box-title">Warranty Lock-In &amp; Retainage Hold:</span>
+                        @if (projectData.project.status === 'accepted' || projectData.project.status === 'active') {
+                          <span class="locked-immutable-tag"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Terms Sealed (Immutable)</span>
+                        }
+                      </div>
+
+                      @if (projectData.project.status !== 'accepted' && projectData.project.status !== 'active') {
+                        <!-- Editable mode for negotiation phase -->
+                        <div class="room-warranty-controls">
+                          <button
+                            type="button"
+                            (click)="setLockInType('NONE')"
+                            class="room-warranty-pill-btn"
+                            [class.is-active]="(projectData.agreement.lock_in_type || 'NONE') === 'NONE'"
+                          >
+                            <span>None</span>
+                          </button>
+                          <button
+                            type="button"
+                            (click)="setLockInType('FINAL_MILESTONE')"
+                            class="room-warranty-pill-btn"
+                            [class.is-active]="projectData.agreement.lock_in_type === 'FINAL_MILESTONE'"
+                          >
+                            <span>Final Milestone (${{ (projectData.agreement.lock_in_amount || 0).toFixed(2) }})</span>
+                          </button>
+                          <button
+                            type="button"
+                            (click)="setLockInType('CUSTOM')"
+                            class="room-warranty-pill-btn"
+                            [class.is-active]="projectData.agreement.lock_in_type === 'CUSTOM'"
+                          >
+                            <span>Custom Retainage</span>
+                          </button>
+
+                          @if (projectData.agreement.lock_in_type !== 'NONE') {
+                            <div class="room-warranty-inline-inputs">
+                              <label class="inline-warranty-label">
+                                <span>Hold Days:</span>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="365"
+                                  [ngModel]="projectData.agreement.lock_in_days || 14"
+                                  (ngModelChange)="updateLockInDays($event)"
+                                  class="inline-warranty-input days"
+                                />
+                              </label>
+
+                              @if (projectData.agreement.lock_in_type === 'CUSTOM') {
+                                <label class="inline-warranty-label">
+                                  <span>Amount ($):</span>
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    [max]="getTotalBudget()"
+                                    [ngModel]="projectData.agreement.lock_in_amount || 0"
+                                    (ngModelChange)="updateCustomLockInAmount($event)"
+                                    class="inline-warranty-input amount"
+                                  />
+                                </label>
+                              }
+                            </div>
+                          }
+                        </div>
+                      } @else {
+                        <!-- Sealed Read-only Mode -->
+                        <div class="room-warranty-summary-text">
+                          @if (projectData.agreement.lock_in_type === 'NONE') {
+                            <span>No retainage hold configured. Milestones release 100% on delivery.</span>
+                          } @else {
+                            <span>
+                              <strong>${{ (projectData.agreement.lock_in_amount || 0).toFixed(2) }} USD</strong>
+                              held in PayPal Escrow Vault for <strong>{{ projectData.agreement.lock_in_days }} days</strong> post-completion before automated payout.
+                            </span>
+                          }
+                        </div>
+                      }
+                    </div>
+
+                    <div class="warranty-box-right">
+                      <span class="vault-hold-stat">
+                        Vault Retainage: <strong>${{ (projectData.agreement.lock_in_amount || 0).toFixed(2) }} USD</strong>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                @if (projectData.agreement.milestones && projectData.agreement.milestones.length > 0) {
+                  <div class="room-milestones-list">
+                    @for (ms of projectData.agreement.milestones; track $index) {
+                      <div class="room-milestone-card">
+                        <div class="room-ms-top">
+                          <div class="room-ms-title-col">
+                            <div class="room-ms-badge-row">
+                              <span class="room-ms-badge">Milestone {{ $index + 1 }}</span>
+                              @if (projectData.project.status !== 'accepted') {
+                                <label class="room-ms-deadline-editable" title="Click to adjust milestone deadline directly">
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                                    <line x1="16" y1="2" x2="16" y2="6"/>
+                                    <line x1="8" y1="2" x2="8" y2="6"/>
+                                    <line x1="3" y1="10" x2="21" y2="10"/>
+                                  </svg>
+                                  <span>Target Due:</span>
+                                  <input
+                                    type="date"
+                                    class="inline-ms-date-picker"
+                                    [ngModel]="ms.deadline || getMilestoneFallbackDeadline($index)"
+                                    (ngModelChange)="onMilestoneDateChanged($index, $event)"
+                                  />
+                                </label>
+                              } @else {
+                                <span class="room-ms-deadline-tag">
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                                    <line x1="16" y1="2" x2="16" y2="6"/>
+                                    <line x1="8" y1="2" x2="8" y2="6"/>
+                                    <line x1="3" y1="10" x2="21" y2="10"/>
+                                  </svg>
+                                  <span>Target Due: {{ ms.deadline || getMilestoneFallbackDeadline($index) }}</span>
+                                </span>
+                              }
+                            </div>
+                            <span class="room-ms-title">{{ ms.title }}</span>
+                          </div>
+                          <div class="room-ms-price-zone">
+                            @if (!isMilestoneFundReleased(ms, $index)) {
+                              <div class="ms-price-edit-box" [class.is-zero]="ms.price_allocation === 0" title="Adjust milestone amount (other unreleased milestones auto-recalculate to match total budget)">
+                                <span class="price-edit-symbol">$</span>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  [max]="getTotalBudget()"
+                                  [ngModel]="ms.price_allocation"
+                                  (ngModelChange)="onMilestonePriceChanged($index, $event)"
+                                  class="ms-price-input"
+                                />
+                                <span class="price-edit-curr">USD</span>
+                                @if (userLockedMilestones.has($index)) {
+                                  <span class="ms-locked-indicator" title="Custom amount explicitly locked by you"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+                                }
+                              </div>
+                            } @else {
+                              <div class="room-ms-price is-released" title="Milestone funds released via PayPal Escrow">
+                                <span class="released-pill"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg> Released</span>
+                                ${{ Number(ms.price_allocation).toFixed(2) }} USD
+                              </div>
+                            }
+                          </div>
+                        </div>
+                        <p class="room-ms-desc">{{ ms.description }}</p>
+                        <div class="room-ms-proof">
+                          <div class="room-proof-header">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                            </svg>
+                            <span>Strict Visual Verification Criteria (PayPal Release):</span>
+                          </div>
+                          <div class="room-proof-body">{{ ms.proof_required }}</div>
+                        </div>
+
+                        <!-- Buyer Resubmission Requested Banner -->
+                        @if ((ms.status || '').toLowerCase() === 'resubmission_requested') {
+                          <div class="amber-fraud-banner" style="background:#fef2f2; border-color:#fca5a5;">
+                            <div class="banner-title" style="color:#b91c1c;">
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5">
+                                <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+                              </svg>
+                              <strong>BUYER REQUESTED EVIDENCE RESUBMISSION</strong>
+                            </div>
+                            <p class="banner-policy" style="color:#7f1d1d; font-weight:600;">
+                              Buyer Feedback: "{{ ms.rejection_reason || 'Buyer requested updated evidence resubmission.' }}"
+                            </p>
+                            @if (currentRole === 'seller') {
+                              <div class="seller-flag-recapture-link">
+                                <a [routerLink]="['/project', projectId, 'fulfillment']" [queryParams]="{ role: 'seller', ms: $index }" class="btn-recapture-cta">
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>
+                                  </svg>
+                                  <span>Resubmit Live Physical Proof</span>
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+                                </a>
+                              </div>
+                            }
+                          </div>
+                        }
+
+                        <!-- AI Milestone Verification Certificate -->
+                        @if (getAllEvidenceForMilestone($index); as milestoneEvList) {
+                          @if (milestoneEvList.length > 0) {
+                            <div class="ms-ai-certificate" [class.has-fraud-warning]="hasFraudInMilestone(milestoneEvList)">
+                              @if (hasFraudInMilestone(milestoneEvList)) {
+                                <div class="corp-audit-notice-panel">
+                                  <div class="audit-notice-title">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="2.2">
+                                      <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                                    </svg>
+                                    <span>Forensic Observation: Potential Screen Re-Photographing or Anomaly Detected</span>
+                                  </div>
+                                  <p class="audit-notice-desc">
+                                    Automated integrity models detected indicators of display reproduction or criteria mismatch. Findings are recorded for human escrow dispute review.
+                                  </p>
+                                  <div class="flags-chips-row">
+                                    @for (flag of getMilestoneFraudFlags(milestoneEvList); track flag) {
+                                      <span class="audit-flag-tag">
+                                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                                          <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                                        </svg>
+                                        <span>{{ flag }}</span>
+                                      </span>
+                                    }
+                                  </div>
+                                  @if (currentRole === 'seller') {
+                                    <div class="seller-flag-recapture-link">
+                                      <a [routerLink]="['/project', projectId, 'fulfillment']" [queryParams]="{ role: 'seller', ms: $index }" class="btn-recapture-cta">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                                          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>
+                                        </svg>
+                                        <span>Recapture Live Physical Proof</span>
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+                                      </a>
+                                    </div>
+                                  }
+                                </div>
+                              }
+
+                              <div class="cert-head" [class.is-flagged]="hasFraudInMilestone(milestoneEvList)">
+                                <div class="cert-title-row">
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" [attr.stroke]="hasFraudInMilestone(milestoneEvList) ? '#dc2626' : '#16a34a'" stroke-width="2.5">
+                                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                                  </svg>
+                                  <strong>{{ hasFraudInMilestone(milestoneEvList) ? 'ProofLens Anti-Spoofing Audit &mdash; FLAGGED FOR REVIEW' : ('ProofLens Multi-Angle Verification Certificate (' + milestoneEvList.length + ' Angle' + (milestoneEvList.length > 1 ? 's' : '') + ')') }}</strong>
+                                </div>
+                                <span class="cert-confidence-pill" [class.is-fraud]="hasFraudInMilestone(milestoneEvList)">{{ milestoneEvList[0].ai_confidence_score }}% {{ hasFraudInMilestone(milestoneEvList) ? 'MATCH (FLAGGED)' : 'MATCH' }}</span>
+                              </div>
+
+                              <div class="cert-angles-strip">
+                                @for (ev of milestoneEvList; track ev.id; let aIdx = $index) {
+                                  <div class="cert-angle-card">
+                                    @if (ev.file_path) {
+                                      <img [src]="getEvidenceUrl(ev.file_path)" alt="Angle {{ aIdx + 1 }}" class="cert-thumb" />
+                                    }
+                                    <span class="angle-label">Angle {{ aIdx + 1 }}</span>
+                                    <span class="cert-hash" title="{{ ev.file_hash }}">SHA: {{ ev.file_hash ? ev.file_hash.slice(0, 8) : 'Locked' }}</span>
+                                  </div>
+                                }
+                              </div>
+
+                              <div class="cert-notes">
+                                <div class="cert-analysis">{{ milestoneEvList[0].ai_analysis_notes }}</div>
+                              </div>
+                            </div>
+                          }
+                        }
+                      </div>
+                    }
+                  </div>
+                } @else {
+                  <div class="clause-body">
+                    {{ projectData.agreement.ai_generated_contract || projectData.project.description }}
+                  </div>
+                }
+              </div>
+
+              <!-- Clause 2: Evidence Requirements -->
+              <div class="clause-box evidence-clause">
+                <div class="clause-heading">
+                  <span class="clause-num">Section 2.0</span>
+                  <span class="clause-title">Proof-of-Work Verification Criteria</span>
+                </div>
+                <div class="evidence-subtext">
+                  PayPal escrow funds release exclusively upon electronic verification of the following criteria:
+                </div>
+                <div class="clause-body evidence-content">
+                  {{ projectData.agreement.evidence_requirements || 'Photographic and video proof of completed deliverables.' }}
+                </div>
+              </div>
+
+              <!-- Clause 2.5: Buyer Pre-Work Baseline Evidence -->
+              <div class="clause-box baseline-clause">
+                <div class="clause-heading">
+                  <span class="clause-num">Section 2.5</span>
+                  <span class="clause-title">Buyer Pre-Work Baseline Evidence</span>
+                </div>
+                <div class="evidence-subtext">
+                  Authoritative pre-work condition recorded by the buyer. ProofLens AI compares seller milestone submissions directly against this baseline.
+                </div>
+                @if (getBeforeEvidence(); as beforeEv) {
+                  <div class="baseline-record-card">
+                    <div class="baseline-card-top">
+                      <span class="badge-baseline-locked">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                          <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                        <span>BASELINE SECURED</span>
+                      </span>
+                      <span class="baseline-timestamp">Recorded: {{ beforeEv.server_receipt_timestamp || 'Pre-Work' }}</span>
+                    </div>
+                    <div class="baseline-card-body">
+                      @if (beforeEv.file_path) {
+                        <img [src]="getEvidenceUrl(beforeEv.file_path)" alt="Buyer Baseline" class="baseline-preview-img" />
+                      }
+                      <div class="baseline-card-meta">
+                        <strong>Pre-Work Site Condition (Buyer Live Capture)</strong>
+                        <span class="baseline-hash">SHA-256: {{ beforeEv.file_hash?.slice(0, 20) }}...</span>
+                        <p class="baseline-desc">Authoritative reference frame used by AI Multimodal Comparison to audit contractor progression.</p>
+                      </div>
+                    </div>
+                  </div>
+                } @else if (isBeforeEvidenceExempt()) {
+                  <div class="baseline-exempt-card">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0284c7" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+                    </svg>
+                    <div>
+                      <strong>Before Evidence Exemption Active</strong>
+                      <p>Deliverable is fabricated from scratch / raw stock. AI evaluates seller submissions directly against contract specifications.</p>
+                    </div>
+                  </div>
+                } @else {
+                  <div class="baseline-pending-card">
+                    <p>No baseline before-evidence recorded yet.</p>
+                    @if (currentRole === 'buyer' && projectData.project.is_home_renovation) {
+                      <div class="buyer-baseline-prompt">
+                        <span class="badge-mandatory">MANDATORY FOR HOME RENOVATION</span>
+                        <p>Please capture your pre-work site baseline photo now:</p>
+                        <app-live-camera
+                          [projectId]="projectId"
+                          evidenceType="before_evidence"
+                          label="Buyer Pre-Work Site Baseline Capture"
+                          (evidenceUploaded)="handleEvidenceSuccess($event)"
+                        ></app-live-camera>
+                      </div>
+                    }
+                  </div>
+                }
+              </div>
+
+              <!-- Section 3.0: Cryptographic Milestone Fulfillment Desk (Only visible when seller accepts agreement) -->
+              @if (isProjectActive()) {
+                <div class="clause-box fulfillment-nav-clause">
+                  <div class="clause-heading">
+                    <span class="clause-num">Section 3.0</span>
+                    <span class="clause-title">Cryptographic Milestone Fulfillment Desk</span>
+                  </div>
+                  <div class="evidence-subtext">
+                    Hardware live camera capture, sequential milestone submissions, and PayPal escrow payout releases are managed on the dedicated fulfillment desk.
+                  </div>
+                  <div class="fulfillment-nav-card">
+                    <div class="nav-icon-seal">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                      </svg>
+                    </div>
+                    <div class="nav-desc-col">
+                      <h4>Agreement Terms Formally Ratified & Locked</h4>
+                      <p>Hardware live camera capture, sequential milestone submissions, and PayPal escrow payout approvals have transitioned to the Fulfillment Desk.</p>
+                    </div>
+                    <button type="button" (click)="goToFulfillment()" class="btn-open-fulfillment-page">
+                      <span>Open Milestone Fulfillment Desk &rarr;</span>
+                    </button>
+                  </div>
+                </div>
+              }
+
+              <!-- Escrow Certification Seal -->
+              <div class="doc-footer-seal">
+                <div class="seal-badge">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                  </svg>
+                  <span>PROOFLENS VERIFIED</span>
+                </div>
+                <div class="seal-text">
+                  This agreement is cryptographic proof-bound and backed by the PayPal Sandbox Escrow Protection Protocol.
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- RIGHT: Negotiation Console & AI Revision Desk -->
+          <section class="negotiation-section">
+            <div class="corporate-card negotiation-card">
+              <div class="card-title-row">
+                <div>
+                  <div class="card-kicker">COMMUNICATION & AUDIT TRAIL</div>
+                  <h3>Negotiation Console</h3>
+                </div>
+                <span class="active-role-tag">{{ currentRole === 'buyer' ? 'Buyer Perspective' : 'Seller Perspective' }}</span>
+              </div>
+
+              <!-- Negotiation Message Stream -->
+              <div class="activity-feed">
+                <!-- Seller Request Card -->
+                @if (projectData.agreement.latest_seller_message) {
+                  <div class="activity-card seller-activity">
+                    <div class="activity-header">
+                      <div class="activity-avatar seller-avatar">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                          <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
+                          <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+                        </svg>
+                      </div>
+                      <div class="activity-meta">
+                        <span class="activity-author">Seller / Contractor</span>
+                        <span class="activity-sub">Requested Scope Adjustment</span>
+                      </div>
+                    </div>
+                    <div class="activity-message">
+                      "{{ projectData.agreement.latest_seller_message }}"
+                    </div>
+                  </div>
+                }
+
+                <!-- Buyer Response Card -->
+                @if (projectData.agreement.latest_buyer_message) {
+                  <div class="activity-card buyer-activity">
+                    <div class="activity-header">
+                      <div class="activity-avatar buyer-avatar">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                      </div>
+                      <div class="activity-meta">
+                        <span class="activity-author">Buyer / Client</span>
+                        <span class="activity-sub">Revised Terms Response</span>
+                      </div>
+                    </div>
+                    <div class="activity-message">
+                      "{{ projectData.agreement.latest_buyer_message }}"
+                    </div>
+                  </div>
+                }
+
+                <!-- Empty state if fresh -->
+                @if (!projectData.agreement.latest_seller_message && !projectData.agreement.latest_buyer_message) {
+                  <div class="empty-activity">
+                    <div class="empty-icon">
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                      </svg>
+                    </div>
+                    <p>No changes requested yet. Both parties can propose adjustments or accept the agreement as drafted.</p>
+                  </div>
+                }
+              </div>
+
+              <!-- ============================================== -->
+              <!-- BUYER CONSOLE: AI RE-DRAFT & SEND REVISED TERMS -->
+              <!-- ============================================== -->
+              @if (currentRole === 'buyer' && projectData.project.status !== 'accepted') {
+                <div class="buyer-ai-desk">
+                  <div class="desk-header">
+                    <div class="desk-title">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2">
+                        <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+                      </svg>
+                      <h4>AI Contract Revision Desk</h4>
+                    </div>
+                    <span class="desk-hint">Draft Version {{ (projectData.agreement.version || 1) + 1 }}.0</span>
+                  </div>
+
+                  <p class="desk-desc">
+                    Respond to the seller's request. ProofLens Legal AI will regenerate the formal clauses and required proof criteria.
+                  </p>
+
+                  <div class="input-group">
+                    <label>Your Response / Revision Instructions for AI</label>
+                    <textarea
+                      [(ngModel)]="buyerRevisionNote"
+                      rows="3"
+                      placeholder="e.g., I accept the 5-day delivery schedule, provided contractor submits daily progress photos and video of completed installation..."
+                      class="corporate-textarea"
+                    ></textarea>
+                  </div>
+
+                  <!-- Action Button: Regenerate with AI -->
+                  <div class="desk-action-bar">
+                    <button
+                      (click)="regenerateAgreementWithAi()"
+                      [disabled]="!buyerRevisionNote.trim() || isRegenerating"
+                      class="btn-pp-ai-draft"
+                    >
+                      <span>{{ isRegenerating ? 'AI Drafting Revised Terms...' : 'Re-draft Agreement with AI' }}</span>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <line x1="5" y1="12" x2="19" y2="12"/>
+                        <polyline points="12 5 19 12 12 19"/>
+                      </svg>
+                    </button>
+                  </div>
+
+                  <!-- AI Preview Card if generated -->
+                  @if (regeneratedPreview) {
+                    <div class="ai-preview-card">
+                      <div class="preview-header">
+                        <span class="preview-badge">AI Draft Preview (v{{ (projectData.agreement.version || 1) + 1 }}.0)</span>
+                        <span class="changes-count">Ready to Dispatch</span>
+                      </div>
+
+                      <div class="summary-pill">
+                        <strong>Summary of Revisions:</strong> {{ regeneratedPreview.summary_of_changes }}
+                      </div>
+
+                      <div class="preview-clause">
+                        <div class="preview-label">Updated Legal Terms:</div>
+                        <div class="preview-text">{{ regeneratedPreview.contract_terms }}</div>
+                      </div>
+
+                      <div class="preview-clause">
+                        <div class="preview-label">Updated Evidence Proof Criteria:</div>
+                        <div class="preview-text">{{ regeneratedPreview.evidence_requirements }}</div>
+                      </div>
+
+                      @if (regeneratedPreview.milestones && regeneratedPreview.milestones.length > 0) {
+                        <div class="preview-clause">
+                          <div class="preview-label">Updated Milestone Schedule & Deadlines:</div>
+                          <div class="preview-ms-chips">
+                            @for (ms of regeneratedPreview.milestones; track $index) {
+                              <div class="preview-ms-chip">
+                                <div class="preview-ms-left">
+                                  <span class="preview-ms-num">M{{ $index + 1 }}</span>
+                                  <span class="preview-ms-name">{{ ms.title }}</span>
+                                </div>
+                                <div class="preview-ms-right">
+                                  <span class="preview-ms-deadline">
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                      <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                                      <line x1="16" y1="2" x2="16" y2="6"/>
+                                      <line x1="8" y1="2" x2="8" y2="6"/>
+                                    </svg>
+                                    Due: {{ ms.deadline || 'Per Schedule' }}
+                                  </span>
+                                  <span class="preview-ms-price">${{ Number(ms.price_allocation).toFixed(2) }}</span>
+                                </div>
+                              </div>
+                            }
+                          </div>
+                        </div>
+                      }
+
+                      <div class="preview-actions">
+                        <button
+                          (click)="sendUpdatedTermsToSeller()"
+                          [disabled]="isSavingTerms"
+                          class="btn-dispatch-terms"
+                        >
+                          <span>{{ isSavingTerms ? 'Sending to Seller...' : 'Send Updated Terms (v' + ((projectData.agreement.version || 1) + 1) + ') to Seller' }}</span>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                            <line x1="22" y1="2" x2="11" y2="13"/>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  }
+                </div>
+              }
+
+              <!-- ============================================== -->
+              <!-- SELLER CONSOLE: REQUEST CHANGES OR ACCEPT     -->
+              <!-- ============================================== -->
+              @if (currentRole === 'seller' && projectData.project.status !== 'accepted') {
+                <div class="seller-action-box">
+                  <div class="seller-box-header">
+                    <h4>Request Term or Schedule Changes</h4>
+                    <span class="seller-hint">Sends counter-proposal to buyer</span>
+                  </div>
+
+                  <div class="input-group">
+                    <label>Requested Modifications</label>
+                    <textarea
+                      [(ngModel)]="sellerProposalMessage"
+                      rows="3"
+                      placeholder="e.g., Need 5 days instead of 3 due to materials ordering, and total budget adjusted to $550..."
+                      class="corporate-textarea"
+                    ></textarea>
+                  </div>
+
+                  <div class="seller-action-row">
+                    <button
+                      (click)="sendSellerProposal()"
+                      [disabled]="!sellerProposalMessage.trim() || isSending"
+                      class="btn-send-seller-request"
+                    >
+                      <span>Send Change Request to Buyer</span>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <line x1="5" y1="12" x2="19" y2="12"/>
+                        <polyline points="12 5 19 12 12 19"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              }
+            </div>
+          </section>
+        </main>
+
+        <!-- Scope Changes Revision Room Modal Sub-View -->
+        @if (showRevisionRoom) {
+          <app-revision-room
+            [projectId]="projectId"
+            [currentRole]="currentRole"
+            [projectTitle]="projectData?.project?.title || ''"
+            [initialScopeChange]="activeScopeChange"
+            (closed)="closeRevisionRoom()"
+            (scopeAccepted)="onScopeChangeAccepted($event)"
+          ></app-revision-room>
+        }
+      }
+    
+      <!-- Contractor Rejection Modal -->
+      @if (isRejectModalOpen) {
+        <div class="reject-modal-backdrop" (click)="closeRejectModal()">
+          <div class="reject-modal-window" (click)="$event.stopPropagation()">
+            <div class="modal-danger-stripe"></div>
+            <div class="reject-modal-header">
+              <div class="reject-header-left">
+                <div class="reject-icon-box">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.3">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="15" y1="9" x2="9" y2="15"/>
+                    <line x1="9" y1="9" x2="15" y2="15"/>
+                  </svg>
+                </div>
+                <div>
+                  <h3>Reject Agreement Terms</h3>
+                  <p>Provide detailed feedback so the buyer can adjust the terms</p>
+                </div>
+              </div>
+              <button type="button" (click)="closeRejectModal()" class="btn-close-modal" aria-label="Close">&times;</button>
+            </div>
+
+            <div class="reject-modal-body">
+              <label class="reject-field-label">Quick Reasons (Click to add):</label>
+              <div class="quick-chips-row">
+                <button type="button" (click)="addQuickReason('Timeline/deadlines are too tight for required delivery.')" class="quick-chip">⏱️ Timeline too tight</button>
+                <button type="button" (click)="addQuickReason('Milestone price allocation is insufficient for materials.')" class="quick-chip">💰 Insufficient budget</button>
+                <button type="button" (click)="addQuickReason('Evidence verification criteria needs clearer specifications.')" class="quick-chip">📋 Unclear verification proof</button>
+                <button type="button" (click)="addQuickReason('Project scope of work requires modifications.')" class="quick-chip">🔨 Scope needs adjustment</button>
+              </div>
+
+              <label class="reject-field-label" for="rejectionReasonText">Detailed Rejection Reason for Buyer:</label>
+              <textarea
+                id="rejectionReasonText"
+                [(ngModel)]="rejectionReasonText"
+                rows="4"
+                placeholder="Explain why you are declining the agreement and what terms you need changed (e.g. adjust deadline, raise milestone 1 budget)..."
+                class="reject-textarea"
+              ></textarea>
+            </div>
+
+            <div class="reject-modal-footer">
+              <button type="button" (click)="closeRejectModal()" class="btn-reject-cancel">Cancel</button>
+              <button
+                type="button"
+                (click)="submitAgreementRejection()"
+                [disabled]="!rejectionReasonText.trim() || isSubmittingRejection"
+                class="btn-reject-confirm"
+                [class.is-loading]="isSubmittingRejection"
+              >
+                @if (isSubmittingRejection) {
+                  <span class="btn-spinner"></span>
+                  <span>Submitting Rejection...</span>
+                } @else {
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13"/>
+                    <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                  </svg>
+                  <span>Confirm Rejection &amp; Send to Buyer</span>
+                }
+              </button>
+            </div>
+          </div>
+        </div>
+      }
+</div>

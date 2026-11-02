@@ -1,0 +1,1506 @@
+<div class="fulfillment-shell">
+      @if (isLoading) {
+        <div class="loading-state-card">
+          <div class="spinner"></div>
+          <p>Loading project fulfillment desk...</p>
+        </div>
+      } @else if (!projectData) {
+        <div class="error-state-card">
+          <h3>Project Not Found</h3>
+          <p>Unable to retrieve project details.</p>
+          <button (click)="goBack()" class="btn-primary-action">Return to Dashboard</button>
+        </div>
+      } @else if (!isProjectAccepted()) {
+        <!-- Guard Card: Not yet accepted -->
+        <div class="unaccepted-guard-card">
+          <div class="guard-icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#b45309" stroke-width="2.2">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+          </div>
+          <h2>Milestone Fulfillment Locked</h2>
+          <p class="guard-sub">
+            The agreement terms for <strong>"{{ projectData.project.title }}"</strong> must be accepted by the contractor before milestone fulfillment and camera evidence tools can unlock.
+          </p>
+          <div class="guard-status-pill">
+            Current Status: <strong>{{ formatStatus(projectData.project.status) }}</strong>
+          </div>
+          <div class="guard-actions">
+            <button (click)="goToAgreement()" class="btn-primary-action">
+              &larr; Open Agreement & Review Terms
+            </button>
+          </div>
+        </div>
+      } @else {
+        <!-- ACCEPTED PROJECT FULFILLMENT DESK -->
+        <header class="fulfillment-header-card">
+          <div class="header-top-row">
+            <div class="header-left-col">
+              <button (click)="goToAgreement()" class="btn-back-link">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <path d="M19 12H5M12 19l-7-7 7-7"/>
+                </svg>
+                <span>View Agreement & Scope</span>
+              </button>
+              <div class="title-meta-cluster">
+                <h1>{{ projectData.project.title }}</h1>
+                <div class="badges-row">
+                  <span class="badge-industry">{{ projectData.project.industry_type || 'General' }}</span>
+                  <span class="badge-status-accepted">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                    <span>TERMS LOCKED & ESCROW FUNDED</span>
+                  </span>
+                  @if (getEffectiveProjectDeadline()) {
+                    <span class="badge-deadline">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                        <line x1="16" y1="2" x2="16" y2="6"/>
+                        <line x1="8" y1="2" x2="8" y2="6"/>
+                        <line x1="3" y1="10" x2="21" y2="10"/>
+                      </svg>
+                      <span>Target Due: {{ getEffectiveProjectDeadline() }}</span>
+                    </span>
+                  }
+                  <span class="badge-verified-protocol">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    <span>PayPal Escrow Protected</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div class="header-right-col">
+              <div class="escrow-budget-card">
+                <span class="budget-label">TOTAL ESCROW SUM</span>
+                <span class="budget-val">${{ Number(projectData.project.total_price).toFixed(2) }} USD</span>
+              </div>
+              <button (click)="openInvoicesDrawer()" class="btn-invoices-summary" title="View all settlement invoices and tax receipts for this project">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                  <line x1="16" y1="13" x2="8" y2="13"/>
+                  <line x1="16" y1="17" x2="8" y2="17"/>
+                </svg>
+                <span>Invoices & Receipts</span>
+                @if (getPaidInvoicesCount() > 0) {
+                  <span class="active-scope-badge" style="background:#059669;color:white;">{{ getPaidInvoicesCount() }} Paid</span>
+                }
+              </button>
+              <button (click)="openTrackingModal()" class="btn-invoices-summary" title="Add shipment and delivery tracking details to PayPal Order">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <rect x="1" y="3" width="15" height="13"/>
+                  <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
+                  <circle cx="5.5" cy="18.5" r="2.5"/>
+                  <circle cx="18.5" cy="18.5" r="2.5"/>
+                </svg>
+                <span>Shipment Tracking</span>
+              </button>
+              <button (click)="openVoidModal()" class="btn-void-summary" title="Void authorized escrow hold and release funds">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                </svg>
+                <span>Void Escrow</span>
+              </button>
+              <button (click)="toggleRole()" class="btn-switch-role" title="Switch between Contractor and Buyer perspectives">
+                <span>View as: <strong>{{ currentRole | uppercase }}</strong></span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/>
+                </svg>
+              </button>
+              <button (click)="openRevisionRoom()" class="btn-scope-change" title="Request or view project scope changes and addenda">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+                <span>Request Scope Change</span>
+                @if (activeScopeChange && activeScopeChange.status !== 'ACCEPTED') {
+                  <span class="active-scope-badge">{{ activeScopeChange.status === 'PENDING_FUNDS' ? 'Pending Escrow' : 'Negotiating' }}</span>
+                }
+              </button>
+            </div>
+          </div>
+
+          <!-- PayPal Escrow Authorization Status Banners -->
+          @if (isConfirmingAuth) {
+            <div style="margin: 0 0 16px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 12px 16px; display: flex; align-items: center; gap: 10px;">
+              <span class="mini-spinner" style="border: 2px solid #93c5fd; border-top-color: #1d4ed8; width: 14px; height: 14px; border-radius: 50%; display: inline-block; animation: spin 0.8s linear infinite;"></span>
+              <span style="color: #1e40af; font-weight: 500; font-size: 13.5px;">Securing PayPal Escrow Authorization on 29-day hold...</span>
+            </div>
+          }
+          @if (escrowAuthSuccess) {
+            <div style="margin: 0 0 16px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 12px 16px; display: flex; align-items: center; gap: 10px;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#059669" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span style="color: #065f46; font-weight: 500; font-size: 13.5px;">PayPal Escrow Secured! Full project funds are locked safely on 29-day PayPal hold.</span>
+            </div>
+          }
+          @if (!isEscrowAuthorized() && currentRole === 'buyer' && getPayPalApprovalUrl()) {
+            <div style="margin: 0 0 16px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 14px 18px; display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <strong style="color: #92400e; font-size: 14px;">PayPal Escrow Deposit Required</strong>
+                <p style="margin: 4px 0 0; color: #b45309; font-size: 13px;">Please authorize the ${{ Number(projectData.project.total_price).toFixed(2) }} USD escrow hold to fund this project.</p>
+              </div>
+              <a [href]="getPayPalApprovalUrl()" style="text-decoration: none; background: #0070ba; color: #fff; padding: 8px 16px; border-radius: 6px; font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;">
+                <span>Authorize via PayPal &rarr;</span>
+              </a>
+            </div>
+          }
+
+          <!-- Warranty Lock-In (Retainage Vault) Active Banner -->
+          @if (isWarrantyPeriodActive()) {
+            <div class="warranty-status-banner" [class.is-disputed]="isWarrantyDisputeActive()">
+              <div class="warranty-status-col">
+                <div class="warranty-badge-row">
+                  <span class="status-badge" [ngClass]="isWarrantyDisputeActive() ? 'badge-amber' : 'badge-emerald'">
+                    {{ isWarrantyDisputeActive() ? 'WARRANTY PAYOUT FROZEN' : 'WARRANTY RETAINAGE PERIOD ACTIVE' }}
+                  </span>
+                  <span class="warranty-vault-pill">PayPal Vault Retainage</span>
+                </div>
+                <h3 class="warranty-banner-title">
+                  ${{ (projectData?.agreement?.lock_in_amount || 0).toFixed(2) }} USD Retainage Held in Escrow Vault
+                </h3>
+                <p class="warranty-banner-desc">
+                  @if (isWarrantyDisputeActive()) {
+                    <strong>Inspection Dispute Active:</strong> Buyer has flagged an issue with deliverables. Automated retainage release is halted until the dispute is resolved.
+                  } @else {
+                    All milestones completed! Retainage is reserved for a <strong>{{ projectData?.agreement?.lock_in_days }}-day warranty hold</strong> to check against transit defects or installation issues.
+                    Automated release scheduled for <strong>{{ projectData?.agreement?.warranty_end_date | date:'mediumDate' }}</strong> ({{ getWarrantyDaysRemaining() }} days remaining).
+                  }
+                </p>
+              </div>
+
+              <div class="warranty-action-col">
+                <button
+                  type="button"
+                  (click)="toggleWarrantyDispute()"
+                  [disabled]="isTogglingDispute"
+                  class="btn-dispute-toggle"
+                  [class.is-resolve]="isWarrantyDisputeActive()"
+                >
+                  @if (isWarrantyDisputeActive()) {
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg><span>Resolve Dispute &amp; Resume Payout</span>
+                  } @else {
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><span>Flag Defect / Pause Retainage Payout</span>
+                  }
+                </button>
+              </div>
+            </div>
+          }
+
+          <!-- Sequential Milestone Progression Bar -->
+          @if (milestones && milestones.length > 0) {
+            <div class="sequential-progress-container">
+              <div class="progress-bar-title">Sequential Milestone Progress & Escrow Release Status</div>
+              <div class="milestones-track-row">
+                @for (ms of milestones; track $index) {
+                  <div
+                    class="track-step-node"
+                    [class.is-approved]="isMilestoneApproved($index)"
+                    [class.is-selected]="selectedMilestoneIndex === $index"
+                    [class.is-locked]="!isMilestoneUnlocked($index)"
+                    [class.is-addendum]="ms.is_addendum"
+                    (click)="selectMilestone($index)"
+                  >
+                    <div class="step-marker" [class.marker-addendum]="ms.is_addendum">
+                      @if (isMilestoneApproved($index)) {
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                      } @else if (!isMilestoneUnlocked($index)) {
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                      } @else if (isMilestoneAwaitingReview($index)) {
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                      } @else {
+                        <span>{{ $index + 1 }}</span>
+                      }
+                    </div>
+                    <div class="step-info">
+                      <div class="step-title-line">
+                        <span class="step-num">Milestone {{ $index + 1 }}</span>
+                        @if (ms.is_addendum) {
+                          <span class="addendum-timeline-tag">Addendum (v{{ ms.version || 2 }})</span>
+                        }
+                      </div>
+                      <span class="step-title">{{ ms.title }}</span>
+                      <span class="step-price">${{ Number(ms.price_allocation).toFixed(2) }} USD</span>
+                    </div>
+                  </div>
+                  @if ($index < milestones.length - 1) {
+                    <div class="track-connector" [class.is-passed]="isMilestoneApproved($index)"></div>
+                  }
+                }
+              </div>
+            </div>
+          }
+        </header>
+
+        <!-- Main Section 3.0 Fulfillment Desk -->
+        <main class="fulfillment-body">
+          <div class="fulfillment-desk-card">
+            <div class="clause-heading">
+              <div class="clause-num-tag">Section 3.0</div>
+              <div class="clause-title-group">
+                <h2>Cryptographic Milestone Fulfillment Desk</h2>
+                <p class="clause-subtitle">
+                  Direct hardware live camera capture and sequential evidence submissions. ProofLens AI compares seller submissions against agreed criteria and buyer's baseline evidence.
+                </p>
+              </div>
+            </div>
+
+            <!-- Milestone Selector Tabs -->
+            @if (milestones && milestones.length > 0) {
+              <div class="ms-selector-tabs">
+                @for (ms of milestones; track $index) {
+                  <button
+                    type="button"
+                    (click)="selectMilestone($index)"
+                    [class.active-ms-tab]="selectedMilestoneIndex === $index"
+                    class="btn-select-ms"
+                  >
+                    <div class="ms-tab-header">
+                      <div class="tab-label-group">
+                        <span class="tab-ms-num">Milestone {{ $index + 1 }}</span>
+                        @if (ms.is_addendum) {
+                          <span class="tab-addendum-tag">Addendum</span>
+                        }
+                      </div>
+                      <span class="tab-ms-price">${{ Number(ms.price_allocation).toFixed(2) }}</span>
+                    </div>
+                    <div class="tab-ms-name">{{ ms.title }}</div>
+                    <div class="tab-ms-status">
+                      @if (isMilestoneApproved($index)) {
+                        <span class="pill-verified">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                          <span>Approved</span>
+                        </span>
+                      } @else if (isMilestoneResubmissionRequested($index)) {
+                        <span class="pill-resubmission">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                          <span>Resubmission</span>
+                        </span>
+                      } @else if (isMilestoneFlagged($index)) {
+                        <span class="pill-flagged">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                          <span>Action Required</span>
+                        </span>
+                      } @else if (isMilestoneAwaitingReview($index)) {
+                        <span class="pill-review">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                          <span>In Review</span>
+                        </span>
+                      } @else if (!isMilestoneUnlocked($index)) {
+                        <span class="pill-locked">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                          <span>Locked</span>
+                        </span>
+                      } @else {
+                        <span class="pill-needed">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                          <span>{{ currentRole === 'buyer' ? 'Awaiting Proof' : 'Active Proof Screen' }}</span>
+                        </span>
+                      }
+                    </div>
+                  </button>
+                }
+              </div>
+
+              <!-- Selected Milestone Focus Card -->
+              @if (milestones[selectedMilestoneIndex]; as targetMs) {
+                <div class="target-ms-card">
+                  <div class="target-ms-top">
+                    <div class="target-title-col">
+                      <div class="target-badge-row">
+                        <span class="target-badge">Selected for Verification: Milestone {{ selectedMilestoneIndex + 1 }}</span>
+                        @if (targetMs.is_addendum) {
+                          <span class="badge-addendum-prominent">Supplementary Addendum Milestone (v{{ targetMs.version || 2 }})</span>
+                        }
+                      </div>
+                      <h4>{{ targetMs.title }}</h4>
+                      <p class="target-desc">{{ targetMs.description }}</p>
+                    </div>
+                    <div class="target-price-tag">
+                      ${{ Number(targetMs.price_allocation).toFixed(2) }} USD
+                    </div>
+                  </div>
+
+                  <div class="target-ms-req">
+                    <div class="req-title-tag">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                      </svg>
+                      <span>Mandatory Verification Requirement (PayPal Release Gate):</span>
+                    </div>
+                    <p class="req-text">{{ targetMs.proof_required }}</p>
+                    <div class="target-due-row">
+                      Target Due Date: <strong>{{ targetMs.deadline || getMilestoneFallbackDeadline(selectedMilestoneIndex) }}</strong>
+                    </div>
+                  </div>
+
+                  @if (getBeforeEvidence()) {
+                    <div class="target-baseline-indicator">
+                      <span class="indicator-dot"></span>
+                      <span>AI Multimodal comparison will check this live capture against Buyer Baseline Before-Evidence.</span>
+                    </div>
+                  }
+                </div>
+
+                <!-- Execution Stage States -->
+                <div class="stage-action-area">
+                  @if (!isMilestoneUnlocked(selectedMilestoneIndex)) {
+                    <!-- Sequential Lock -->
+                    <div class="evidence-locked-card">
+                      <div class="locked-icon-shield">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#b45309" stroke-width="2">
+                          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                        </svg>
+                      </div>
+                      <div class="locked-content">
+                        <h4>Milestone {{ selectedMilestoneIndex + 1 }} is Sequentially Locked</h4>
+                        <p>
+                          Sequential Milestone Restriction: Evidence can only be captured for Milestone {{ selectedMilestoneIndex + 1 }} after Milestone {{ selectedMilestoneIndex }} is strictly marked as APPROVED by the buyer.
+                        </p>
+                      </div>
+                    </div>
+                  } @else if (isMilestoneApproved(selectedMilestoneIndex)) {
+                    <!-- Approved Notice -->
+                    <div class="before-captured-card is-success-border">
+                      <div class="captured-head">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5">
+                          <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                        <strong>Milestone {{ selectedMilestoneIndex + 1 }} Verified & Approved</strong>
+                      </div>
+                      <p class="approved-desc">
+                        The buyer has reviewed and approved the cryptographic evidence for this milestone. Escrow funds (${{ Number(targetMs.price_allocation).toFixed(2) }} USD) have been captured and settled via PayPal.
+                      </p>
+
+                      <!-- Official PayPal Invoicing v2 Card -->
+                      <div class="paypal-invoice-banner">
+                        <div class="inv-head-row">
+                          <div style="display:flex; align-items:center; gap:0.5rem;">
+                            <span class="inv-badge-paid">PAYPAL INVOICE PAID</span>
+                            <span class="inv-number-code">
+                              {{ getMilestoneInvoice(selectedMilestoneIndex)?.invoice_number || ('INV-MS' + (selectedMilestoneIndex + 1)) }}
+                            </span>
+                          </div>
+                          <span class="inv-amount-tag">
+                            ${{ Number(targetMs.price_allocation).toFixed(2) }} USD
+                          </span>
+                        </div>
+
+                        <p class="inv-desc-text">
+                          Authoritative settlement recorded in PayPal Invoicing v2. Milestone capture reference:
+                          <code>{{ getMilestoneInvoice(selectedMilestoneIndex)?.paypal_capture_id || 'SETTLED' }}</code>
+                        </p>
+
+                        <div class="inv-actions-row">
+                          <button (click)="openReceiptModal(selectedMilestoneIndex)" class="btn-receipt-action">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                              <polyline points="14 2 14 8 20 8"/>
+                              <line x1="16" y1="13" x2="8" y2="13"/>
+                              <line x1="16" y1="17" x2="8" y2="17"/>
+                            </svg>
+                            <span>Print / View Official Receipt</span>
+                          </button>
+
+                          <a [href]="getPayPalInvoiceUrl(selectedMilestoneIndex)" target="_blank" rel="noopener noreferrer" class="btn-paypal-portal">
+                            <span>View on PayPal Portal</span>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                              <polyline points="15 3 21 3 21 9"/>
+                              <line x1="10" y1="14" x2="21" y2="3"/>
+                            </svg>
+                          </a>
+
+                          <button (click)="openRefundModal(selectedMilestoneIndex)" class="btn-refund-action" title="Issue partial or full refund for this milestone payment">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                              <path d="M3 3v5h5"/>
+                            </svg>
+                            <span>Issue Refund</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  } @else if (isMilestoneResubmissionRequested(selectedMilestoneIndex)) {
+                    <!-- Buyer Requested Resubmission State -->
+                    <div class="before-captured-card is-corp-notice">
+                      <div class="captured-head is-navy-text">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.5">
+                          <circle cx="12" cy="12" r="10"/>
+                          <line x1="12" y1="8" x2="12" y2="12"/>
+                          <line x1="12" y1="16" x2="12.01" y2="16"/>
+                        </svg>
+                        <strong>Evidence Resubmission Requested for Milestone {{ selectedMilestoneIndex + 1 }}</strong>
+                      </div>
+                      <div class="rejection-feedback-banner">
+                        <div class="rejection-feedback-label">BUYER FEEDBACK & RESUBMISSION CRITERIA:</div>
+                        <p class="rejection-feedback-text">"{{ getMilestoneRejectionReason(selectedMilestoneIndex) }}"</p>
+                      </div>
+
+                      @if (currentRole === 'seller') {
+                        <div class="seller-recapture-container">
+                          <div class="recapture-callout">
+                            <span class="recapture-badge">ACTION REQUIRED FOR CONTRACTOR</span>
+                            <p>
+                              @if (isDigitalProject()) {
+                                Please review the buyer's feedback above and submit updated deliverable files or images below. ProofLens AI will re-audit the deliverable for scope compliance and synthetic AI watermarks.
+                              } @else {
+                                Please review the buyer's feedback above and capture a new live physical frame directly with the camera below.
+                              }
+                            </p>
+                          </div>
+                          @if (isDigitalProject()) {
+                            <div class="digital-submission-desk">
+                              <div class="digital-tabs-bar">
+                                <button
+                                  type="button"
+                                  class="digital-tab-btn"
+                                  [class.is-active]="digitalSubmissionMode === 'upload'"
+                                  (click)="digitalSubmissionMode = 'upload'"
+                                >
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                  <span>Upload Corrected Files</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  class="digital-tab-btn"
+                                  [class.is-active]="digitalSubmissionMode === 'camera'"
+                                  (click)="digitalSubmissionMode = 'camera'"
+                                >
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                                  <span>Live Camera</span>
+                                </button>
+                              </div>
+
+                              @if (digitalSubmissionMode === 'upload') {
+                                <div class="digital-upload-container">
+                                  <div
+                                    class="digital-dropzone"
+                                    [class.is-dragging]="isDragOverDropzone"
+                                    [class.has-file]="!!selectedDigitalFile"
+                                    (dragover)="onDragOver($event)"
+                                    (dragleave)="onDragLeave($event)"
+                                    (drop)="onDigitalFileDropped($event)"
+                                    (click)="resubmitFileInput.click()"
+                                  >
+                                    <input
+                                      #resubmitFileInput
+                                      type="file"
+                                      style="display: none;"
+                                      accept="image/png,image/jpeg,image/webp,image/svg+xml,application/pdf,application/zip,.fig,.ai,.psd"
+                                      (change)="onDigitalFileSelected($event)"
+                                    />
+                                    @if (!selectedDigitalFile) {
+                                      <div class="dropzone-empty">
+                                        <div class="dropzone-icon">
+                                          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                        </div>
+                                        <div class="dropzone-main-text">Click or drag updated deliverable to resubmit</div>
+                                        <div class="dropzone-sub-text">PNG, JPG, WebP, SVG, PDF, ZIP, AI, FIG, PSD (Max 50MB)</div>
+                                      </div>
+                                    } @else {
+                                      <div class="dropzone-selected-preview" (click)="$event.stopPropagation()">
+                                        @if (digitalFilePreviewUrl) {
+                                          <img [src]="digitalFilePreviewUrl" alt="Selected deliverable" class="preview-img" />
+                                        } @else {
+                                          <div class="preview-file-icon">
+                                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                                          </div>
+                                        }
+                                        <div class="preview-file-info">
+                                          <span class="preview-file-name">{{ selectedDigitalFile.name }}</span>
+                                          <span class="preview-file-size">{{ formatFileSize(selectedDigitalFile.size) }}</span>
+                                        </div>
+                                        <button type="button" class="btn-clear-file" (click)="clearSelectedFile()">
+                                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                          <span>Remove</span>
+                                        </button>
+                                      </div>
+                                    }
+                                  </div>
+
+                                  @if (digitalUploadError) {
+                                    <div class="upload-error-notice">
+                                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                                      <span>{{ digitalUploadError }}</span>
+                                    </div>
+                                  }
+
+                                  <div class="digital-actions-bar">
+                                    <button
+                                      type="button"
+                                      class="btn-submit-digital"
+                                      [disabled]="!selectedDigitalFile || isUploadingDigitalFile"
+                                      (click)="submitDigitalDeliverable()"
+                                    >
+                                      @if (isUploadingDigitalFile) {
+                                        <span class="btn-spinner"></span>
+                                        <span>Auditing AI Watermarks & Resubmitting...</span>
+                                      } @else {
+                                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                        <span>Resubmit Deliverable & Run AI Audit</span>
+                                      }
+                                    </button>
+                                  </div>
+                                </div>
+                              } @else {
+                                <div class="recapture-active-box">
+                                  <app-live-camera
+                                    [projectId]="projectId"
+                                    evidenceType="milestone_evidence"
+                                    [milestoneIndex]="selectedMilestoneIndex"
+                                    [label]="'Resubmit Proof for Milestone ' + (selectedMilestoneIndex + 1)"
+                                    (evidenceUploaded)="handleRecaptureSuccess($event)"
+                                  ></app-live-camera>
+                                </div>
+                              }
+                            </div>
+                          } @else {
+                            <div class="recapture-active-box">
+                              <div class="recapture-box-head">
+                                <span><strong>Live Camera Resubmission Desk:</strong></span>
+                              </div>
+                              <app-live-camera
+                                [projectId]="projectId"
+                                evidenceType="milestone_evidence"
+                                [milestoneIndex]="selectedMilestoneIndex"
+                                [label]="'Resubmit Live Proof for Milestone ' + (selectedMilestoneIndex + 1)"
+                                (evidenceUploaded)="handleRecaptureSuccess($event)"
+                              ></app-live-camera>
+                            </div>
+                          }
+                        </div>
+                      } @else {
+                        <div class="buyer-flagged-box">
+                          <div class="flagged-status-badge">AWAITING CONTRACTOR RESUBMISSION</div>
+                          <p>
+                            You have requested updated evidence for this milestone. Escrow release will remain locked until the contractor submits updated proof for your review.
+                          </p>
+                          <button type="button" (click)="fetchProject()" [disabled]="isRefreshing" class="btn-refresh-status" [class.is-loading]="isRefreshing">
+                            <svg [class.spin-animation]="isRefreshing" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                            <span>{{ isRefreshing ? 'Checking...' : 'Check for Updated Capture' }}</span>
+                          </button>
+                        </div>
+                      }
+                    </div>
+                  } @else if (isMilestoneFlagged(selectedMilestoneIndex)) {
+                    <!-- Clean Corporate Verification Action Card (Never Garish Red) -->
+                    <div class="before-captured-card is-corp-notice">
+                      <div class="captured-head is-navy-text">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.5">
+                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                        @if (hasSpoofingFlag(getAllEvidenceForMilestone(selectedMilestoneIndex))) {
+                          <strong>AI Anti-Spoofing Alert: Evidence Flagged for Milestone {{ selectedMilestoneIndex + 1 }}</strong>
+                        } @else if (isDigitalProject()) {
+                          <strong>AI Watermark Alert: Clean Digital Deliverable Required for Milestone {{ selectedMilestoneIndex + 1 }}</strong>
+                        } @else {
+                          <strong>Physical Evidence Recapture Required for Milestone {{ selectedMilestoneIndex + 1 }}</strong>
+                        }
+                      </div>
+                      <p class="review-desc is-corp-desc">
+                        @if (hasSpoofingFlag(getAllEvidenceForMilestone(selectedMilestoneIndex))) {
+                          The AI verification engine detected potential spoofing (e.g. Moir&eacute;&eacute; interference, screen display reproduction, or visible display bezels). Escrow disbursement is locked in PayPal escrow until authentic deliverable proof is provided.
+                        } @else if (isDigitalProject()) {
+                          The automated visual integrity audit detected indicators of synthetic generative AI watermarking or metadata parameters (e.g. Google SynthID, OpenAI DALL-E, Midjourney, or Stable Diffusion). Escrow disbursement is held in PayPal escrow pending authentic original assets created by the contractor.
+                        } @else {
+                          The automated visual integrity audit detected indicators of display reflection or specification deviation. Escrow disbursement is held in PayPal escrow pending authentic physical workpiece capture.
+                        }
+                      </p>
+
+                      @if (currentRole === 'seller') {
+                        <!-- Seller Recapture Desk -->
+                        <div class="seller-recapture-container">
+                          <div class="recapture-callout">
+                            <span class="recapture-badge">ACTION REQUIRED FOR CONTRACTOR</span>
+                            <p>
+                              @if (hasSpoofingFlag(getAllEvidenceForMilestone(selectedMilestoneIndex))) {
+                                Please provide authentic original deliverable files or genuine direct capture.
+                                <strong>Do not photograph a phone, monitor, or screen display.</strong>
+                              } @else if (isDigitalProject()) {
+                                Please provide authentic digital source files (e.g. SVG, layered PSD, original high-res export) created through genuine craftsmanship without synthetic AI watermarks or parameters.
+                              } @else {
+                                Please capture genuine live proof of the physical deliverable under natural workshop lighting.
+                                <strong>Do not photograph a phone, monitor, or screen display.</strong>
+                              }
+                            </p>
+                          </div>
+                          @if (isDigitalProject()) {
+                            <div class="digital-submission-desk">
+                              <div class="digital-tabs-bar">
+                                <button
+                                  type="button"
+                                  class="digital-tab-btn"
+                                  [class.is-active]="digitalSubmissionMode === 'upload'"
+                                  (click)="digitalSubmissionMode = 'upload'"
+                                >
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                  <span>Upload Clean Deliverable</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  class="digital-tab-btn"
+                                  [class.is-active]="digitalSubmissionMode === 'camera'"
+                                  (click)="digitalSubmissionMode = 'camera'"
+                                >
+                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                                  <span>Live Camera</span>
+                                </button>
+                              </div>
+
+                              @if (digitalSubmissionMode === 'upload') {
+                                <div class="digital-upload-container">
+                                  <div
+                                    class="digital-dropzone"
+                                    [class.is-dragging]="isDragOverDropzone"
+                                    [class.has-file]="!!selectedDigitalFile"
+                                    (dragover)="onDragOver($event)"
+                                    (dragleave)="onDragLeave($event)"
+                                    (drop)="onDigitalFileDropped($event)"
+                                    (click)="flaggedFileInput.click()"
+                                  >
+                                    <input
+                                      #flaggedFileInput
+                                      type="file"
+                                      style="display: none;"
+                                      accept="image/png,image/jpeg,image/webp,image/svg+xml,application/pdf,application/zip,.fig,.ai,.psd"
+                                      (change)="onDigitalFileSelected($event)"
+                                    />
+                                    @if (!selectedDigitalFile) {
+                                      <div class="dropzone-empty">
+                                        <div class="dropzone-icon">
+                                          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                        </div>
+                                        <div class="dropzone-main-text">Upload authentic deliverable without AI watermarks</div>
+                                        <div class="dropzone-sub-text">Supported: PNG, JPG, WebP, SVG, PDF, ZIP, AI, FIG, PSD</div>
+                                      </div>
+                                    } @else {
+                                      <div class="dropzone-selected-preview" (click)="$event.stopPropagation()">
+                                        @if (digitalFilePreviewUrl) {
+                                          <img [src]="digitalFilePreviewUrl" alt="Selected deliverable" class="preview-img" />
+                                        } @else {
+                                          <div class="preview-file-icon">
+                                            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                                          </div>
+                                        }
+                                        <div class="preview-file-info">
+                                          <span class="preview-file-name">{{ selectedDigitalFile.name }}</span>
+                                          <span class="preview-file-size">{{ formatFileSize(selectedDigitalFile.size) }}</span>
+                                        </div>
+                                        <button type="button" class="btn-clear-file" (click)="clearSelectedFile()">
+                                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                          <span>Remove</span>
+                                        </button>
+                                      </div>
+                                    }
+                                  </div>
+
+                                  @if (digitalUploadError) {
+                                    <div class="upload-error-notice">
+                                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                                      <span>{{ digitalUploadError }}</span>
+                                    </div>
+                                  }
+
+                                  <div class="digital-actions-bar">
+                                    <button
+                                      type="button"
+                                      class="btn-submit-digital"
+                                      [disabled]="!selectedDigitalFile || isUploadingDigitalFile"
+                                      (click)="submitDigitalDeliverable()"
+                                    >
+                                      @if (isUploadingDigitalFile) {
+                                        <span class="btn-spinner"></span>
+                                        <span>Auditing AI Watermarks & Resubmitting...</span>
+                                      } @else {
+                                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                        <span>Submit Clean Deliverable & Run AI Audit</span>
+                                      }
+                                    </button>
+                                  </div>
+                                </div>
+                              } @else {
+                                <div class="recapture-active-box">
+                                  <app-live-camera
+                                    [projectId]="projectId"
+                                    evidenceType="milestone_evidence"
+                                    [milestoneIndex]="selectedMilestoneIndex"
+                                    [label]="'Recapture Proof for Milestone ' + (selectedMilestoneIndex + 1)"
+                                    (evidenceUploaded)="handleRecaptureSuccess($event)"
+                                  ></app-live-camera>
+                                </div>
+                              }
+                            </div>
+                          } @else {
+                            @if (!isRecapturing) {
+                              <button type="button" (click)="isRecapturing = true" class="btn-corp-primary">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>
+                                </svg>
+                                <span>Recapture Live Proof for Milestone {{ selectedMilestoneIndex + 1 }}</span>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                  <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+                                </svg>
+                              </button>
+                            } @else {
+                              <div class="recapture-active-box">
+                                <div class="recapture-box-head">
+                                  <span><strong>Hardware Live Camera Recapture Desk:</strong></span>
+                                  <button type="button" (click)="isRecapturing = false" class="btn-recapture-cancel">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                    <span>Cancel Recapture</span>
+                                  </button>
+                                </div>
+                                <app-live-camera
+                                  [projectId]="projectId"
+                                  evidenceType="milestone_evidence"
+                                  [milestoneIndex]="selectedMilestoneIndex"
+                                  [label]="'Recapture Live Proof for Milestone ' + (selectedMilestoneIndex + 1)"
+                                  (evidenceUploaded)="handleRecaptureSuccess($event)"
+                                ></app-live-camera>
+                              </div>
+                            }
+                          }
+                        </div>
+                      } @else {
+                        <!-- Buyer Flagged State Notice -->
+                        <div class="buyer-flagged-box">
+                          <div class="flagged-status-badge">ESCROW RELEASE HELD</div>
+                          <p>
+                            @if (isDigitalProject()) {
+                              This submission was flagged by the automated AI watermark audit. The contractor has been instructed to upload authentic original files without generative AI watermarks. Escrow release will remain locked until authentic proof is verified.
+                            } @else {
+                              This submission was flagged by the automated anti-spoofing audit. The contractor has been instructed to recapture physical proof of work. Escrow release will remain locked until authentic physical proof is verified.
+                            }
+                          </p>
+                          <div class="buyer-review-actions-row">
+                            <button type="button" (click)="fetchProject()" [disabled]="isRefreshing" class="btn-refresh-status" [class.is-loading]="isRefreshing">
+                              <svg [class.spin-animation]="isRefreshing" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                              <span>{{ isRefreshing ? 'Checking...' : 'Check for Updated Capture' }}</span>
+                            </button>
+                            <button type="button" (click)="openRejectModal(selectedMilestoneIndex)" class="btn-reject-escrow">
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                              <span>Reject Evidence & Request Resubmission</span>
+                            </button>
+                          </div>
+                        </div>
+                      }
+                    </div>
+                  } @else if (isMilestoneAwaitingReview(selectedMilestoneIndex)) {
+                    <!-- Awaiting Review Notice -->
+                    <div class="before-captured-card is-corp-notice">
+                      <div class="captured-head is-navy-text">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.5">
+                          <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                        </svg>
+                        <strong>Evidence Submitted &mdash; Awaiting Buyer Review</strong>
+                      </div>
+                      <p class="review-desc is-corp-desc">
+                        Cryptographic proof has been recorded in the escrow ledger. The milestone is currently under review by the buyer.
+                      </p>
+                      @if (currentRole === 'buyer') {
+                        <div class="buyer-review-actions-row">
+                          <button type="button" (click)="approveMilestone(selectedMilestoneIndex)" [disabled]="isApproving" class="btn-approve-escrow" [class.is-loading]="isApproving">
+                            @if (isApproving) {
+                              <span class="btn-spinner"></span>
+                              <span>Releasing Escrow Payout...</span>
+                            } @else {
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                              <span>Approve Milestone {{ selectedMilestoneIndex + 1 }} &amp; Release Escrow Payout</span>
+                            }
+                          </button>
+                          <button type="button" (click)="openRejectModal(selectedMilestoneIndex)" class="btn-reject-escrow">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                            <span>Reject Evidence & Request Resubmission</span>
+                          </button>
+                        </div>
+                      } @else {
+                        <div class="seller-waiting-note">
+                          <span>Waiting for buyer to review and release funds...</span>
+                          <button type="button" (click)="isRecapturing = !isRecapturing" class="btn-add-angle-subtle">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                              @if (isRecapturing) {
+                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                              } @else {
+                                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                              }
+                            </svg>
+                            <span>{{ isRecapturing ? 'Cancel Recapture' : 'Add Another Angle / Recapture' }}</span>
+                          </button>
+                          <button (click)="fetchProject()" [disabled]="isRefreshing" class="btn-refresh-status" [class.is-loading]="isRefreshing">
+                            <svg [class.spin-animation]="isRefreshing" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                            <span>{{ isRefreshing ? 'Refreshing...' : 'Refresh Status' }}</span>
+                          </button>
+                        </div>
+                        @if (isRecapturing) {
+                          <div class="recapture-active-box">
+                            <app-live-camera
+                              [projectId]="projectId"
+                              evidenceType="milestone_evidence"
+                              [milestoneIndex]="selectedMilestoneIndex"
+                              [label]="'Capture Additional Proof for Milestone ' + (selectedMilestoneIndex + 1)"
+                              (evidenceUploaded)="handleRecaptureSuccess($event)"
+                            ></app-live-camera>
+                          </div>
+                        }
+                      }
+                    </div>
+                  } @else if (currentRole === 'buyer') {
+                    <!-- Buyer View: Awaiting Contractor Evidence Submission -->
+                    <div class="awaiting-contractor-card">
+                      <div class="awaiting-icon-box">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2">
+                          <circle cx="12" cy="12" r="10"/>
+                          <polyline points="12 6 12 12 16 14"/>
+                        </svg>
+                      </div>
+                      <div class="awaiting-text">
+                        <h4>Awaiting Contractor Evidence Submission</h4>
+                        <p>
+                          The Contractor has not yet submitted live evidence for <strong>Milestone {{ selectedMilestoneIndex + 1 }}</strong>. Camera capture is reserved strictly for the seller to document physical proof of work.
+                        </p>
+                        <div class="awaiting-badge-row">
+                          <span class="badge-role-guard">Contractor Action Required</span>
+                          <span class="badge-role-info">You will be notified once evidence is submitted for your review and escrow payout release.</span>
+                        </div>
+                      </div>
+                    </div>
+                  } @else {
+                    @if (isDigitalProject()) {
+                      <!-- Seller View: Digital Deliverable Upload Desk -->
+                      <div class="digital-submission-desk">
+                        <div class="digital-tabs-bar">
+                          <button
+                            type="button"
+                            class="digital-tab-btn"
+                            [class.is-active]="digitalSubmissionMode === 'upload'"
+                            (click)="digitalSubmissionMode = 'upload'"
+                          >
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            <span>Upload Files & Images</span>
+                            <span class="tab-recommended-badge">Digital Deliverable</span>
+                          </button>
+                          <button
+                            type="button"
+                            class="digital-tab-btn"
+                            [class.is-active]="digitalSubmissionMode === 'camera'"
+                            (click)="digitalSubmissionMode = 'camera'"
+                          >
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                            <span>Live Hardware Camera</span>
+                          </button>
+                        </div>
+
+                        @if (digitalSubmissionMode === 'upload') {
+                          <div class="digital-upload-container">
+                            <div class="digital-info-banner">
+                              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <line x1="12" y1="16" x2="12" y2="12"/>
+                                <line x1="12" y1="8" x2="12.01" y2="8"/>
+                              </svg>
+                              <div>
+                                <strong>DIGITAL ASSET SUBMISSION DESK:</strong> Upload deliverable files (.png, .jpg, .svg, .pdf, .zip, etc.). ProofLens AI runs an automated scan to ensure scope compliance and audits against synthetic AI watermarks (Google SynthID, OpenAI DALL-E, Midjourney, Adobe Firefly).
+                              </div>
+                            </div>
+
+                            <!-- Dropzone -->
+                            <div
+                              class="digital-dropzone"
+                              [class.is-dragging]="isDragOverDropzone"
+                              [class.has-file]="!!selectedDigitalFile"
+                              (dragover)="onDragOver($event)"
+                              (dragleave)="onDragLeave($event)"
+                              (drop)="onDigitalFileDropped($event)"
+                              (click)="mainFileInput.click()"
+                            >
+                              <input
+                                #mainFileInput
+                                type="file"
+                                style="display: none;"
+                                accept="image/png,image/jpeg,image/webp,image/svg+xml,application/pdf,application/zip,.fig,.ai,.psd"
+                                (change)="onDigitalFileSelected($event)"
+                              />
+                              @if (!selectedDigitalFile) {
+                                <div class="dropzone-empty">
+                                  <div class="dropzone-icon">
+                                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2">
+                                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                      <polyline points="17 8 12 3 7 8"/>
+                                      <line x1="12" y1="3" x2="12" y2="15"/>
+                                    </svg>
+                                  </div>
+                                  <div class="dropzone-main-text">
+                                    <strong>Drag and drop deliverable files or click to browse</strong>
+                                  </div>
+                                  <div class="dropzone-sub-text">
+                                    Supported: PNG, JPG, WebP, SVG, PDF, ZIP, AI, FIG, PSD (Max 50MB)
+                                  </div>
+                                </div>
+                              } @else {
+                                <div class="dropzone-selected-preview" (click)="$event.stopPropagation()">
+                                  @if (digitalFilePreviewUrl) {
+                                    <img [src]="digitalFilePreviewUrl" alt="Selected deliverable" class="preview-img" />
+                                  } @else {
+                                    <div class="preview-file-icon">
+                                      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2">
+                                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                        <polyline points="14 2 14 8 20 8"/>
+                                      </svg>
+                                    </div>
+                                  }
+                                  <div class="preview-file-info">
+                                    <span class="preview-file-name">{{ selectedDigitalFile.name }}</span>
+                                    <span class="preview-file-size">{{ formatFileSize(selectedDigitalFile.size) }}</span>
+                                    <span class="preview-file-type">{{ selectedDigitalFile.type || 'Deliverable File' }}</span>
+                                  </div>
+                                  <button type="button" class="btn-clear-file" (click)="clearSelectedFile()">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                      <line x1="18" y1="6" x2="6" y2="18"/>
+                                      <line x1="6" y1="6" x2="18" y2="18"/>
+                                    </svg>
+                                    <span>Remove</span>
+                                  </button>
+                                </div>
+                              }
+                            </div>
+
+                            <!-- Optional Asset URL Input (e.g. Figma, GitHub, Demo) -->
+                            <div class="asset-url-row">
+                              <label class="url-input-label">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                                </svg>
+                                <span>Optional Cloud Asset URL (Figma, GitHub PR, Hosted Preview):</span>
+                              </label>
+                              <input
+                                type="url"
+                                [(ngModel)]="digitalAssetUrl"
+                                placeholder="https://www.figma.com/file/... or https://github.com/..."
+                                class="url-text-field"
+                              />
+                            </div>
+
+                            @if (digitalUploadError) {
+                              <div class="upload-error-notice">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5">
+                                  <circle cx="12" cy="12" r="10"/>
+                                  <line x1="12" y1="8" x2="12" y2="12"/>
+                                  <line x1="12" y1="16" x2="12.01" y2="16"/>
+                                </svg>
+                                <span>{{ digitalUploadError }}</span>
+                              </div>
+                            }
+
+                            <!-- Submit Button -->
+                            <div class="digital-actions-bar">
+                              <button
+                                type="button"
+                                class="btn-submit-digital"
+                                [disabled]="!selectedDigitalFile || isUploadingDigitalFile"
+                                (click)="submitDigitalDeliverable()"
+                              >
+                                @if (isUploadingDigitalFile) {
+                                  <span class="btn-spinner"></span>
+                                  <span>Auditing for AI Watermarks & Submitting...</span>
+                                } @else {
+                                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="17 8 12 3 7 8"/>
+                                    <line x1="12" y1="3" x2="12" y2="15"/>
+                                  </svg>
+                                  <span>Submit Deliverable & Run AI Watermark Audit</span>
+                                }
+                              </button>
+                            </div>
+                          </div>
+                        } @else {
+                          <div class="live-cam-embed">
+                            <app-live-camera
+                              [projectId]="projectId"
+                              evidenceType="milestone_evidence"
+                              [milestoneIndex]="selectedMilestoneIndex"
+                              [label]="'Capture Live Proof for Milestone ' + (selectedMilestoneIndex + 1)"
+                              (evidenceUploaded)="handleEvidenceSuccess($event)"
+                            ></app-live-camera>
+                          </div>
+                        }
+                      </div>
+                    } @else {
+                      <!-- Seller View: Hardware Live Camera Capture Active Screen (Strict for Physical) -->
+                      <div class="live-cam-embed">
+                        <div class="cam-instructions-banner">
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2">
+                            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                            <circle cx="12" cy="13" r="4"/>
+                          </svg>
+                          <span><strong>MANDATORY HARDWARE LIVE CAPTURE:</strong> Position camera to capture proof according to the criteria above. File uploads are disabled for anti-tamper compliance.</span>
+                        </div>
+                        <app-live-camera
+                          [projectId]="projectId"
+                          evidenceType="milestone_evidence"
+                          [milestoneIndex]="selectedMilestoneIndex"
+                          [label]="'Capture Live Proof for Milestone ' + (selectedMilestoneIndex + 1)"
+                          (evidenceUploaded)="handleEvidenceSuccess($event)"
+                        ></app-live-camera>
+                      </div>
+                    }
+                  }
+                </div>
+
+                <!-- Sleek Corporate Forensic Assessment & Certificate (Never Loud Amber/Red) -->
+                @if (getAllEvidenceForMilestone(selectedMilestoneIndex); as milestoneEvList) {
+                  @if (milestoneEvList.length > 0) {
+                    <div class="ms-ai-certificate">
+                      <div class="cert-head">
+                        <div class="cert-title-row">
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" [attr.stroke]="hasFraudInMilestone(milestoneEvList) ? '#dc2626' : '#16a34a'" stroke-width="2.5">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                          </svg>
+                          <strong>{{ getCertificateTitle(milestoneEvList) }}</strong>
+                        </div>
+                        <span class="cert-confidence-pill" [class.is-fraud]="hasFraudInMilestone(milestoneEvList)">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                            @if (hasFraudInMilestone(milestoneEvList)) {
+                              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                            } @else {
+                              <polyline points="20 6 9 17 4 12"/>
+                            }
+                          </svg>
+                          <span>{{ milestoneEvList[0].ai_confidence_score }}% Match {{ getCertificateBadgeText(milestoneEvList) }}</span>
+                        </span>
+                      </div>
+
+                      <!-- Forensic Findings Panel (Subtle & Dignified) -->
+                      @if (hasFraudInMilestone(milestoneEvList)) {
+                        <div class="corp-audit-notice-panel">
+                          <div class="audit-notice-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.2">
+                              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                            </svg>
+                            <span>Forensic Observation: {{ getForensicObservationTitle(milestoneEvList) }}</span>
+                          </div>
+                          <p class="audit-notice-desc">
+                            {{ getForensicObservationDescription(milestoneEvList) }}
+                          </p>
+                          <div class="flags-chips-row">
+                            @for (flag of getMilestoneFraudFlags(milestoneEvList); track flag) {
+                              <span class="audit-flag-tag" [class.is-ai-watermark]="isWatermarkFlag(flag)">
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                                </svg>
+                                <span>{{ flag }}</span>
+                              </span>
+                            }
+                          </div>
+                        </div>
+                      }
+
+                      <div class="cert-angles-strip">
+                        @for (ev of milestoneEvList; track ev.id; let aIdx = $index) {
+                          <div class="cert-angle-card">
+                            @if (ev.file_path && isPreviewableImage(ev.file_path)) {
+                              <img [src]="getEvidenceUrl(ev.file_path)" alt="Deliverable {{ aIdx + 1 }}" class="cert-thumb" />
+                            } @else {
+                              <div class="cert-doc-thumb">
+                                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                              </div>
+                            }
+                            <span class="angle-label">{{ ev.capture_method === 'file_upload' ? ('Deliverable ' + (aIdx + 1)) : ('Angle ' + (aIdx + 1)) }}</span>
+                            <span class="cert-hash" title="{{ ev.file_hash }}">SHA: {{ ev.file_hash ? ev.file_hash.slice(0, 8) : 'Locked' }}</span>
+                          </div>
+                        }
+                      </div>
+
+                      <div class="cert-notes">
+                        <div class="cert-analysis">{{ milestoneEvList[0].ai_analysis_notes }}</div>
+                      </div>
+                    </div>
+                  }
+                }
+              }
+            }
+
+            <!-- Secured Evidence Audit Log Gallery -->
+            @if (evidenceList.length > 0) {
+              <div class="secured-evidence-gallery">
+                <div class="gallery-title">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                  </svg>
+                  <span>Cryptographically Secured Live Evidence & Audit Ledger ({{ evidenceList.length }})</span>
+                </div>
+                <div class="evidence-cards-grid">
+                  @for (item of evidenceList; track item.id) {
+                    <div class="evidence-item-card">
+                      <div class="item-badge-bar">
+                        <span class="item-method-pill" [class.is-upload]="item.capture_method === 'file_upload'">
+                          {{ item.capture_method === 'file_upload' ? 'DIGITAL ASSET' : (item.evidence_type === 'before_evidence' ? 'BUYER BASELINE' : ('MILESTONE ' + (Number(item.milestone_index) + 1))) }}
+                        </span>
+                        <span class="item-conf-pill" [class.is-fraud]="item.status === 'possible_mismatch' || isItemFlagged(item)">
+                          {{ (item.status === 'possible_mismatch' || isItemFlagged(item)) ? (item.ai_confidence_score + '% Match (FLAGGED)') : (item.ai_confidence_score + '% Match') }}
+                        </span>
+                      </div>
+                      @if (item.file_path && isPreviewableImage(item.file_path)) {
+                        <img [src]="getEvidenceUrl(item.file_path)" alt="Evidence frame" class="item-media-preview" />
+                      } @else {
+                        <div class="item-doc-preview">
+                          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                          <span class="item-doc-label">{{ item.original_filename || 'Digital Deliverable File' }}</span>
+                        </div>
+                      }
+                      <div class="item-meta-details">
+                        <span class="item-hash" title="{{ item.file_hash }}">SHA-256: {{ item.file_hash?.slice(0, 16) }}...</span>
+                        <span class="item-time">Recorded: {{ item.server_receipt_timestamp || 'Server Authoritative' }}</span>
+                      </div>
+                    </div>
+                  }
+                </div>
+              </div>
+            }
+          </div>
+        </main>
+      }
+
+      <!-- Buyer Reject & Request Resubmission Modal -->
+      @if (showRejectModal && rejectingMilestoneIndex !== null) {
+        <div class="modal-backdrop" (click)="closeRejectModal()">
+          <div class="reject-modal-card" (click)="$event.stopPropagation()">
+            <div class="reject-modal-header">
+              <div class="reject-header-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="15" y1="9" x2="9" y2="15"/>
+                  <line x1="9" y1="9" x2="15" y2="15"/>
+                </svg>
+              </div>
+              <div class="reject-header-text">
+                <h3>Reject Evidence & Request Resubmission</h3>
+                <p class="reject-modal-sub">Milestone {{ rejectingMilestoneIndex + 1 }}: {{ milestones[rejectingMilestoneIndex]?.title }}</p>
+              </div>
+            </div>
+
+            <div class="reject-modal-body">
+              <p class="reject-instruction">
+                Please specify why the submitted evidence is unsatisfactory. Escrow funds (${{ Number(milestones[rejectingMilestoneIndex]?.price_allocation).toFixed(2) }} USD) remain held safely in PayPal escrow until satisfactory proof is verified.
+              </p>
+
+              <div class="quick-reasons-block">
+                <label class="reject-label">Quick Feedback Suggestions:</label>
+                <div class="quick-chips-grid">
+                  <button type="button" class="quick-chip" (click)="setQuickRejectionReason('Evidence does not match agreed specifications or scope.')">Scope Mismatch</button>
+                  <button type="button" class="quick-chip" (click)="setQuickRejectionReason('Suspected screen reflection or re-photographed display.')">Screen Reflection</button>
+                  <button type="button" class="quick-chip" (click)="setQuickRejectionReason('Suspected generative AI content or unauthorized AI watermark detected.')">AI Watermark Detected</button>
+                  <button type="button" class="quick-chip" (click)="setQuickRejectionReason('Evidence is blurry, low resolution, or poorly lit.')">Blurry / Low Light</button>
+                  <button type="button" class="quick-chip" (click)="setQuickRejectionReason('Missing required measurement, tape measure, or caliper check.')">Missing Measurement</button>
+                  <button type="button" class="quick-chip" (click)="setQuickRejectionReason('Workmanship appears incomplete or requires finish refinement.')">Incomplete Work</button>
+                </div>
+              </div>
+
+              <div class="textarea-block">
+                <label class="reject-label">Feedback & Instructions for Contractor:</label>
+                <textarea
+                  [(ngModel)]="rejectionReasonText"
+                  placeholder="Explain what needs correction, missing criteria, or preferred camera angle..."
+                  class="reject-textarea"
+                  rows="3"
+                ></textarea>
+              </div>
+            </div>
+
+            <div class="reject-modal-footer">
+              <button type="button" (click)="closeRejectModal()" class="btn-modal-cancel" [disabled]="isSubmittingRejection">
+                Cancel
+              </button>
+              <button
+                type="button"
+                (click)="submitRejection()"
+                class="btn-modal-confirm-reject"
+                [disabled]="isSubmittingRejection"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+                <span>{{ isSubmittingRejection ? 'Submitting...' : 'Send Rejection & Request Resubmission' }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      }
+
+      <!-- Scope Changes Revision Room Modal Sub-View -->
+      @if (showRevisionRoom) {
+        <app-revision-room
+          [projectId]="projectId"
+          [currentRole]="currentRole"
+          [projectTitle]="projectData?.project?.title || ''"
+          [initialScopeChange]="activeScopeChange"
+          (closed)="closeRevisionRoom()"
+          (scopeAccepted)="onScopeChangeAccepted($event)"
+        ></app-revision-room>
+      }
+
+      <!-- Invoices & Receipts Drawer -->
+      @if (isInvoicesDrawerOpen) {
+        <div class="modal-backdrop" (click)="closeInvoicesDrawer()">
+          <div class="invoices-drawer-card" (click)="$event.stopPropagation()">
+            <div class="invoices-drawer-header">
+              <div style="display:flex; align-items:center; gap:0.75rem;">
+                <div class="drawer-header-icon">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/>
+                    <line x1="16" y1="17" x2="8" y2="17"/>
+                  </svg>
+                </div>
+                <div>
+                  <h3 style="margin:0; font-size:1.15rem; font-weight:800; color:#0f172a;">Project Settlement Invoices & Receipts</h3>
+                  <p style="margin:0.2rem 0 0 0; font-size:0.8rem; color:#64748b;">
+                    Authoritative PayPal Invoicing v2 Records &bull; Status: PAID
+                  </p>
+                </div>
+              </div>
+              <button (click)="closeInvoicesDrawer()" class="btn-close-modal">&times;</button>
+            </div>
+
+            <div class="invoices-drawer-body">
+              @if (projectInvoices.length === 0) {
+                <div class="empty-invoices-box">
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                  <h4>No Settled Invoices Yet</h4>
+                  <p>Invoices are automatically finalized and marked PAID via PayPal Invoicing API v2 when milestones are approved.</p>
+                </div>
+              } @else {
+                <div class="invoices-list">
+                  @for (inv of projectInvoices; track inv.id || $index) {
+                    <div class="invoice-item-card">
+                      <div class="invoice-item-top">
+                        <div class="invoice-id-col">
+                          <span class="inv-number-badge">{{ inv.invoice_number }}</span>
+                          <span class="inv-ms-title">Milestone {{ inv.milestone_index + 1 }}</span>
+                        </div>
+                        <div class="invoice-amount-col">
+                          <span class="inv-amt">${{ Number(inv.amount).toFixed(2) }} USD</span>
+                          <span class="inv-status-pill">{{ inv.status }}</span>
+                        </div>
+                      </div>
+
+                      <div class="invoice-meta-sub">
+                        <span>Paid: {{ inv.paid_at ? (inv.paid_at | date:'medium') : 'Recorded' }}</span>
+                        <span>Capture ID: <code>{{ inv.paypal_capture_id || '-' }}</code></span>
+                      </div>
+
+                      <div class="invoice-btn-group">
+                        <button (click)="openReceiptModal(inv.milestone_index)" class="btn-receipt-action">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                          <span>Printable Receipt</span>
+                        </button>
+                        <a [href]="inv.invoice_url || 'https://www.sandbox.paypal.com'" target="_blank" rel="noopener noreferrer" class="btn-paypal-portal">
+                          <span>View on PayPal</span>
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/></svg>
+                        </a>
+                      </div>
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+          </div>
+        </div>
+      }
+
+      <!-- Printable Receipt Modal -->
+      @if (isReceiptModalOpen) {
+        <div class="modal-backdrop" (click)="closeReceiptModal()">
+          <div class="receipt-modal-card" (click)="$event.stopPropagation()">
+            <div class="receipt-modal-header">
+              <div style="display:flex; align-items:center; gap:0.6rem;">
+                <span class="receipt-icon-badge"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg></span>
+                <div>
+                  <h3 style="margin:0; font-size:1.1rem; font-weight:800; color:#0f172a;">Official ProofLens & PayPal Tax Receipt</h3>
+                  <p style="margin:0.15rem 0 0 0; font-size:0.75rem; color:#64748b;">Milestone {{ selectedReceiptMilestoneIndex + 1 }} Settlement Reference</p>
+                </div>
+              </div>
+              <button (click)="closeReceiptModal()" class="btn-close-modal">&times;</button>
+            </div>
+
+            <div class="receipt-modal-body">
+              <iframe [src]="getSafeReceiptUrl(selectedReceiptMilestoneIndex)" class="receipt-iframe" title="Printable Settlement Receipt"></iframe>
+            </div>
+
+            <div class="receipt-modal-footer">
+              <span style="font-size:0.75rem; color:#64748b;">Authoritative Cryptographic Evidence Record</span>
+              <button (click)="closeReceiptModal()" class="btn-corp-primary" style="padding:0.45rem 1.15rem; font-size:0.85rem;">Close Receipt</button>
+            </div>
+          </div>
+        </div>
+      }
+
+      <!-- Orders v2 Shipment Tracking Modal -->
+      @if (isTrackingModalOpen) {
+        <div class="modal-backdrop" (click)="closeTrackingModal()">
+          <div class="reject-modal-card" (click)="$event.stopPropagation()" style="border-color:#bae6fd;">
+            <div class="reject-modal-header" style="background:#f0f9ff; border-color:#e0f2fe;">
+              <div class="reject-header-icon" style="background:#e0f2fe;">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0284c7" stroke-width="2.2">
+                  <rect x="1" y="3" width="15" height="13"/>
+                  <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
+                  <circle cx="5.5" cy="18.5" r="2.5"/>
+                  <circle cx="18.5" cy="18.5" r="2.5"/>
+                </svg>
+              </div>
+              <div class="reject-header-text">
+                <h3 style="color:#0369a1;">Submit Deliverable Tracking (Orders v2)</h3>
+                <p style="color:#0284c7;">Attach carrier delivery details to the authoritative PayPal order.</p>
+              </div>
+            </div>
+
+            <div style="padding:1.5rem;">
+              @if (trackingSuccessMsg) {
+                <div style="background:#dcfce7; border:1px solid #86efac; color:#15803d; padding:0.85rem; border-radius:8px; font-size:0.85rem; font-weight:600; margin-bottom:1rem;">
+                  {{ trackingSuccessMsg }}
+                </div>
+              }
+              @if (trackingErrorMsg) {
+                <div style="background:#fee2e2; border:1px solid #fca5a5; color:#b91c1c; padding:0.85rem; border-radius:8px; font-size:0.85rem; font-weight:600; margin-bottom:1rem;">
+                  {{ trackingErrorMsg }}
+                </div>
+              }
+
+              <div style="margin-bottom:1rem;">
+                <label style="display:block; font-size:0.8rem; font-weight:700; color:#334155; margin-bottom:0.35rem;">Shipping Carrier</label>
+                <select [(ngModel)]="trackingCarrier" style="width:100%; padding:0.6rem; border:1px solid #cbd5e1; border-radius:8px; font-size:0.875rem;">
+                  <option value="UPS">UPS (United Parcel Service)</option>
+                  <option value="FEDEX">FedEx</option>
+                  <option value="DHL">DHL Express</option>
+                  <option value="USPS">USPS (United States Postal Service)</option>
+                  <option value="OTHER">Other / Local Courier</option>
+                </select>
+              </div>
+
+              <div style="margin-bottom:1.25rem;">
+                <label style="display:block; font-size:0.8rem; font-weight:700; color:#334155; margin-bottom:0.35rem;">Tracking / Waybill Number</label>
+                <input type="text" [(ngModel)]="trackingNumber" placeholder="e.g. 1Z9999999999999999" style="width:100%; box-sizing:border-box; padding:0.6rem; border:1px solid #cbd5e1; border-radius:8px; font-size:0.875rem; font-family:monospace;" />
+              </div>
+
+              <div style="display:flex; justify-content:flex-end; gap:0.5rem;">
+                <button (click)="closeTrackingModal()" style="padding:0.55rem 1rem; border:1px solid #cbd5e1; background:white; border-radius:8px; font-weight:600; cursor:pointer;">Cancel</button>
+                <button (click)="submitTracking()" [disabled]="isSubmittingTracking" style="padding:0.55rem 1.25rem; background:#0070ba; color:white; border:none; border-radius:8px; font-weight:700; cursor:pointer;">
+                  {{ isSubmittingTracking ? 'Submitting...' : 'Attach Tracking via PayPal' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      }
+
+      <!-- Payments v2 Refund Modal -->
+      @if (isRefundModalOpen) {
+        <div class="modal-backdrop" (click)="closeRefundModal()">
+          <div class="reject-modal-card" (click)="$event.stopPropagation()" style="border-color:#fde68a;">
+            <div class="reject-modal-header" style="background:#fffbeb; border-color:#fef3c7;">
+              <div class="reject-header-icon" style="background:#fef3c7;">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#b45309" stroke-width="2.2">
+                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                  <path d="M3 3v5h5"/>
+                </svg>
+              </div>
+              <div class="reject-header-text">
+                <h3 style="color:#92400e;">Issue Milestone Refund (Payments v2)</h3>
+                <p style="color:#b45309;">Refund captured escrow payment directly through PayPal.</p>
+              </div>
+            </div>
+
+            <div style="padding:1.5rem;">
+              @if (refundSuccessMsg) {
+                <div style="background:#dcfce7; border:1px solid #86efac; color:#15803d; padding:0.85rem; border-radius:8px; font-size:0.85rem; font-weight:600; margin-bottom:1rem;">
+                  {{ refundSuccessMsg }}
+                </div>
+              }
+              @if (refundErrorMsg) {
+                <div style="background:#fee2e2; border:1px solid #fca5a5; color:#b91c1c; padding:0.85rem; border-radius:8px; font-size:0.85rem; font-weight:600; margin-bottom:1rem;">
+                  {{ refundErrorMsg }}
+                </div>
+              }
+
+              <div style="margin-bottom:1rem;">
+                <label style="display:block; font-size:0.8rem; font-weight:700; color:#334155; margin-bottom:0.35rem;">Refund Amount (USD)</label>
+                <input type="number" [(ngModel)]="refundAmount" step="0.01" style="width:100%; box-sizing:border-box; padding:0.6rem; border:1px solid #cbd5e1; border-radius:8px; font-size:0.95rem; font-weight:700;" />
+              </div>
+
+              <div style="margin-bottom:1.25rem;">
+                <label style="display:block; font-size:0.8rem; font-weight:700; color:#334155; margin-bottom:0.35rem;">Note / Reason for Refund</label>
+                <textarea [(ngModel)]="refundReason" rows="3" placeholder="Enter reason for buyer refund..." style="width:100%; box-sizing:border-box; padding:0.6rem; border:1px solid #cbd5e1; border-radius:8px; font-size:0.875rem; font-family:sans-serif;"></textarea>
+              </div>
+
+              <div style="display:flex; justify-content:flex-end; gap:0.5rem;">
+                <button (click)="closeRefundModal()" style="padding:0.55rem 1rem; border:1px solid #cbd5e1; background:white; border-radius:8px; font-weight:600; cursor:pointer;">Cancel</button>
+                <button (click)="submitRefund()" [disabled]="isSubmittingRefund" style="padding:0.55rem 1.25rem; background:#b45309; color:white; border:none; border-radius:8px; font-weight:700; cursor:pointer;">
+                  {{ isSubmittingRefund ? 'Processing...' : 'Process Refund via PayPal' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      }
+
+      <!-- Payments v2 Void Escrow Modal -->
+      @if (isVoidModalOpen) {
+        <div class="modal-backdrop" (click)="closeVoidModal()">
+          <div class="reject-modal-card" (click)="$event.stopPropagation()" style="border-color:#fca5a5;">
+            <div class="reject-modal-header" style="background:#fef2f2; border-color:#fee2e2;">
+              <div class="reject-header-icon" style="background:#fee2e2;">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                </svg>
+              </div>
+              <div class="reject-header-text">
+                <h3 style="color:#991b1b;">Void Escrow Authorization Hold</h3>
+                <p style="color:#b91c1c;">Release authorized hold funds immediately back to buyer.</p>
+              </div>
+            </div>
+
+            <div style="padding:1.5rem;">
+              @if (voidSuccessMsg) {
+                <div style="background:#dcfce7; border:1px solid #86efac; color:#15803d; padding:0.85rem; border-radius:8px; font-size:0.85rem; font-weight:600; margin-bottom:1rem;">
+                  {{ voidSuccessMsg }}
+                </div>
+              }
+              @if (voidErrorMsg) {
+                <div style="background:#fee2e2; border:1px solid #fca5a5; color:#b91c1c; padding:0.85rem; border-radius:8px; font-size:0.85rem; font-weight:600; margin-bottom:1rem;">
+                  {{ voidErrorMsg }}
+                </div>
+              }
+
+              <div style="background:#fff1f2; border:1px solid #fecdd3; border-radius:8px; padding:0.85rem; margin-bottom:1rem; font-size:0.82rem; color:#9f1239;">
+                <strong>Warning:</strong> Voiding the escrow authorization will cancel all active holds for this project. If work has already been started, ensure both parties agree to contract cancellation.
+              </div>
+
+              <div style="margin-bottom:1.25rem;">
+                <label style="display:block; font-size:0.8rem; font-weight:700; color:#334155; margin-bottom:0.35rem;">Cancellation Note</label>
+                <input type="text" [(ngModel)]="voidReason" placeholder="Mutual agreement cancellation" style="width:100%; box-sizing:border-box; padding:0.6rem; border:1px solid #cbd5e1; border-radius:8px; font-size:0.875rem;" />
+              </div>
+
+              <div style="display:flex; justify-content:flex-end; gap:0.5rem;">
+                <button (click)="closeVoidModal()" style="padding:0.55rem 1rem; border:1px solid #cbd5e1; background:white; border-radius:8px; font-weight:600; cursor:pointer;">Cancel</button>
+                <button (click)="submitVoidEscrow()" [disabled]="isSubmittingVoid" style="padding:0.55rem 1.25rem; background:#dc2626; color:white; border:none; border-radius:8px; font-weight:700; cursor:pointer;">
+                  {{ isSubmittingVoid ? 'Voiding...' : 'Confirm & Void Escrow Hold' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      }
+    </div>

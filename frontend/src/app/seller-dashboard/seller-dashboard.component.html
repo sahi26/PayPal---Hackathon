@@ -1,0 +1,846 @@
+<div class="seller-shell">
+  <!-- Milestone Deadline Approaching Alert Ribbon (Collapsible Dropdown UX) -->
+  @if (activeAlerts && activeAlerts.length > 0 && !isAlertsDismissed) {
+    <div class="contractor-alert-center" [class.is-expanded]="isAlertsDropdownOpen">
+      <!-- Compact Summary Bar (Always minimal height) -->
+      <div class="alert-bar-header">
+        <div class="alert-lead-pod">
+          <div class="alert-icon-wrap">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#D97706" stroke-width="2.3">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+              <line x1="12" y1="9" x2="12" y2="13"/>
+              <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            <span class="pulse-warning-dot"></span>
+          </div>
+          
+          <div class="alert-headline-group">
+            <div class="alert-title-row">
+              <span class="alert-badge-count">{{ activeAlerts.length }} {{ activeAlerts.length === 1 ? 'Deadline Approaching' : 'Approaching Deadlines' }}</span>
+              <span class="alert-teaser-text">
+                Next: <strong>{{ activeAlerts[0].project_title }}</strong> &bull; {{ activeAlerts[0].milestone_title }}
+                <span class="alert-due-time">(Due {{ activeAlerts[0].formatted_deadline || activeAlerts[0].deadline }})</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="alert-controls-cluster">
+          <!-- Primary Action for the most urgent deadline -->
+          <button (click)="openProject(activeAlerts[0].project_id)" class="btn-alert-quick-action" title="Open first urgent project">
+            <span>Submit Proof</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+
+          <!-- Dropdown Toggle Button (When multiple alerts exist, or to inspect details) -->
+          @if (activeAlerts.length > 1) {
+            <button 
+              (click)="toggleAlertsDropdown()" 
+              class="btn-alert-dropdown-toggle" 
+              [attr.aria-expanded]="isAlertsDropdownOpen"
+              title="Expand approaching deadlines list"
+            >
+              <span>{{ isAlertsDropdownOpen ? 'Hide List' : 'View All (' + activeAlerts.length + ')' }}</span>
+              <svg class="chevron-icon" [class.is-rotated]="isAlertsDropdownOpen" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>
+          }
+
+          <!-- Dismiss button -->
+          <button (click)="dismissAlerts()" class="btn-alert-dismiss" title="Dismiss alerts for this session" aria-label="Dismiss">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Expandable Dropdown Tray (Bounded max-height with smooth scrolling) -->
+      @if (isAlertsDropdownOpen) {
+        <div class="alert-dropdown-tray">
+          <div class="tray-meta-header">
+            <span class="tray-title">Approaching Milestone Deadlines Queue</span>
+            <span class="tray-note">Submit evidence before scheduled escrow milestone dates to ensure timely payouts</span>
+          </div>
+
+          <div class="tray-items-scroll">
+            @for (alertItem of activeAlerts; track alertItem.project_id) {
+              <div class="tray-alert-item">
+                <div class="item-info-col">
+                  <div class="item-title-line">
+                    <span class="project-id-chip">#PL-{{ alertItem.project_id }}</span>
+                    <strong class="item-project-name">{{ alertItem.project_title }}</strong>
+                    <span class="item-milestone-pill">{{ alertItem.milestone_title }}</span>
+                  </div>
+                  <div class="item-deadline-line">
+                    <span class="due-indicator">Target Due: {{ alertItem.formatted_deadline || alertItem.deadline }}</span>
+                    @if (alertItem.hours_remaining !== null && alertItem.hours_remaining !== undefined) {
+                      <span class="hours-tag" [class.is-critical]="alertItem.hours_remaining <= 24">
+                        {{ alertItem.hours_remaining }}h remaining
+                      </span>
+                    }
+                    @if (alertItem.rejection_reason) {
+                      <span class="resubmit-reason-pill">Reason: {{ alertItem.rejection_reason }}</span>
+                    }
+                  </div>
+                </div>
+
+                <button (click)="openProject(alertItem.project_id)" class="btn-tray-item-action">
+                  <span>Open Room &amp; Submit Proof</span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+              </div>
+            }
+          </div>
+        </div>
+      }
+    </div>
+  }
+
+  <!-- Contractor Profile Header -->
+  <header class="console-hero-card">
+    <div class="hero-top-bar">
+      <div class="user-identity-cluster">
+        <div class="seller-avatar-bubble">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+          </svg>
+        </div>
+        <div class="identity-meta">
+          <div class="greeting-row">
+            <h1 class="hero-heading">Contractor Desk</h1>
+            <span class="status-badge badge-amber">
+              <span class="pulse-indicator pulse-amber"></span>
+              Verified Master Contractor
+            </span>
+          </div>
+          <p class="hero-subtext">Manage incoming contracts, submit cryptographic proof of milestones, and receive instant PayPal escrow payouts.</p>
+        </div>
+      </div>
+
+      <div class="hero-action-buttons">
+        <button (click)="openPayPalLedger()" class="btn-fintech btn-fintech-primary" title="View live PayPal balances and transaction ledger">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/>
+          </svg>
+          <span>PayPal Ledger &amp; Balances</span>
+        </button>
+        <button 
+          (click)="loadProjects()" 
+          [disabled]="isLoadingProjects" 
+          class="btn-fintech btn-fintech-secondary btn-sm btn-refresh" 
+          [class.is-loading]="isLoadingProjects" 
+          title="Refresh Contracts"
+        >
+          <svg [class.spin-animation]="isLoadingProjects" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+          <span>{{ isLoadingProjects ? 'Refreshing...' : 'Refresh' }}</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- 4 High-End Metric Cards -->
+    <div class="kpi-metrics-grid">
+      <div class="kpi-card" (click)="openPayPalLedger()" title="Click to view live PayPal transaction ledger">
+        <div class="kpi-content-col">
+          <span class="kpi-eyebrow">PAYPAL LIVE BALANCE</span>
+          <div class="kpi-stat-value text-emerald">${{ Number(paypalAvailableBalance).toFixed(2) }} <span class="currency-tag">USD</span></div>
+          <span class="kpi-sub-meta text-blue">View Activity &amp; Ledger &rarr;</span>
+        </div>
+        <div class="kpi-icon-bubble kpi-bubble-emerald">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/>
+          </svg>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-content-col">
+          <span class="kpi-eyebrow">OFFERS RECEIVED</span>
+          <div class="kpi-stat-value">{{ projects.length }}</div>
+          <span class="kpi-sub-meta">Total incoming client contracts</span>
+        </div>
+        <div class="kpi-icon-bubble kpi-bubble-blue">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+          </svg>
+        </div>
+      </div>
+
+      <div class="kpi-card" [class.active-tab]="activeFilterTab === 'negotiating'" (click)="setFilterTab('negotiating')">
+        <div class="kpi-content-col">
+          <span class="kpi-eyebrow">ACTIVE NEGOTIATIONS</span>
+          <div class="kpi-stat-value text-amber">{{ negotiatingCount }}</div>
+          <span class="kpi-sub-meta">Reviewing clauses or pricing</span>
+        </div>
+        <div class="kpi-icon-bubble kpi-bubble-amber">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+        </div>
+      </div>
+
+      <div class="kpi-card" [class.active-tab]="activeFilterTab === 'accepted'" (click)="setFilterTab('accepted')">
+        <div class="kpi-content-col">
+          <span class="kpi-eyebrow">FINALIZED AGREEMENTS</span>
+          <div class="kpi-stat-value text-emerald">{{ acceptedCount }}</div>
+          <span class="kpi-sub-meta">Ready for work &amp; evidence submission</span>
+        </div>
+        <div class="kpi-icon-bubble kpi-bubble-emerald">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Sequential Milestone Fulfillment Execution Desk (Phase 4) -->
+  @if (activeProject && activeMilestones && activeMilestones.length > 0) {
+    <section class="fintech-card active-fulfillment-card mb-4">
+      <div class="active-card-top">
+        <div>
+          <span class="status-badge badge-emerald">Active Escrow Fulfillment Desk</span>
+          <h2 class="active-project-title">{{ activeProject.title }}</h2>
+          <p class="active-project-sub">Sequential Milestone Execution &bull; Escrow Allocation: <strong>${{ Number(activeProject.total_price).toFixed(2) }} USD</strong></p>
+        </div>
+        <div class="active-actions-row">
+          <button (click)="openProject(activeProject.id)" class="btn-fintech btn-fintech-secondary btn-sm">
+            <span>View Terms</span>
+          </button>
+          <button (click)="openFulfillment(activeProject.id)" class="btn-fintech btn-fintech-primary btn-sm">
+            <span>Open Dedicated Fulfillment Page &rarr;</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Sequential Milestone Track -->
+      <div class="sequential-milestone-stepper">
+        @for (ms of activeMilestones; track $index) {
+          <div class="stepper-node" [class.is-current]="$index === activeMilestoneIndex" [class.is-done]="isMilestoneApproved(ms)">
+            <div class="stepper-dot">
+              @if (isMilestoneApproved(ms)) {
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+              } @else {
+                <span>{{ $index + 1 }}</span>
+              }
+            </div>
+            <div class="stepper-info">
+              <span class="node-title">{{ ms.title }}</span>
+              <span class="node-price">${{ Number(ms.price_allocation).toFixed(2) }} USD</span>
+            </div>
+          </div>
+        }
+      </div>
+
+      <!-- Active Milestone Card -->
+      @if (activeMilestones[activeMilestoneIndex]) {
+        <div class="current-milestone-desk">
+          <div class="desk-milestone-header">
+            <div>
+              <span class="status-badge badge-blue">Currently Active Milestone {{ activeMilestoneIndex + 1 }}</span>
+              <h3 class="desk-title">{{ activeMilestones[activeMilestoneIndex].title }}</h3>
+            </div>
+            <span class="desk-amount font-mono">${{ Number(activeMilestones[activeMilestoneIndex].price_allocation).toFixed(2) }} USD</span>
+          </div>
+          <p class="desk-desc">{{ activeMilestones[activeMilestoneIndex].description }}</p>
+
+          <div class="desk-proof-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+            <span><strong>Required Evidence:</strong> {{ activeMilestones[activeMilestoneIndex].proof_required }}</span>
+          </div>
+
+          <!-- Camera Submission Desk -->
+          @if (!isMilestoneApproved(activeMilestones[activeMilestoneIndex])) {
+            <div class="cam-desk-box">
+              <app-live-camera
+                [projectId]="activeProject.id"
+                evidenceType="milestone_evidence"
+                [milestoneIndex]="activeMilestoneIndex"
+                [label]="'Capture Live Proof for Milestone ' + (activeMilestoneIndex + 1)"
+                (evidenceUploaded)="onMilestoneEvidenceSubmitted($event)"
+              ></app-live-camera>
+            </div>
+          }
+        </div>
+      }
+    </section>
+  }
+
+  <!-- Contracts Table Section -->
+  <section class="console-body-section">
+    <div class="table-toolbar-card">
+      <div class="toolbar-title-group">
+        <div class="table-title-row">
+          <h2 class="table-title">Incoming Client Contracts</h2>
+          <span class="counter-badge">{{ filteredProjects.length }} of {{ projects.length }} offers</span>
+        </div>
+        <p class="toolbar-subtitle">Inspect buyer specifications, negotiate milestone payouts, and submit work proof.</p>
+      </div>
+
+      <div class="toolbar-action-group">
+        <div class="search-input-wrapper">
+          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input
+            type="text"
+            [(ngModel)]="searchQuery"
+            (ngModelChange)="onSearchChange()"
+            placeholder="Search contracts, buyers..."
+            class="table-search-input"
+          />
+        </div>
+      </div>
+    </div>
+
+    <!-- Filter Tabs -->
+    <div class="filter-tab-pills">
+      <button (click)="setFilterTab('all')" [class.active-pill]="activeFilterTab === 'all'" class="filter-pill">
+        All Contracts ({{ projects.length }})
+      </button>
+      <button (click)="setFilterTab('negotiating')" [class.active-pill]="activeFilterTab === 'negotiating'" class="filter-pill">
+        <span class="pill-dot dot-amber"></span> In Negotiation ({{ negotiatingCount }})
+      </button>
+      <button (click)="setFilterTab('accepted')" [class.active-pill]="activeFilterTab === 'accepted'" class="filter-pill">
+        <span class="pill-dot dot-emerald"></span> Accepted &amp; Funded ({{ acceptedCount }})
+      </button>
+    </div>
+
+    <!-- AG Grid Table with Skeletons -->
+    @if (isLoadingProjects) {
+      <div class="skeleton-table-wrapper">
+        <div class="skeleton-row header-skeleton">
+          <div class="skeleton-shimmer skeleton-badge"></div>
+          <div class="skeleton-shimmer skeleton-text" style="width: 25%;"></div>
+          <div class="skeleton-shimmer skeleton-text" style="width: 15%;"></div>
+          <div class="skeleton-shimmer skeleton-badge"></div>
+          <div class="skeleton-shimmer skeleton-text" style="width: 15%;"></div>
+        </div>
+        @for (item of [1,2,3,4]; track item) {
+          <div class="skeleton-row">
+            <div class="skeleton-shimmer skeleton-badge" style="width: 70px;"></div>
+            <div class="skeleton-shimmer skeleton-text" style="width: 35%;"></div>
+            <div class="skeleton-shimmer skeleton-text" style="width: 15%;"></div>
+            <div class="skeleton-shimmer skeleton-badge" style="width: 110px;"></div>
+            <div class="skeleton-shimmer skeleton-badge" style="width: 90px;"></div>
+          </div>
+        }
+      </div>
+    } @else {
+      <div class="ag-grid-fintech-container">
+        <ag-grid-angular
+          class="ag-theme-quartz"
+          style="width: 100%; min-height: 200px;"
+          [domLayout]="'autoHeight'"
+          [rowData]="filteredProjects"
+          [columnDefs]="columnDefs"
+          [defaultColDef]="defaultColDef"
+          [rowHeight]="60"
+          [headerHeight]="48"
+          [pagination]="true"
+          [paginationPageSize]="paginationPageSize"
+          [paginationPageSizeSelector]="[10, 25, 50]"
+          [icons]="gridIcons"
+          (gridReady)="onGridReady($event)"
+        >
+        </ag-grid-angular>
+
+        @if (filteredProjects.length === 0) {
+          <div class="empty-grid-state">
+            <div class="empty-icon-box">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+              </svg>
+            </div>
+            <h3 class="empty-title">No Contractor Projects Found</h3>
+            <p class="empty-desc">When buyers invite you to milestone contracts, they will appear here in real-time.</p>
+          </div>
+        }
+      </div>
+    }
+  </section>
+
+  <!-- PayPal Ledger & Balances Modal -->
+  @if (showPayPalLedgerModal) {
+    <div class="modal-overlay" (click)="closePayPalLedger()">
+      <div class="modal-dialog-window modal-content-animated" (click)="$event.stopPropagation()">
+        <div class="modal-dialog-header">
+          <div class="header-logo-group">
+            <div class="pp-brand-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
+                <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
+              </svg>
+            </div>
+            <div>
+              <h3 class="modal-title">PayPal Account &amp; Activity Ledger</h3>
+              <p class="modal-subtitle">Live Authoritative Sandbox &bull; /v1/reporting/balances</p>
+            </div>
+          </div>
+          <button (click)="closePayPalLedger()" class="modal-close-icon" aria-label="Close dialog">&times;</button>
+        </div>
+
+        <div class="modal-dialog-body">
+          <!-- Balance Cards -->
+          <div class="ledger-balance-cards">
+            <div class="ledger-card card-available">
+              <span class="card-caption">Available Payout Balance</span>
+              <div class="card-amount font-mono">${{ Number(paypalAvailableBalance).toFixed(2) }} <span>USD</span></div>
+              <span class="card-hint">Immediate payout ready</span>
+            </div>
+
+            <div class="ledger-card card-total">
+              <span class="card-caption">Total Merchant Balance</span>
+              <div class="card-amount font-mono">${{ Number(paypalTotalBalance).toFixed(2) }} <span>USD</span></div>
+              <span class="card-hint">Combined wallet assets</span>
+            </div>
+
+            <div class="ledger-card card-withheld">
+              <span class="card-caption">Escrow Withheld Reserve</span>
+              <div class="card-amount font-mono">${{ Number(paypalWithheldBalance).toFixed(2) }} <span>USD</span></div>
+              <span class="card-hint">Reserved for pending milestones</span>
+            </div>
+          </div>
+
+          <!-- Transaction Table Header -->
+          <div class="ledger-table-header">
+            <div>
+              <h4 class="ledger-table-title">Recent Transactions (Last 30 Days)</h4>
+              <span class="ledger-table-sub">Live records queried via PayPal Transaction Search v1</span>
+            </div>
+            <button 
+              (click)="fetchPayPalTransactions()" 
+              [disabled]="loadingLedger"
+              class="btn-fintech btn-fintech-secondary btn-sm btn-refresh"
+              [class.is-loading]="loadingLedger"
+            >
+              <svg [class.spin-animation]="loadingLedger" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+              </svg>
+              <span>{{ loadingLedger ? 'Syncing...' : 'Refresh Transactions' }}</span>
+            </button>
+          </div>
+
+          @if (loadingLedger) {
+            <div class="ledger-loading-state">
+              <div class="typing-indicator mb-2"><span></span><span></span><span></span></div>
+              <span>Syncing ledger records from PayPal...</span>
+            </div>
+          } @else if (paypalTransactions.length === 0) {
+            <div class="empty-ledger-state">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 14 14"/>
+              </svg>
+              <h4 class="empty-title">No Settled Adjustments in Last 30 Days</h4>
+              <p class="empty-desc">Escrow authorizations and hold balances are linked to active milestone deliverables.</p>
+            </div>
+          } @else {
+            <div class="ledger-table-wrap">
+              <table class="fintech-ledger-table">
+                <thead>
+                  <tr>
+                    <th>Transaction ID</th>
+                    <th>Type / Event</th>
+                    <th>Date &amp; Time</th>
+                    <th>Gross Amount</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (txn of paypalTransactions; track $index) {
+                    <tr>
+                      <td class="font-mono text-bold">{{ txn.transaction_info?.transaction_id || '-' }}</td>
+                      <td>{{ txn.transaction_info?.transaction_event_code || 'PAYMENT' }}</td>
+                      <td class="text-muted">{{ txn.transaction_info?.transaction_initiation_date || '-' }}</td>
+                      <td class="font-bold text-emerald">
+                        {{ txn.transaction_info?.transaction_amount?.currency_code }} {{ txn.transaction_info?.transaction_amount?.value }}
+                      </td>
+                      <td>
+                        <span class="status-badge badge-emerald">
+                          {{ txn.transaction_info?.transaction_status || 'S' }}
+                        </span>
+                      </td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+          }
+        </div>
+
+        <div class="modal-dialog-footer">
+          <span class="account-tag font-mono">Connected Account: sb-bvy3548981602&#64;business.example.com</span>
+          <button (click)="closePayPalLedger()" class="btn-fintech btn-fintech-primary btn-sm">Close Ledger</button>
+        </div>
+      </div>
+    </div>
+  }
+
+  <!-- SUCCESS TOAST NOTIFICATION -->
+  @if (deleteSuccessToast) {
+    <div class="toast-notification-pill">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#10B981" stroke-width="2.5">
+        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+      </svg>
+      <span>{{ deleteSuccessToast }}</span>
+    </div>
+  }
+
+  <!-- SLIDE-OVER SCOPE & PROJECT OVERVIEW DRAWER -->
+  @if (isScopeDrawerOpen) {
+    <div class="scope-drawer-backdrop" (click)="closeScopeDrawer()"></div>
+    <aside class="scope-drawer-panel" [class.is-open]="isScopeDrawerOpen" aria-label="Project Scope Details">
+      <!-- Drawer Header Bar -->
+      <div class="drawer-header-bar">
+        <div class="drawer-header-left">
+          <span class="drawer-id-badge">#PL-{{ selectedDrawerData?.project?.id }}</span>
+          <span class="drawer-industry-pill">{{ selectedDrawerData?.project?.industry_type || 'General' }}</span>
+          <span class="drawer-status-pill" [ngClass]="getStatusBadgeClass(selectedDrawerData?.project?.status)">
+            {{ getStatusLabel(selectedDrawerData?.project?.status) }}
+          </span>
+        </div>
+        <button (click)="closeScopeDrawer()" class="drawer-close-btn" title="Close Drawer (Esc)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Drawer Content Scroll Area -->
+      <div class="drawer-content-scroll">
+        @if (isLoadingDrawerDetails && !selectedDrawerData?.project?.title) {
+          <div class="drawer-loading-skeleton">
+            <div class="skeleton-shimmer skeleton-badge" style="width: 140px; height: 26px;"></div>
+            <div class="skeleton-shimmer skeleton-text" style="width: 80%; height: 32px; margin-top: 16px;"></div>
+            <div class="skeleton-shimmer skeleton-text" style="width: 100%; height: 100px; margin-top: 20px;"></div>
+            <div class="skeleton-shimmer skeleton-badge" style="width: 100%; height: 120px; margin-top: 20px;"></div>
+          </div>
+        } @else {
+          <!-- Financial Lock Alert Banner (when deletion is disabled) -->
+          @if (!canDeleteProject(selectedDrawerData?.project)) {
+            <div class="drawer-banner-notice drawer-banner-vault-lock">
+              <div class="banner-icon-col">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0070BA" stroke-width="2.2">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                </svg>
+              </div>
+              <div class="banner-body-col">
+                <h4 class="banner-title">PayPal Escrow Vault Lock Active</h4>
+                <p class="banner-text">
+                  Funds for this project are securely held in the PayPal Escrow Vault. Deletion is restricted to prevent orphaned funds. Complete all milestones or issue refund before deleting.
+                </p>
+              </div>
+            </div>
+          }
+
+          <!-- Contractor Rejection Alert Banner (if rejected) -->
+          @if (selectedDrawerData?.project?.contractor_rejection_reason) {
+            <div class="drawer-banner-notice drawer-banner-rejection">
+              <div class="banner-icon-col">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#E11D48" stroke-width="2.2">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="15" y1="9" x2="9" y2="15"></line>
+                  <line x1="9" y1="9" x2="15" y2="15"></line>
+                </svg>
+              </div>
+              <div class="banner-body-col">
+                <h4 class="banner-title">Contractor Declined Terms</h4>
+                <p class="banner-text">"{{ selectedDrawerData?.project?.contractor_rejection_reason }}"</p>
+              </div>
+            </div>
+          }
+
+          <!-- Section 1: Project Title & Hero Card -->
+          <div class="drawer-hero-section">
+            <h2 class="drawer-project-title">{{ selectedDrawerData?.project?.title || 'Untitled Project' }}</h2>
+            <div class="drawer-meta-chips">
+              <span class="meta-chip">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+                <span>Created: {{ selectedDrawerData?.project?.created_at || 'Recent' }}</span>
+              </span>
+              <span class="meta-chip meta-chip-due">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line>
+                </svg>
+                <span>Due: {{ selectedDrawerData?.project?.deadline || 'Per Agreement Schedule' }}</span>
+              </span>
+              <span class="meta-chip font-mono">v{{ selectedDrawerData?.agreement?.version || selectedDrawerData?.project?.version || 1 }}.0</span>
+            </div>
+          </div>
+
+          <!-- Section 2: Protected Escrow Payout Value Card -->
+          <div class="drawer-card drawer-budget-card">
+            <div class="budget-card-header">
+              <div class="budget-card-title-group">
+                <span class="budget-card-eyebrow">CONTRACT PAYOUT VALUE</span>
+                <div class="budget-card-amount">
+                  <span class="currency-symbol">$</span>
+                  <span class="amount-val">{{ formatCurrency(selectedDrawerData?.project?.total_price) }}</span>
+                  <span class="currency-code">USD</span>
+                </div>
+              </div>
+              <div class="budget-card-badge">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#047857" stroke-width="2.5">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                </svg>
+                <span>PayPal Escrow Vault</span>
+              </div>
+            </div>
+
+            @if (selectedDrawerData?.payment) {
+              <div class="budget-payment-meta">
+                <div class="payment-meta-item">
+                  <span class="payment-meta-label">Escrow Lock Status</span>
+                  <span class="payment-meta-val text-emerald font-bold">{{ selectedDrawerData?.payment?.status }}</span>
+                </div>
+                @if (selectedDrawerData?.payment?.paypal_order_id) {
+                  <div class="payment-meta-item">
+                    <span class="payment-meta-label">PayPal Order ID</span>
+                    <span class="payment-meta-val font-mono text-xs">{{ selectedDrawerData?.payment?.paypal_order_id }}</span>
+                  </div>
+                }
+                @if (selectedDrawerData?.payment?.authorization_id) {
+                  <div class="payment-meta-item">
+                    <span class="payment-meta-label">Authorization ID</span>
+                    <span class="payment-meta-val font-mono text-xs">{{ selectedDrawerData?.payment?.authorization_id }}</span>
+                  </div>
+                }
+              </div>
+            }
+          </div>
+
+          <!-- Section 3: Scope Description & Specifications -->
+          <div class="drawer-card">
+            <div class="drawer-card-heading-row">
+              <h3 class="drawer-card-title">Project Scope Narrative &amp; Requirements</h3>
+              <div class="scope-badges-row">
+                <span class="tag-badge">{{ selectedDrawerData?.project?.project_domain || 'physical' | uppercase }}</span>
+                @if (selectedDrawerData?.project?.is_renovation) {
+                  <span class="tag-badge tag-badge-amber">RENOVATION</span>
+                }
+              </div>
+            </div>
+            <div class="drawer-scope-text">
+              {{ selectedDrawerData?.project?.description || 'No detailed scope description provided.' }}
+            </div>
+
+            <!-- Baseline Evidence / Scratch Exemption Details -->
+            @if (selectedDrawerData?.project?.before_evidence_path) {
+              <div class="drawer-baseline-box">
+                <div class="baseline-header">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0070BA" stroke-width="2.5">
+                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle>
+                  </svg>
+                  <span class="baseline-title">Baseline / Before Evidence (Client Pre-Condition)</span>
+                </div>
+                <div class="baseline-body">
+                  <a [href]="getEvidenceUrl(selectedDrawerData?.project?.before_evidence_path)" target="_blank" class="baseline-view-link">
+                    <span>Inspect Client Baseline Evidence Asset</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                  </a>
+                  @if (selectedDrawerData?.project?.before_evidence_hash) {
+                    <span class="baseline-hash font-mono">SHA-256: {{ selectedDrawerData?.project?.before_evidence_hash?.substring(0, 16) }}...</span>
+                  }
+                </div>
+              </div>
+            } @else if (selectedDrawerData?.project?.before_evidence_status === 'exempt') {
+              <div class="drawer-baseline-box baseline-exempt">
+                <span class="baseline-exempt-text">Baseline Evidence Exempt: Built from scratch without prior site/asset conditions.</span>
+              </div>
+            }
+          </div>
+
+          <!-- Section 4: Counterparty & Client Info -->
+          <div class="drawer-card">
+            <h3 class="drawer-card-title">Contract Counterparty</h3>
+            <div class="participants-grid">
+              <div class="participant-col">
+                <span class="participant-role">Client (Buyer)</span>
+                <span class="participant-email font-mono">{{ selectedDrawerData?.project?.buyer_email || 'buyer@prooflens.com' }}</span>
+              </div>
+              <div class="participant-col">
+                <span class="participant-role">Contractor (You)</span>
+                <span class="participant-email font-mono text-emerald">
+                  {{ selectedDrawerData?.project?.seller_email || 'contractor@prooflens.com' }}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section 5: Milestone Schedule Breakdown & Verification Criteria -->
+          <div class="drawer-card">
+            <div class="drawer-card-heading-row">
+              <h3 class="drawer-card-title">
+                Milestone Deliverables &amp; Proof Criteria
+                <span class="ms-count-badge">({{ selectedDrawerData?.agreement?.milestones?.length || 0 }})</span>
+              </h3>
+            </div>
+
+            @if (!selectedDrawerData?.agreement?.milestones || selectedDrawerData?.agreement?.milestones.length === 0) {
+              <p class="drawer-empty-text">No structured milestones defined for this contract yet.</p>
+            } @else {
+              <div class="drawer-milestones-list">
+                @for (m of selectedDrawerData?.agreement?.milestones; track $index) {
+                  <div class="drawer-ms-card">
+                    <div class="drawer-ms-header">
+                      <div class="drawer-ms-title-group">
+                        <span class="drawer-ms-tag">M{{ $index + 1 }}</span>
+                        <h4 class="drawer-ms-name">{{ m.title }}</h4>
+                      </div>
+                      <div class="drawer-ms-price-pill">
+                        ${{ formatCurrency(m.price_allocation) }} USD
+                      </div>
+                    </div>
+
+                    @if (m.deadline) {
+                      <div class="drawer-ms-deadline">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#D97706" stroke-width="2.5">
+                          <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line>
+                        </svg>
+                        <span>Target Due: {{ m.deadline }}</span>
+                      </div>
+                    }
+
+                    <p class="drawer-ms-desc">{{ m.description }}</p>
+
+                    <div class="drawer-ms-proof-box">
+                      <div class="proof-box-header">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#047857" stroke-width="2.5">
+                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                        </svg>
+                        <span>Required AI Verification Proof (PayPal Release):</span>
+                      </div>
+                      <p class="proof-box-text">{{ m.proof_required }}</p>
+                    </div>
+                  </div>
+                }
+              </div>
+            }
+          </div>
+
+          <!-- Section 6: Active Scope Change (if any) -->
+          @if (selectedDrawerData?.active_scope_change) {
+            <div class="drawer-card drawer-scope-change-card">
+              <div class="drawer-card-heading-row">
+                <h3 class="drawer-card-title text-amber">Active Scope Change Request</h3>
+                <span class="status-badge badge-amber">{{ selectedDrawerData?.active_scope_change?.status }}</span>
+              </div>
+              <p class="drawer-scope-text">{{ selectedDrawerData?.active_scope_change?.description }}</p>
+              <div class="scope-change-metrics">
+                <span class="sc-metric-chip">+${{ formatCurrency(selectedDrawerData?.active_scope_change?.proposed_extra_cost) }} USD</span>
+                <span class="sc-metric-chip">+{{ selectedDrawerData?.active_scope_change?.proposed_extra_days }} Days Extension</span>
+              </div>
+            </div>
+          }
+        }
+      </div>
+
+      <!-- Drawer Sticky Action Footer -->
+      <div class="drawer-footer-bar">
+        <div class="drawer-footer-actions-left">
+          <button (click)="openProject(selectedDrawerData?.project?.id)" class="btn-fintech btn-fintech-primary">
+            <span>Open Negotiation Room</span>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+          @if ((selectedDrawerData?.project?.status || '').toLowerCase() === 'accepted') {
+            <button (click)="openFulfillment(selectedDrawerData?.project?.id)" class="btn-fintech btn-emerald-solid">
+              <span>Submit Proof &amp; Fulfill</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          } @else {
+            <button disabled class="btn-fintech btn-emerald-solid btn-disabled" title="Submit Proof unlocks once contract is accepted and funded in PayPal escrow">
+              <span>Submit Proof &amp; Fulfill</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          }
+        </div>
+
+        <div class="drawer-footer-actions-right">
+          @if (canDeleteProject(selectedDrawerData?.project)) {
+            <button (click)="promptDeleteProject(selectedDrawerData?.project?.id)" class="btn-fintech btn-danger-soft" title="Delete Contract">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+              <span>Delete Contract</span>
+            </button>
+          } @else {
+            <button disabled class="btn-fintech btn-danger-soft btn-disabled" [title]="getDeleteDisabledReason(selectedDrawerData?.project)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+              </svg>
+              <span>Delete Locked</span>
+            </button>
+          }
+        </div>
+      </div>
+    </aside>
+  }
+
+  <!-- DELETE CONFIRMATION MODAL -->
+  @if (isDeleteModalOpen) {
+    <div class="delete-modal-backdrop" (click)="closeDeleteModal()"></div>
+    <div class="delete-modal-dialog" role="dialog" aria-modal="true">
+      <div class="delete-modal-icon-bubble">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#E11D48" stroke-width="2.2">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          <line x1="10" y1="11" x2="10" y2="17"></line>
+          <line x1="14" y1="11" x2="14" y2="17"></line>
+        </svg>
+      </div>
+
+      <h3 class="delete-modal-title">Delete Escrow Contract #PL-{{ projectToDelete?.id }}?</h3>
+      <div class="delete-modal-project-badge">
+        <span class="delete-badge-name">{{ projectToDelete?.title }}</span>
+        <span class="delete-badge-ind">{{ projectToDelete?.industry_type }}</span>
+      </div>
+
+      <div class="delete-modal-warning-body">
+        <p class="delete-modal-desc">
+          Are you sure you want to delete this contract from your desk? All associated specifications, milestone definitions, draft agreements, and audit trails will be permanently removed.
+        </p>
+        <p class="delete-modal-subwarning">
+          <strong>Warning:</strong> This action cannot be reversed.
+        </p>
+      </div>
+
+      @if (deleteActionError) {
+        <div class="delete-error-alert">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+          <span>{{ deleteActionError }}</span>
+        </div>
+      }
+
+      <div class="delete-modal-actions">
+        <button (click)="closeDeleteModal()" [disabled]="isDeletingProject" class="btn-fintech btn-fintech-secondary">
+          Cancel
+        </button>
+        <button (click)="confirmDeleteProject()" [disabled]="isDeletingProject" class="btn-fintech btn-danger-solid">
+          @if (isDeletingProject) {
+            <span class="spin-animation">&#8635;</span>
+            <span>Deleting...</span>
+          } @else {
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+            <span>Confirm Permanent Deletion</span>
+          }
+        </button>
+      </div>
+    </div>
+  }
+</div>

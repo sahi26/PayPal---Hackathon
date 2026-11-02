@@ -1,5 +1,12 @@
 import os
 import sys
+import io
+
+if hasattr(sys.stdout, "encoding") and sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+    except Exception:
+        pass
 
 # Ensure backend path is on sys.path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

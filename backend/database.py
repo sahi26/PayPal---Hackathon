@@ -14,18 +14,30 @@ if SQLALCHEMY_DATABASE_URL and SQLALCHEMY_DATABASE_URL.startswith("postgres://")
     SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 # Connect to Render PostgreSQL if reachable, otherwise fallback to local SQLite for robust offline/testing support
-if SQLALCHEMY_DATABASE_URL and not SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(BACKEND_DIR, ".."))
+ROOT_SQLITE = os.path.join(ROOT_DIR, "sql_app.db")
+BACKEND_SQLITE = os.path.join(BACKEND_DIR, "sql_app.db")
+CANONICAL_SQLITE_PATH = ROOT_SQLITE if os.path.exists(ROOT_SQLITE) else BACKEND_SQLITE
+CANONICAL_SQLITE_URL = f"sqlite:///{CANONICAL_SQLITE_PATH.replace(os.sep, '/')}"
+
+USE_LOCAL_DB = os.getenv("USE_LOCAL_DB", "true").lower() in ("true", "1", "yes")
+
+if USE_LOCAL_DB:
+    SQLALCHEMY_DATABASE_URL = CANONICAL_SQLITE_URL
+    engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+elif SQLALCHEMY_DATABASE_URL and not SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
     try:
-        test_engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_pre_ping=True)
+        test_engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_pre_ping=True, connect_args={"connect_timeout": 3})
         with test_engine.connect() as conn:
             pass
         engine = test_engine
     except Exception as e:
-        print(f"⚠️ Remote PostgreSQL unreachable ({e}). Falling back to local SQLite.")
-        SQLALCHEMY_DATABASE_URL = "sqlite:///./sql_app.db"
+        print(f"[WARN] Remote PostgreSQL unreachable ({e}). Falling back to local SQLite at {CANONICAL_SQLITE_PATH}.")
+        SQLALCHEMY_DATABASE_URL = CANONICAL_SQLITE_URL
         engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 else:
-    SQLALCHEMY_DATABASE_URL = "sqlite:///./sql_app.db"
+    SQLALCHEMY_DATABASE_URL = CANONICAL_SQLITE_URL
     engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 
 # Create a SessionLocal class for database sessions
@@ -81,6 +93,8 @@ def run_migrations(target_engine):
                     conn.execute(text("ALTER TABLE projects ADD COLUMN is_renovation BOOLEAN DEFAULT FALSE;"))
                 if "project_domain" not in columns:
                     conn.execute(text("ALTER TABLE projects ADD COLUMN project_domain VARCHAR(50) DEFAULT 'physical';"))
+                if "contractor_rejection_reason" not in columns:
+                    conn.execute(text("ALTER TABLE projects ADD COLUMN contractor_rejection_reason TEXT;"))
                 # Enlarge status column to VARCHAR(50) if postgres
                 try:
                     conn.execute(text("ALTER TABLE projects ALTER COLUMN status TYPE VARCHAR(50);"))
@@ -89,6 +103,10 @@ def run_migrations(target_engine):
                 conn.commit()
 
             if "agreements" in tables:
+                ag_cols = [c["name"] for c in inspector.get_columns("agreements")]
+                if "rejection_reason" not in ag_cols:
+                    conn.execute(text("ALTER TABLE agreements ADD COLUMN rejection_reason TEXT;"))
+
                 columns = [c["name"] for c in inspector.get_columns("agreements")]
                 if "latest_buyer_message" not in columns:
                     conn.execute(text("ALTER TABLE agreements ADD COLUMN latest_buyer_message TEXT;"))
@@ -111,6 +129,29 @@ def run_migrations(target_engine):
                         conn.execute(text("ALTER TABLE agreements ADD COLUMN milestones JSON;"))
                     except Exception:
                         conn.execute(text("ALTER TABLE agreements ADD COLUMN milestones TEXT;"))
+                if "lock_in_type" not in columns:
+                    conn.execute(text("ALTER TABLE agreements ADD COLUMN lock_in_type VARCHAR(50) DEFAULT 'NONE';"))
+                if "lock_in_amount" not in columns:
+                    conn.execute(text("ALTER TABLE agreements ADD COLUMN lock_in_amount FLOAT DEFAULT 0.0;"))
+                if "lock_in_days" not in columns:
+                    conn.execute(text("ALTER TABLE agreements ADD COLUMN lock_in_days INTEGER DEFAULT 0;"))
+                if "warranty_end_date" not in columns:
+                    try:
+                        conn.execute(text("ALTER TABLE agreements ADD COLUMN warranty_end_date TIMESTAMP WITH TIME ZONE;"))
+                    except Exception:
+                        try:
+                            conn.execute(text("ALTER TABLE agreements ADD COLUMN warranty_end_date DATETIME;"))
+                        except Exception:
+                            pass
+                if "dispute_active" not in columns:
+                    try:
+                        conn.execute(text("ALTER TABLE agreements ADD COLUMN dispute_active BOOLEAN DEFAULT FALSE;"))
+                    except Exception:
+                        conn.execute(text("ALTER TABLE agreements ADD COLUMN dispute_active INTEGER DEFAULT 0;"))
+                if "warranty_payout_batch_id" not in columns:
+                    conn.execute(text("ALTER TABLE agreements ADD COLUMN warranty_payout_batch_id VARCHAR(100);"))
+                if "warranty_payout_status" not in columns:
+                    conn.execute(text("ALTER TABLE agreements ADD COLUMN warranty_payout_status VARCHAR(50) DEFAULT 'NONE';"))
                 try:
                     conn.execute(text("UPDATE agreements SET status = 'ACTIVE' WHERE status IS NULL;"))
                 except Exception:

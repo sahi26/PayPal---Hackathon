@@ -1,0 +1,377 @@
+<div class="revision-modal-backdrop" (click)="onBackdropClick($event)">
+      <div class="revision-modal-container" (click)="$event.stopPropagation()">
+        <!-- Header -->
+        <div class="revision-modal-header">
+          <div class="header-titles">
+            <div class="modal-badge-row">
+              <span class="room-tag">Scope Changes & Revisions</span>
+              @if (activeScopeChange) {
+                <span class="status-pill" [attr.data-status]="activeScopeChange.status">
+                  {{ formatStatus(activeScopeChange.status) }}
+                </span>
+              }
+            </div>
+            <h2 class="room-title">
+              {{ projectTitle || 'Project Scope Revisions' }}
+            </h2>
+          </div>
+          <button (click)="close()" class="btn-close-modal" aria-label="Close Revision Room">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="revision-modal-body">
+          @if (isLoading) {
+            <div class="loading-panel">
+              <div class="spinner"></div>
+              <span>Processing scope change data...</span>
+            </div>
+          } @else {
+            <!-- If no active scope change: Request Form -->
+            @if (!activeScopeChange) {
+              <div class="init-request-card">
+                <div class="init-intro">
+                  <div class="icon-wrap-blue">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                    </svg>
+                  </div>
+                  <div class="intro-text">
+                    <h3>Request Scope Revision & Supplementary Milestones</h3>
+                    <p>
+                      Either party can propose additions or modifications to the active agreement.
+                      Our Legal AI (gemini-4-argon) will automatically draft a legally binding Agreement Addendum
+                      and establish supplementary milestone checkpoints.
+                    </p>
+                  </div>
+                </div>
+
+                <div class="init-params-row">
+                  <div class="init-param-col">
+                    <label for="initDaysInput">Timeline Extension (Days)</label>
+                    <div class="input-with-prefix">
+                      <span class="prefix">+</span>
+                      <input
+                        id="initDaysInput"
+                        type="number"
+                        [(ngModel)]="initExtraDays"
+                        min="0"
+                        step="1"
+                        class="form-control-sm"
+                        placeholder="0"
+                      />
+                      <span class="suffix">Days</span>
+                    </div>
+                  </div>
+                  <div class="init-param-col">
+                    <label for="initCostInput">Additional Escrow ($ USD)</label>
+                    <div class="input-with-prefix">
+                      <span class="prefix">$</span>
+                      <input
+                        id="initCostInput"
+                        type="number"
+                        [(ngModel)]="initExtraCost"
+                        min="0"
+                        step="5"
+                        class="form-control-sm"
+                        placeholder="0.00"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label for="descInput">Reason / Scope Description for Extension</label>
+                  <textarea
+                    id="descInput"
+                    [(ngModel)]="newDescription"
+                    rows="4"
+                    class="form-control"
+                    placeholder="E.g., Supply chain delay in timber delivery; need 7 additional days for proper wood drying and precision joinery..."
+                  ></textarea>
+                </div>
+
+                <div class="form-actions-right">
+                  <button
+                    (click)="submitInit()"
+                    [disabled]="!newDescription.trim() || isSubmitting"
+                    class="btn-primary-action"
+                  >
+                    @if (isSubmitting) {
+                      <span class="mini-spinner"></span>
+                      <span>Drafting Addendum with gemini-4-argon...</span>
+                    } @else {
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                      </svg>
+                      <span>Draft Agreement Addendum</span>
+                    }
+                  </button>
+                </div>
+              </div>
+            } @else {
+              <!-- Active Scope Change View -->
+              <div class="active-scope-layout">
+                <!-- Top Summary Cards -->
+                <div class="metrics-grid">
+                  <div class="metric-card">
+                    <span class="metric-label">PROPOSED EXTRA ESCROW</span>
+                    <span class="metric-val">+${{ Number(activeScopeChange.proposed_extra_cost).toFixed(2) }} USD</span>
+                  </div>
+                  <div class="metric-card">
+                    <span class="metric-label">PROPOSED TIMELINE EXTENSION</span>
+                    <span class="metric-val">+{{ activeScopeChange.proposed_extra_days }} Calendar Days</span>
+                  </div>
+                  <div class="metric-card">
+                    <span class="metric-label">AGREEMENT REVISION STATE</span>
+                    <span class="metric-val-status">{{ formatStatus(activeScopeChange.status) }}</span>
+                  </div>
+                </div>
+
+                <!-- Scope Change Description -->
+                <div class="scope-desc-box">
+                  <div class="desc-header">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"/>
+                      <line x1="12" y1="16" x2="12" y2="12"/>
+                      <line x1="12" y1="8" x2="12.01" y2="8"/>
+                    </svg>
+                    <span>Requested Scope Change</span>
+                  </div>
+                  <p class="desc-text">{{ activeScopeChange.description }}</p>
+                </div>
+
+                <!-- Agreement Addendum Details (Collapsible) -->
+                @if (activeScopeChange.addendum_contract) {
+                  <div class="addendum-card">
+                    <div class="addendum-header" (click)="toggleAddendumView()">
+                      <div class="header-left">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                          <polyline points="14 2 14 8 20 8"/>
+                          <line x1="16" y1="13" x2="8" y2="13"/>
+                          <line x1="16" y1="17" x2="8" y2="17"/>
+                        </svg>
+                        <span>AI-Drafted Agreement Addendum (gemini-4-argon)</span>
+                      </div>
+                      <span class="toggle-link">{{ showAddendumText ? 'Hide Contract Terms' : 'View Contract Terms' }}</span>
+                    </div>
+
+                    @if (showAddendumText) {
+                      <div class="addendum-body">
+                        <pre class="legal-text">{{ activeScopeChange.addendum_contract }}</pre>
+                      </div>
+                    }
+
+                    <!-- Supplementary Milestones Preview -->
+                    @if (activeScopeChange.proposed_milestones && activeScopeChange.proposed_milestones.length > 0) {
+                      <div class="proposed-ms-section">
+                        <div class="proposed-ms-title">Supplementary Addendum Milestones to Append:</div>
+                        <div class="proposed-ms-list">
+                          @for (pms of activeScopeChange.proposed_milestones; track $index) {
+                            <div class="pms-item">
+                              <div class="pms-top">
+                                <div class="pms-tag-row">
+                                  <span class="badge-addendum-pill">Addendum Milestone</span>
+                                  <span class="pms-name">{{ pms.title }}</span>
+                                </div>
+                                <span class="pms-cost">${{ Number(pms.price_allocation).toFixed(2) }} USD</span>
+                              </div>
+                              <p class="pms-desc">{{ pms.description }}</p>
+                              <div class="pms-proof-req">
+                                <strong>Proof Required:</strong> {{ pms.proof_required }}
+                              </div>
+                            </div>
+                          }
+                        </div>
+                      </div>
+                    }
+                  </div>
+                }
+
+                <!-- Pending Funds Escrow Gateway -->
+                @if (activeScopeChange.status === 'PENDING_FUNDS') {
+                  <div class="escrow-auth-banner">
+                    <div class="auth-icon-wrap">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="2" y="4" width="20" height="16" rx="2"/>
+                        <line x1="6" y1="12" x2="18" y2="12"/>
+                        <line x1="10" y1="8" x2="14" y2="8"/>
+                      </svg>
+                    </div>
+                    <div class="auth-content">
+                      <h4>PayPal Supplemental Escrow Deposit Required</h4>
+                      <p>
+                        The scope change has been agreed. To protect both parties, the additional amount of
+                        <strong>${{ Number(activeScopeChange.proposed_extra_cost).toFixed(2) }} USD</strong>
+                        must be authorized in PayPal Escrow before work begins.
+                      </p>
+                      <div class="auth-btn-row">
+                        @if (activeScopeChange.paypal_approval_url) {
+                          <a
+                            [href]="activeScopeChange.paypal_approval_url"
+                            target="_blank"
+                            class="btn-paypal-escrow"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                              <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.641.641 0 0 1 .632-.544h7.521c3.155 0 5.487 1.096 5.807 4.168.32 3.072-1.745 5.568-4.664 6.27-.408.098-.795.158-1.168.188l-1.072 6.804a.641.641 0 0 1-.632.544l-3.292.187z"/>
+                            </svg>
+                            <span>Authorize Extra Funds via PayPal</span>
+                          </a>
+                        }
+                        <button
+                          (click)="authorizeFunds()"
+                          [disabled]="isAuthorizing"
+                          class="btn-confirm-funds"
+                        >
+                          @if (isAuthorizing) {
+                            <span class="mini-spinner"></span>
+                            <span>Verifying PayPal Authorization...</span>
+                          } @else {
+                            <span>I Have Authorized PayPal Deposit</span>
+                          }
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                }
+
+                <!-- Revision Room Chat & Counter-Offer Deck -->
+                <div class="negotiation-chat-card">
+                  <div class="chat-card-header">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                    </svg>
+                    <span>Revision Negotiation History & Counter-Offers</span>
+                  </div>
+
+                  <div class="chat-thread">
+                    @for (chat of (activeScopeChange.chat_history || []); track $index) {
+                      <div class="chat-entry" [class.is-seller]="chat.sender === 'seller'" [class.is-buyer]="chat.sender === 'buyer'" [class.is-system]="chat.sender === 'system'">
+                        <div class="chat-meta">
+                          <span class="chat-author">{{ chat.sender_name || (chat.sender | uppercase) }}</span>
+                          @if (chat.timestamp) {
+                            <span class="chat-time">{{ formatTime(chat.timestamp) }}</span>
+                          }
+                        </div>
+                        <div class="chat-msg">{{ chat.message }}</div>
+                        @if (chat.proposed_extra_cost !== undefined || chat.proposed_extra_days !== undefined) {
+                          <div class="chat-terms-tag">
+                            <span>Terms: +${{ Number(chat.proposed_extra_cost || 0).toFixed(2) }} USD</span>
+                            <span>&bull;</span>
+                            <span>+{{ chat.proposed_extra_days || 0 }} Days</span>
+                          </div>
+                        }
+                      </div>
+                    }
+                  </div>
+
+                  <!-- Counter-Offer Form (Available when NEGOTIATING) -->
+                  @if (activeScopeChange.status === 'NEGOTIATING') {
+                    <div class="counter-offer-deck">
+                      <div class="deck-title">Propose Counter-Offer: Adjust Delta Cost and Schedule Extension</div>
+                      <div class="counter-inputs-row">
+                        <div class="input-col">
+                          <label for="costInput">Additional Cost ($ USD)</label>
+                          <div class="input-with-prefix">
+                            <span class="prefix">$</span>
+                            <input
+                              id="costInput"
+                              type="number"
+                              [(ngModel)]="counterCost"
+                              min="0"
+                              step="5"
+                              class="form-control-sm"
+                            />
+                          </div>
+                        </div>
+
+                        <div class="input-col">
+                          <label for="daysInput">Additional Time (Days)</label>
+                          <div class="input-with-prefix">
+                            <span class="prefix">+</span>
+                            <input
+                              id="daysInput"
+                              type="number"
+                              [(ngModel)]="counterDays"
+                              min="0"
+                              step="1"
+                              class="form-control-sm"
+                            />
+                            <span class="suffix">Days</span>
+                          </div>
+                        </div>
+
+                        <div class="input-col note-col">
+                          <label for="msgInput">Counter-Offer Note</label>
+                          <input
+                            id="msgInput"
+                            type="text"
+                            [(ngModel)]="counterMessage"
+                            placeholder="Reason for adjustment / deliverable specs..."
+                            class="form-control-sm"
+                          />
+                        </div>
+
+                        <div class="input-col btn-col">
+                          <label>&nbsp;</label>
+                          <button
+                            (click)="submitCounterOffer()"
+                            [disabled]="isSubmittingCounter"
+                            class="btn-send-counter"
+                          >
+                            @if (isSubmittingCounter) {
+                              <span class="mini-spinner"></span>
+                            } @else {
+                              <span>Send Counter-Offer</span>
+                            }
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  }
+                </div>
+
+                <!-- Acceptance Actions Bar -->
+                @if (activeScopeChange.status === 'NEGOTIATING') {
+                  <div class="acceptance-actions-bar">
+                    <div class="action-info">
+                      <strong>Accepting this Scope Revision</strong> will supersede the current Agreement, increment the project to Version N+1,
+                      append the supplementary milestone(s), and automatically shift all uncompleted milestone deadlines by +{{ activeScopeChange.proposed_extra_days }} days.
+                    </div>
+                    <button
+                      (click)="acceptScopeChange()"
+                      [disabled]="isAccepting"
+                      class="btn-accept-scope"
+                    >
+                      @if (isAccepting) {
+                        <span class="mini-spinner"></span>
+                        <span>Updating Agreement Version...</span>
+                      } @else {
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                          <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                        <span>Accept Scope Revision & Append Milestones</span>
+                      }
+                    </button>
+                  </div>
+                }
+
+                @if (activeScopeChange.status === 'ACCEPTED') {
+                  <div class="accepted-success-banner">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    <span>Agreement Version Updated. Supplementary milestones are active on the project fulfillment timeline.</span>
+                  </div>
+                }
+              </div>
+            }
+          }
+        </div>
+      </div>
+    </div>

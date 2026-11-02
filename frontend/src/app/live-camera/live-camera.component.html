@@ -1,0 +1,157 @@
+﻿<div class="camera-card">
+      <div class="camera-card-header">
+        <div class="header-tag">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+          <span>{{ label }}</span>
+        </div>
+        <div class="header-badges">
+          @if (capturedBlobs.length > 0) {
+            <span class="count-pill">{{ capturedBlobs.length }} Captured</span>
+          }
+          <span class="auth-pill">Hardware Rear-Camera Enforced</span>
+        </div>
+      </div>
+
+      <!-- State: Initializing -->
+      @if (state === 'initializing') {
+        <div class="status-panel loading-panel">
+          <div class="camera-spinner"></div>
+          <p>Accessing camera hardware...</p>
+        </div>
+      }
+
+      <!-- State: Permission Denied -->
+      @if (state === 'permission_denied') {
+        <div class="status-panel warning-panel">
+          <div class="panel-icon warning-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+          </div>
+          <div class="panel-text">
+            <strong>Camera Access Required</strong>
+            <p>Please enable camera permissions in your browser. ProofLens requires direct live camera capture to guarantee proof authenticity.</p>
+          </div>
+          <div class="panel-actions">
+            <button (click)="startCamera()" class="btn-panel-action">Grant Camera Access / Retry</button>
+          </div>
+        </div>
+      }
+
+      <!-- State: Camera Error -->
+      @if (state === 'error') {
+        <div class="status-panel error-panel">
+          <div class="panel-icon error-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="15" y1="9" x2="9" y2="15"/>
+              <line x1="9" y1="9" x2="15" y2="15"/>
+            </svg>
+          </div>
+          <div class="panel-text">
+            <strong>Camera Device Error</strong>
+            <p>{{ errorMessage || 'Camera is currently unavailable or in use by another application.' }}</p>
+          </div>
+          <div class="panel-actions">
+            <button (click)="startCamera()" class="btn-panel-action">Retry Camera</button>
+          </div>
+        </div>
+      }
+
+      <!-- Live Stream Viewfinder Shell -->
+      <div [hidden]="state !== 'active'" class="viewfinder-shell">
+        <video #videoElement autoplay playsinline class="viewfinder-video"></video>
+        <div class="viewfinder-overlay">
+          <div class="overlay-grid"></div>
+          <span class="live-rec-badge">
+            <span class="rec-dot"></span> LIVE SENSOR FEED
+          </span>
+          <span class="anti-spoof-chip">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+            <span>Anti-Spoofing Audit Active</span>
+          </span>
+        </div>
+
+        <div class="viewfinder-controls">
+          <button (click)="captureAngle()" class="btn-shutter">
+            <span class="shutter-inner"></span>
+            <span class="shutter-label">Capture Angle #{{ capturedBlobs.length + 1 }}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Hidden canvas used for live frame extraction -->
+      <canvas #canvasElement style="display: none;"></canvas>
+
+      <!-- Multi-Angle Captured Tray & Batch Actions -->
+      @if (capturedBlobs.length > 0 && (state === 'active' || state === 'uploading')) {
+        <div class="tray-container">
+          <div class="tray-header">
+            <span class="tray-title">Captured Angles ({{ capturedBlobs.length }})</span>
+            <span class="tray-hint">Capture multiple vantage points (e.g. wide room, close-up details, plumbing/valves).</span>
+          </div>
+
+          <div class="thumbnails-grid">
+            @for (item of capturedBlobs; track $index) {
+              <div class="thumb-card">
+                <img [src]="item.previewUrl" alt="Angle {{ $index + 1 }}" class="thumb-img" />
+                <div class="thumb-bar">
+                  <span class="angle-tag">Angle {{ $index + 1 }}</span>
+                  <button type="button" (click)="removeAngle($index)" [disabled]="state === 'uploading'" class="btn-del-thumb" title="Remove angle" aria-label="Remove angle">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            }
+          </div>
+
+          <div class="batch-actions-bar">
+            <button type="button" (click)="resetAll()" [disabled]="state === 'uploading'" class="btn-reset-batch">
+              Retake All
+            </button>
+            <button type="button" (click)="confirmAndUploadBatch()" [disabled]="state === 'uploading'" class="btn-confirm-batch">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+              <span>{{ state === 'uploading' ? 'Hashing & Auditing Evidence...' : 'Confirm & Lock ' + capturedBlobs.length + ' Angle' + (capturedBlobs.length > 1 ? 's' : '') + ' (SHA-256)' }}</span>
+            </button>
+          </div>
+        </div>
+      }
+
+      <!-- State: Uploading Spinner Overlay -->
+      @if (state === 'uploading') {
+        <div class="status-panel loading-panel inline-loader">
+          <div class="camera-spinner"></div>
+          <strong>Hashing & Auditing Live Submissions...</strong>
+          <p>Generating SHA-256 cryptographic digests, verifying GPS coordinates, and checking for screen re-photograph patterns.</p>
+        </div>
+      }
+
+      <!-- State: Success -->
+      @if (state === 'success') {
+        <div class="status-panel success-panel">
+          <div class="panel-icon success-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+          </div>
+          <div class="panel-text">
+            <strong>Evidence Batch Successfully Secured</strong>
+            <p>Authoritative cryptographic hashes and server timestamps registered in ProofLens PayPal escrow audit log.</p>
+          </div>
+          <button (click)="startAnotherCaptureSession()" class="btn-panel-sub">Capture Additional Proof Angles</button>
+        </div>
+      }
+    </div>

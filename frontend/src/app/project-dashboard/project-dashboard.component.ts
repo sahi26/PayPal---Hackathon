@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+﻿import { Component } from '@angular/core';
 import { MilestoneFulfillmentComponent } from '../milestone-fulfillment/milestone-fulfillment.component';
 
 /**
@@ -11,6 +11,7 @@ import { MilestoneFulfillmentComponent } from '../milestone-fulfillment/mileston
   selector: 'app-project-dashboard',
   standalone: true,
   imports: [MilestoneFulfillmentComponent],
-  template: `<app-milestone-fulfillment></app-milestone-fulfillment>`
+  templateUrl: './project-dashboard.component.html',
+  styleUrl: './project-dashboard.component.scss'
 })
 export class ProjectDashboardComponent {}

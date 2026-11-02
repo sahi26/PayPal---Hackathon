@@ -26,8 +26,15 @@ class ProjectStatus(str, enum.Enum):
     ACCEPTED = "accepted"
     ACTIVE = "active"
     IN_REVIEW = "in_review"
+    WARRANTY_PERIOD = "WARRANTY_PERIOD"
     COMPLETED = "completed"
     DISPUTED = "disputed"
+    REJECTED = "rejected"
+
+class LockInType(str, enum.Enum):
+    NONE = "NONE"
+    FINAL_MILESTONE = "FINAL_MILESTONE"
+    CUSTOM = "CUSTOM"
 
 class CaptureMethod(str, enum.Enum):
     LIVE_CAMERA = "live_camera"
@@ -96,6 +103,7 @@ class Project(Base):
     requires_baseline_evidence = Column(Boolean, default=False, nullable=True)
     before_evidence_status = Column(String(50), default="pending", nullable=True) # "provided" | "exempt_no_evidence" | "pending"
     drafting_history = Column(JSON, default=list, nullable=True) # Chat history [{"role": "ai"|"user", "content": "..."}]
+    contractor_rejection_reason = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Relationships
@@ -167,6 +175,15 @@ class Agreement(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     is_accepted_by_client = Column(Integer, default=0) # 0 for false, 1 for true
+
+    # Warranty Lock-In (Retainage) Configuration
+    lock_in_type = Column(String(50), default="NONE", nullable=False) # NONE, FINAL_MILESTONE, CUSTOM
+    lock_in_amount = Column(Float, default=0.0, nullable=False)
+    lock_in_days = Column(Integer, default=0, nullable=False)
+    warranty_end_date = Column(DateTime(timezone=True), nullable=True)
+    dispute_active = Column(Boolean, default=False, nullable=False)
+    warranty_payout_batch_id = Column(String(100), nullable=True)
+    warranty_payout_status = Column(String(50), default="NONE", nullable=True) # NONE, PENDING, PROCESSING, SUCCESS, FAILED, HELD_DISPUTE
 
     project = relationship("Project", back_populates="agreements")
 
@@ -273,3 +290,36 @@ class DisputeRecord(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     project = relationship("Project", backref="disputes")
+
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), index=True, nullable=False)
+    milestone_index = Column(Integer, index=True, nullable=False)
+    
+    # PayPal Invoicing v2 identifiers
+    paypal_invoice_id = Column(String(100), index=True, nullable=True) # e.g. INV2-XXXX-XXXX-XXXX-XXXX
+    invoice_number = Column(String(100), index=True, nullable=True) # e.g. 0001 or INV-1-M1
+    invoice_url = Column(String(500), nullable=True) # Official PayPal payer view URL
+    
+    # Financial details
+    amount = Column(Float, nullable=False)
+    currency = Column(String(10), default="USD")
+    status = Column(String(50), default="PAID") # MARKED_AS_PAID, PAID, SENT
+    
+    # Payment / Capture link
+    paypal_capture_id = Column(String(100), nullable=True)
+    buyer_email = Column(String(200), nullable=True)
+    seller_email = Column(String(200), nullable=True)
+    
+    # Details & cryptographic audit
+    items = Column(JSON, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
+    
+    issued_at = Column(DateTime(timezone=True), server_default=func.now())
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+
+    project = relationship("Project", backref="invoices")
+

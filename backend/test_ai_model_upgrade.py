@@ -1,4 +1,12 @@
 import os
+import sys
+import io
+import tempfile
+if hasattr(sys.stdout, "encoding") and sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+    except Exception:
+        pass
 import unittest
 from unittest.mock import MagicMock, patch
 import json
@@ -94,7 +102,7 @@ class TestAIModelUpgrade(unittest.TestCase):
         }
 
         # Create temporary dummy image file
-        test_img_path = "/tmp/test_milestone_img.jpg"
+        test_img_path = os.path.join(tempfile.gettempdir(), "test_milestone_img.jpg")
         with open(test_img_path, "wb") as f:
             f.write(b"\xFF\xD8\xFF\xE0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xFF\xDB\x00C\x00")
 
@@ -136,7 +144,7 @@ class TestAIModelUpgrade(unittest.TestCase):
         }
 
         # Inspect the crop with moire and bezel reflections
-        crop_path = "/tmp/evidence_crop.bmp"
+        crop_path = os.path.join(tempfile.gettempdir(), "evidence_crop.bmp")
         if os.path.exists(crop_path):
             res = main_mod.run_ai_evidence_comparison(
                 project=project,

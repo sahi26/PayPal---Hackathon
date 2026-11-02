@@ -1,0 +1,212 @@
+<div class="login-shell">
+      <div class="login-card">
+        <!-- Top PayPal Brand Ribbon -->
+        <div class="login-brand-header">
+          <div class="pp-badge-circle">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+              <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
+              <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
+            </svg>
+          </div>
+          <h2>ProofLens Escrow Login</h2>
+          <p class="brand-sub">PayPal-Backed Cryptographic Milestone & Contract Identity</p>
+        </div>
+
+        @if (isAuthenticating) {
+          <!-- Real-time OAuth Token Exchange State -->
+          <div class="auth-loading-state">
+            <div class="spinner"></div>
+            <h4>Connecting to PayPal Sandbox API...</h4>
+            <p>Exchanging authoritative OAuth grant code and verifying user profile token.</p>
+          </div>
+        } @else if (currentUser) {
+          <!-- Already Authenticated State -->
+          <div class="active-session-box">
+            <div class="session-head">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              </svg>
+              <span>Authenticated PayPal Session Active</span>
+            </div>
+            <div class="user-row">
+              <div class="user-avatar-lg">
+                {{ currentUser.full_name.charAt(0) || 'P' }}
+              </div>
+              <div class="user-details">
+                <strong>{{ currentUser.full_name }}</strong>
+                <span class="user-email">{{ currentUser.email }}</span>
+                <span class="role-chip">ACTIVE ROLE: {{ currentUser.role_type | uppercase }}</span>
+              </div>
+            </div>
+
+            <div class="session-actions">
+              <button (click)="proceedToConsole()" class="btn-proceed-portal">
+                <span>Enter {{ currentUser.role_type === 'seller' ? 'Contractor Desk' : 'Buyer Console' }}</span>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+                </svg>
+              </button>
+              <button (click)="logout()" class="btn-logout-link">
+                Sign out / Log in with different account
+              </button>
+            </div>
+          </div>
+        } @else {
+          <!-- Primary Login Body -->
+          <div class="login-body">
+            @if (errorMessage) {
+              <div class="login-error-banner">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <div class="error-text">
+                  <strong>PayPal OAuth Notice:</strong>
+                  <span>{{ errorMessage }}</span>
+                </div>
+              </div>
+            }
+
+            <!-- Role Selector -->
+            <div class="form-group">
+              <label class="input-label">Select Workspace Role:</label>
+              <div class="role-radio-grid">
+                <button
+                  type="button"
+                  class="role-card"
+                  [class.is-selected]="selectedRole === 'buyer'"
+                  (click)="selectedRole = 'buyer'"
+                >
+                  <div class="role-icon-box">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+                    </svg>
+                  </div>
+                  <div class="role-title">Buyer Console</div>
+                  <div class="role-desc">Draft agreements, fund PayPal escrow, & approve milestones</div>
+                </button>
+
+                <button
+                  type="button"
+                  class="role-card"
+                  [class.is-selected]="selectedRole === 'seller'"
+                  (click)="selectedRole = 'seller'"
+                >
+                  <div class="role-icon-box">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+                    </svg>
+                  </div>
+                  <div class="role-title">Contractor Desk</div>
+                  <div class="role-desc">Negotiate terms, submit hardware live camera proof, & claim payouts</div>
+                </button>
+              </div>
+            </div>
+
+            <!-- SECTION 1: INSTANT APPLICATION FLOW TEST (Zero Setup) -->
+            <div class="fast-track-box">
+              <div class="fast-track-head">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.5">
+                  <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                </svg>
+                <span>Instant Testing Mode (Skip Redirect / Test Full App Flow Right Now)</span>
+              </div>
+              <p class="fast-track-sub">
+                Authenticate immediately into the database without getting blocked by PayPal redirect URL verification during local testing:
+              </p>
+              <div class="fast-track-buttons">
+                <button type="button" (click)="fastTrackLogin('buyer')" class="btn-fast-auth" [disabled]="isAuthenticating" [class.is-loading]="isAuthenticating">
+                  @if (isAuthenticating && selectedRole === 'buyer') {
+                    <span class="btn-spinner"></span>
+                    <span>Authenticating Buyer...</span>
+                  } @else {
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2">
+                      <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+                    </svg>
+                    <span>Test as Buyer (buyer&#64;prooflens.com)</span>
+                  }
+                </button>
+                <button type="button" (click)="fastTrackLogin('seller')" class="btn-fast-auth" [disabled]="isAuthenticating" [class.is-loading]="isAuthenticating">
+                  @if (isAuthenticating && selectedRole === 'seller') {
+                    <span class="btn-spinner"></span>
+                    <span>Authenticating Contractor...</span>
+                  } @else {
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2">
+                      <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+                    </svg>
+                    <span>Test as Contractor (seller&#64;prooflens.com)</span>
+                  }
+                </button>
+              </div>
+            </div>
+
+            <!-- SECTION 2: LIVE PAYPAL SANDBOX OAUTH -->
+            <div class="oauth-section">
+              <div class="oauth-section-title">
+                <span>OR LIVE PAYPAL SANDBOX OAUTH CONNECT</span>
+              </div>
+
+              <!-- Return URL Selector (Matches Dashboard) -->
+              <div class="return-url-selector-box">
+                <label class="url-selector-label">
+                  <span>PayPal Dashboard Return URL Match:</span>
+                </label>
+                <div class="url-pills-row">
+                  <button
+                    type="button"
+                    class="url-pill-btn"
+                    [class.is-active]="selectedRedirectUri === 'http://localhost:4200'"
+                    (click)="setRedirectUri('http://localhost:4200')"
+                  >
+                    Direct Localhost (http://localhost:4200)
+                  </button>
+                  <button
+                    type="button"
+                    class="url-pill-btn"
+                    [class.is-active]="selectedRedirectUri === 'https://prooflens-auth.loca.lt'"
+                    (click)="setRedirectUri('https://prooflens-auth.loca.lt')"
+                  >
+                    Tunnel URL (https://prooflens-auth.loca.lt)
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                (click)="loginWithRealPayPal()"
+                class="btn-paypal-primary"
+                [disabled]="isRedirecting"
+                [class.is-loading]="isRedirecting"
+              >
+                @if (isRedirecting) {
+                  <span class="btn-spinner"></span>
+                  <span>Redirecting to PayPal Sandbox...</span>
+                } @else {
+                  <div class="pp-icon-embed">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                      <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
+                      <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
+                    </svg>
+                  </div>
+                  <span>Log in with Live PayPal Sandbox</span>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <polyline points="9 18 15 12 9 6"/>
+                  </svg>
+                }
+              </button>
+
+              <div class="dashboard-tip-card">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+                </svg>
+                <div class="tip-text">
+                  <strong>Why PayPal showed "invalid client_id or redirect_uri":</strong>
+                  <span>
+                    In your PayPal Developer Dashboard, the Return URL was set to the tunnel URL. To log in directly on localhost without a tunnel, add <code>http://localhost:4200</code> to your App's <strong>Return URL</strong> list on <a href="https://developer.paypal.com/dashboard/applications/sandbox" target="_blank" rel="noopener">developer.paypal.com</a> and check the <strong>"Log in with PayPal"</strong> feature.
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        }
+      </div>
+    </div>

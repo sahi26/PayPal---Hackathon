@@ -1,0 +1,110 @@
+<div class="invite-container">
+      @if (isLoading) {
+        <div class="loading-box">
+          <div class="spinner"></div>
+          <p>Loading project invitation...</p>
+        </div>
+      } @else if (errorMessage) {
+        <div class="error-box">
+          <h2>Invitation Error</h2>
+          <p>{{ errorMessage }}</p>
+          <button (click)="goToHome()" class="btn-primary">Return to Home</button>
+        </div>
+      } @else if (projectData) {
+        <div class="invite-card">
+          <!-- Header Banner -->
+          <div class="invite-header">
+            <span class="invite-badge">Project Invitation</span>
+            <h1>{{ projectData.project.title }}</h1>
+            <div class="meta-row">
+              <span class="meta-item">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span>{{ projectData.project.industry_type }}</span>
+              </span>
+              <span class="meta-item">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                  <circle cx="12" cy="7" r="4"/>
+                </svg>
+                <span>Initiated by {{ projectData.project.buyer_email }}</span>
+              </span>
+              @if (projectData.project.deadline) {
+                <span class="meta-item">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                    <line x1="16" y1="2" x2="16" y2="6"/>
+                    <line x1="8" y1="2" x2="8" y2="6"/>
+                    <line x1="3" y1="10" x2="21" y2="10"/>
+                  </svg>
+                  <span>Due: {{ projectData.project.deadline }}</span>
+                </span>
+              }
+              <span class="price-tag">${{ projectData.project.total_price }} USD (Escrow Protected)</span>
+            </div>
+          </div>
+
+          <!-- Project Description -->
+          <div class="section-box">
+            <div class="section-title">Initial Scope & Order Description</div>
+            <p class="description-text">{{ projectData.project.description }}</p>
+          </div>
+
+          <!-- AI Drafted Contract & Evidence -->
+          <div class="grid-2">
+            <div class="contract-card">
+              <div class="card-title">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                </svg>
+                <span>Draft Agreement Terms</span>
+              </div>
+              <div class="card-content">{{ projectData.agreement.ai_generated_contract }}</div>
+            </div>
+
+            <div class="contract-card evidence-card">
+              <div class="card-title evidence-title">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <polygon points="23 7 16 12 23 17 23 7"/>
+                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+                </svg>
+                <span>Proof-of-Work Evidence Criteria</span>
+              </div>
+              <div class="card-content">{{ projectData.agreement.evidence_requirements }}</div>
+            </div>
+          </div>
+
+          <!-- Join Form -->
+          <div class="join-box">
+            <h3>Join this Project as the Contractor/Seller</h3>
+            <p class="join-desc">Join to accept these terms or request changes (schedule, milestones, or price) in the ProofLens Negotiation Room.</p>
+
+            <div class="join-form">
+              <div class="form-group">
+                <label>Your Name / Business Name</label>
+                <input type="text" [(ngModel)]="sellerName" placeholder="e.g. Master Woodcraft LLC" class="input" />
+              </div>
+
+              <div class="form-group">
+                <label>Your Email Address</label>
+                <input type="email" [(ngModel)]="sellerEmail" placeholder="contractor@example.com" class="input" />
+              </div>
+
+              <button (click)="joinProject()" [disabled]="isJoining" class="btn-join" [class.is-loading]="isJoining">
+                @if (isJoining) {
+                  <span class="btn-spinner"></span>
+                  <span>Joining Project &amp; Initializing Escrow...</span>
+                } @else {
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                  <span>Accept Invite &amp; Enter Negotiation Room</span>
+                }
+              </button>
+            </div>
+          </div>
+        </div>
+      }
+    </div>

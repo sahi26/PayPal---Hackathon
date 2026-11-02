@@ -1,5 +1,13 @@
 import os
 import sys
+import io
+import tempfile
+if hasattr(sys.stdout, "encoding") and sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+    except Exception:
+        pass
+import sys
 import unittest
 import hashlib
 
@@ -20,6 +28,22 @@ client = TestClient(app)
 class TestDigitalAiWatermarkVerification(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Ensure sample spoofed screen photo fixture exists
+        for sample_path in [
+            "uploads/1ae6c10b-aef5-420c-9ca2-03f9bb009587_live_capture_1793562649806_angle1.jpg",
+            "backend/uploads/1ae6c10b-aef5-420c-9ca2-03f9bb009587_live_capture_1793562649806_angle1.jpg"
+        ]:
+            if not os.path.exists(sample_path):
+                from PIL import Image
+                os.makedirs(os.path.dirname(sample_path), exist_ok=True)
+                im = Image.new("RGB", (300, 300), color=(10, 10, 10))
+                for y in range(int(300 * 0.18), int(300 * 0.82)):
+                    for x in range(int(300 * 0.18), int(300 * 0.82)):
+                        if (x // 3) % 2 == 0:
+                            im.putpixel((x, y), (230, 40, 190))
+                        else:
+                            im.putpixel((x, y), (40, 190, 240))
+                im.save(sample_path, "JPEG", quality=95)
         # 1. Create a digital project
         digital_payload = {
             "title": "FinTech Mobile App UI Design",
@@ -90,7 +114,7 @@ class TestDigitalAiWatermarkVerification(unittest.TestCase):
     def test_02_direct_inspection_detects_synthetic_ai_watermarks(self):
         """Unit test forensic watermark detection function against synthetic AI markers."""
         # 1. Clean vector/image file
-        clean_file_path = "/tmp/test_clean_vector.svg"
+        clean_file_path = os.path.join(tempfile.gettempdir(), "test_clean_vector.svg")
         with open(clean_file_path, "wb") as f:
             f.write(b"<svg xmlns='http://www.w3.org/2000/svg'><circle cx='50' cy='50' r='40'/></svg>")
         
@@ -100,7 +124,7 @@ class TestDigitalAiWatermarkVerification(unittest.TestCase):
         self.assertEqual(clean_res["confidence"], 96)
 
         # 2. SynthID watermark detection
-        synthid_file_path = "/tmp/test_synthid_watermark.png"
+        synthid_file_path = os.path.join(tempfile.gettempdir(), "test_synthid_watermark.png")
         with open(synthid_file_path, "wb") as f:
             f.write(b"\x89PNG\r\n\x1a\n" + b"X" * 100 + b"google synthid embedded watermark metadata signature" + b"Y" * 100)
         
@@ -111,7 +135,7 @@ class TestDigitalAiWatermarkVerification(unittest.TestCase):
         self.assertEqual(synthid_res["confidence"], 15)
 
         # 3. DALL-E watermark detection
-        dalle_file_path = "/tmp/test_dalle_watermark.png"
+        dalle_file_path = os.path.join(tempfile.gettempdir(), "test_dalle_watermark.png")
         with open(dalle_file_path, "wb") as f:
             f.write(b"\x89PNG\r\n\x1a\n" + b"DALL-E 3 generated asset prompt parameters" + b"\x00" * 50)
         
@@ -120,7 +144,7 @@ class TestDigitalAiWatermarkVerification(unittest.TestCase):
         self.assertTrue(any("dall-e" in f.lower() for f in dalle_res["flags"]))
 
         # 4. Midjourney / Stable Diffusion generation parameters detection
-        sd_file_path = "/tmp/test_sd_watermark.png"
+        sd_file_path = os.path.join(tempfile.gettempdir(), "test_sd_watermark.png")
         with open(sd_file_path, "wb") as f:
             f.write(b"\x89PNG\r\n\x1a\n" + b"parameters\x00Negative prompt: blurry\nSteps: 30, Sampler: DPM++ 2M, CFG scale: 7, Model: stablediffusion_xl")
         
