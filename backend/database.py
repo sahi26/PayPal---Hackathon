@@ -91,10 +91,78 @@ def run_migrations(target_engine):
                     conn.execute(text("ALTER TABLE projects ADD COLUMN requires_baseline_evidence BOOLEAN DEFAULT FALSE;"))
                 if "is_renovation" not in columns:
                     conn.execute(text("ALTER TABLE projects ADD COLUMN is_renovation BOOLEAN DEFAULT FALSE;"))
+                if "site_location" not in columns:
+                    conn.execute(text("ALTER TABLE projects ADD COLUMN site_location VARCHAR(100);"))
                 if "project_domain" not in columns:
                     conn.execute(text("ALTER TABLE projects ADD COLUMN project_domain VARCHAR(50) DEFAULT 'physical';"))
                 if "contractor_rejection_reason" not in columns:
                     conn.execute(text("ALTER TABLE projects ADD COLUMN contractor_rejection_reason TEXT;"))
+                if "paypal_authorization_id" not in columns:
+                    conn.execute(text("ALTER TABLE projects ADD COLUMN paypal_authorization_id VARCHAR(100);"))
+                if "authorization_expires_at" not in columns:
+                    try:
+                        conn.execute(text("ALTER TABLE projects ADD COLUMN authorization_expires_at TIMESTAMP WITH TIME ZONE;"))
+                    except Exception:
+                        try:
+                            conn.execute(text("ALTER TABLE projects ADD COLUMN authorization_expires_at DATETIME;"))
+                        except Exception:
+                            pass
+                if "void_escrow_status" not in columns:
+                    conn.execute(text("ALTER TABLE projects ADD COLUMN void_escrow_status VARCHAR(50) DEFAULT 'NONE';"))
+                if "void_escrow_reason" not in columns:
+                    conn.execute(text("ALTER TABLE projects ADD COLUMN void_escrow_reason TEXT;"))
+                if "void_escrow_requested_at" not in columns:
+                    try:
+                        conn.execute(text("ALTER TABLE projects ADD COLUMN void_escrow_requested_at TIMESTAMP WITH TIME ZONE;"))
+                    except Exception:
+                        try:
+                            conn.execute(text("ALTER TABLE projects ADD COLUMN void_escrow_requested_at DATETIME;"))
+                        except Exception:
+                            pass
+                if "void_escrow_responded_at" not in columns:
+                    try:
+                        conn.execute(text("ALTER TABLE projects ADD COLUMN void_escrow_responded_at TIMESTAMP WITH TIME ZONE;"))
+                    except Exception:
+                        try:
+                            conn.execute(text("ALTER TABLE projects ADD COLUMN void_escrow_responded_at DATETIME;"))
+                        except Exception:
+                            pass
+                if "captured_amount" not in columns:
+                    try:
+                        conn.execute(text("ALTER TABLE projects ADD COLUMN captured_amount FLOAT DEFAULT 0.0;"))
+                    except Exception:
+                        pass
+                if "voided_amount" not in columns:
+                    try:
+                        conn.execute(text("ALTER TABLE projects ADD COLUMN voided_amount FLOAT DEFAULT 0.0;"))
+                    except Exception:
+                        pass
+                try:
+                    conn.execute(text("UPDATE projects SET captured_amount = 0.0 WHERE captured_amount IS NULL;"))
+                except Exception:
+                    pass
+                # Backfill project authorization tracking from existing payments
+                try:
+                    conn.execute(text("""
+                        UPDATE projects
+                        SET paypal_authorization_id = (
+                            SELECT authorization_id FROM payments 
+                            WHERE payments.project_id = projects.id AND payments.authorization_id IS NOT NULL 
+                            ORDER BY payments.id DESC LIMIT 1
+                        )
+                        WHERE paypal_authorization_id IS NULL;
+                    """))
+                    conn.execute(text("""
+                        UPDATE projects
+                        SET authorization_expires_at = (
+                            SELECT authorization_expires_at FROM payments 
+                            WHERE payments.project_id = projects.id AND payments.authorization_expires_at IS NOT NULL 
+                            ORDER BY payments.id DESC LIMIT 1
+                        )
+                        WHERE authorization_expires_at IS NULL;
+                    """))
+                except Exception:
+                    pass
                 # Enlarge status column to VARCHAR(50) if postgres
                 try:
                     conn.execute(text("ALTER TABLE projects ALTER COLUMN status TYPE VARCHAR(50);"))
@@ -135,6 +203,8 @@ def run_migrations(target_engine):
                     conn.execute(text("ALTER TABLE agreements ADD COLUMN lock_in_amount FLOAT DEFAULT 0.0;"))
                 if "lock_in_days" not in columns:
                     conn.execute(text("ALTER TABLE agreements ADD COLUMN lock_in_days INTEGER DEFAULT 0;"))
+                if "warranty_days" not in columns:
+                    conn.execute(text("ALTER TABLE agreements ADD COLUMN warranty_days INTEGER DEFAULT 0;"))
                 if "warranty_end_date" not in columns:
                     try:
                         conn.execute(text("ALTER TABLE agreements ADD COLUMN warranty_end_date TIMESTAMP WITH TIME ZONE;"))
@@ -205,18 +275,74 @@ def run_migrations(target_engine):
                     models.Base.metadata.create_all(bind=target_engine, tables=[models.Payment.__table__])
                 except Exception as e:
                     print(f"Payment table migration notice: {e}")
+            else:
+                p_cols = [c["name"] for c in inspector.get_columns("payments")]
+                if "paypal_authorization_id" not in p_cols:
+                    conn.execute(text("ALTER TABLE payments ADD COLUMN paypal_authorization_id VARCHAR(100);"))
+                    try:
+                        conn.execute(text("UPDATE payments SET paypal_authorization_id = authorization_id WHERE paypal_authorization_id IS NULL;"))
+                    except Exception:
+                        pass
+                conn.commit()
 
             if "disputes" not in tables:
                 try:
                     models.Base.metadata.create_all(bind=target_engine, tables=[models.DisputeRecord.__table__])
                 except Exception as e:
                     print(f"Dispute table migration notice: {e}")
+            else:
+                d_cols = [c["name"] for c in inspector.get_columns("disputes")]
+                if "status" not in d_cols:
+                    conn.execute(text("ALTER TABLE disputes ADD COLUMN status VARCHAR(50) DEFAULT 'INTERNAL_NEGOTIATION';"))
+                if "initiated_by_id" not in d_cols:
+                    conn.execute(text("ALTER TABLE disputes ADD COLUMN initiated_by_id INTEGER;"))
+                if "resolution_type" not in d_cols:
+                    conn.execute(text("ALTER TABLE disputes ADD COLUMN resolution_type VARCHAR(50);"))
+                if "resolution_notes" not in d_cols:
+                    conn.execute(text("ALTER TABLE disputes ADD COLUMN resolution_notes TEXT;"))
+                if "paypal_claim_id" not in d_cols:
+                    conn.execute(text("ALTER TABLE disputes ADD COLUMN paypal_claim_id VARCHAR(100);"))
+                if "escalated_to_human_at" not in d_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE disputes ADD COLUMN escalated_to_human_at TIMESTAMP WITH TIME ZONE;"))
+                    except Exception:
+                        try:
+                            conn.execute(text("ALTER TABLE disputes ADD COLUMN escalated_to_human_at DATETIME;"))
+                        except Exception:
+                            pass
+                if "updated_at" not in d_cols:
+                    try:
+                        conn.execute(text("ALTER TABLE disputes ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE;"))
+                    except Exception:
+                        try:
+                            conn.execute(text("ALTER TABLE disputes ADD COLUMN updated_at DATETIME;"))
+                        except Exception:
+                            pass
+                conn.commit()
+
+            if "dispute_chat_history" not in tables:
+                try:
+                    models.Base.metadata.create_all(bind=target_engine, tables=[models.DisputeChatHistory.__table__])
+                except Exception as e:
+                    print(f"DisputeChatHistory table migration notice: {e}")
+
+            if "dossiers" not in tables:
+                try:
+                    models.Base.metadata.create_all(bind=target_engine, tables=[models.Dossier.__table__])
+                except Exception as e:
+                    print(f"Dossier table migration notice: {e}")
 
             if "scope_change_requests" not in tables:
                 try:
                     models.Base.metadata.create_all(bind=target_engine, tables=[models.ScopeChangeRequest.__table__])
                 except Exception as e:
                     print(f"ScopeChangeRequest table migration notice: {e}")
+
+            if "notifications" not in tables:
+                try:
+                    models.Base.metadata.create_all(bind=target_engine, tables=[models.Notification.__table__])
+                except Exception as e:
+                    print(f"Notification table migration notice: {e}")
     except Exception as e:
         print(f"Migration notice: {e}")
 

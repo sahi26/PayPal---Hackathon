@@ -245,13 +245,13 @@
                   <span class="currency-micro">USD</span>
                 </span>
                 @if (warrantyForm.value.lockInType !== 'NONE') {
-                  <span class="hold-days-tag">Held for {{ warrantyForm.value.lockInDays }} Days</span>
+                  <span class="hold-days-tag">Held for {{ aiWarrantyDays ?? 0 }} Days</span>
                 }
               </div>
             </div>
 
             <!-- Conditional Project Type Advisory -->
-            @if (isDigitalProject()) {
+            @if (isDigitalProject() && !isSimpleDigitalProject()) {
               <div class="digital-warning-banner">
                 <div class="warning-icon-box"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#D97706" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
                 <div class="warning-content">
@@ -259,7 +259,7 @@
                   Retainage / Warranty Lock-In is <em>strongly discouraged</em> for purely digital deliverables (software code, graphic design, writing) to avoid scope-creep hostage situations. Consider strict milestone acceptance criteria instead.
                 </div>
               </div>
-            } @else {
+            } @else if (!isDigitalProject()) {
               <div class="physical-recommend-banner">
                 <div class="recommend-icon-box"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#059669" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
                 <div class="recommend-content">
@@ -276,6 +276,7 @@
                 <button
                   type="button"
                   (click)="onLockInTypeSelect('NONE')"
+                  [disabled]="isSimpleDigitalProject()"
                   class="mode-btn"
                   [class.is-active]="warrantyForm.value.lockInType === 'NONE'"
                 >
@@ -286,6 +287,7 @@
                 <button
                   type="button"
                   (click)="onLockInTypeSelect('FINAL_MILESTONE')"
+                  [disabled]="isSimpleDigitalProject() || !aiWarrantyDays"
                   class="mode-btn"
                   [class.is-active]="warrantyForm.value.lockInType === 'FINAL_MILESTONE'"
                 >
@@ -296,6 +298,7 @@
                 <button
                   type="button"
                   (click)="onLockInTypeSelect('CUSTOM')"
+                  [disabled]="isSimpleDigitalProject() || !aiWarrantyDays"
                   class="mode-btn"
                   [class.is-active]="warrantyForm.value.lockInType === 'CUSTOM'"
                 >
@@ -311,16 +314,14 @@
                 <div class="input-block">
                   <label class="input-field-label">
                     <span>Warranty Hold Window (Days Post-Delivery)</span>
-                    <span class="field-hint">Auto-releases via PayPal Payouts if no dispute filed</span>
+                    <span class="field-hint">AI-determined period; cannot be changed</span>
                   </label>
                   <div class="input-addon-wrapper">
                     <input
                       type="number"
-                      formControlName="lockInDays"
-                      min="1"
-                      max="365"
+                      [value]="aiWarrantyDays ?? ''"
+                      readonly
                       class="fintech-input-field"
-                      placeholder="14"
                     />
                     <span class="input-unit-tag">Days</span>
                   </div>
@@ -337,6 +338,7 @@
                       <input
                         type="number"
                         formControlName="lockInAmount"
+                        [disabled]="isSimpleDigitalProject()"
                         min="1"
                         [max]="totalPrice || 10000"
                         class="fintech-input-field with-prefix"
@@ -582,14 +584,21 @@
             >
               @if (isLoading) {
                 <span class="btn-spinner"></span>
-                <span>Generating Agreement &amp; Cryptographic Link...</span>
+                <span>Saving Agreement &amp; Opening PayPal...</span>
               } @else {
-                <span>Generate Agreement &amp; Invite Link &rarr;</span>
+                <span>Save Agreement &amp; Continue to Escrow &rarr;</span>
               }
             </button>
+            @if (paymentStatusMessage) {
+              <p class="warning-caption">{{ paymentStatusMessage }}</p>
+            }
             @if (!canFinalizeDraft()) {
               <p class="warning-caption">
-                * Baseline proof or scratch confirmation is required before generating the invitation link.
+                @if (aiWarrantyDays === null) {
+                  * Waiting for the AI warranty decision. Continue the AI scoping chat before finalizing.
+                } @else {
+                  * Baseline proof or scratch confirmation is required before escrow authorization.
+                }
               </p>
             }
           </div>
@@ -598,8 +607,8 @@
     </div>
   }
 
-  <!-- Step 3: Success Screen with Invite Link -->
-  @if (step === 3) {
+  <!-- Step 3: Show the invitation only after PayPal authorization succeeds -->
+  @if (step === 3 && inviteUrl) {
     <div class="fintech-card success-share-card">
       <div class="success-icon-badge">
         <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3">
@@ -641,6 +650,28 @@
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
         </button>
       </div>
+    </div>
+  } @else if (step === 3) {
+    <div class="fintech-card success-share-card">
+      <h2 class="success-heading">Escrow Authorization Required</h2>
+      <p class="success-sub">{{ paymentStatusMessage }}</p>
+      <p class="summary-chip">
+        <span class="chip-label">Project:</span>
+        <span class="chip-val">{{ title }}</span>
+      </p>
+      <button
+        type="button"
+        (click)="startEscrowAuthorization()"
+        [disabled]="isLoading"
+        class="btn-fintech btn-fintech-primary"
+      >
+        @if (isLoading) {
+          <span class="btn-spinner"></span>
+          <span>Connecting to PayPal...</span>
+        } @else {
+          <span>Authorize Escrow with PayPal</span>
+        }
+      </button>
     </div>
   }
 </div>

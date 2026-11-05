@@ -1,4 +1,4 @@
-﻿import { Component, OnInit } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
 import { Router, ActivatedRoute } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
@@ -21,11 +21,14 @@ interface CurrentUser {
 })
 export class LoginComponent implements OnInit {
   selectedRole: 'buyer' | 'seller' = 'buyer';
-  selectedRedirectUri: string = 'http://localhost:4200';
+  selectedRedirectUri: string = 'https://prooflens-auth.loca.lt';
   currentUser: CurrentUser | null = null;
+  loginEmail: string = '';
+  loginPassword: string = '';
   isAuthenticating: boolean = false;
   isRedirecting: boolean = false;
   errorMessage: string | null = null;
+  returnUrl: string | null = null;
 
   constructor(
     private route: ActivatedRoute,
@@ -34,6 +37,16 @@ export class LoginComponent implements OnInit {
   ) {}
 
   ngOnInit() {
+    this.route.queryParamMap.subscribe(params => {
+      this.returnUrl = this.getSafeInviteReturnUrl(params.get('returnUrl'));
+      const requestedRole = params.get('role');
+      if (requestedRole === 'buyer' || requestedRole === 'seller') {
+        this.selectedRole = requestedRole;
+      } else if (this.returnUrl) {
+        this.selectedRole = 'seller';
+      }
+    });
+
     // 1. Check existing session
     const saved = localStorage.getItem('prooflens_user');
     if (saved) {
@@ -44,7 +57,12 @@ export class LoginComponent implements OnInit {
       }
     }
 
-    // 2. Load stored redirect URI preference
+    if (this.returnUrl && this.currentUser?.role_type === 'seller') {
+      this.router.navigateByUrl(this.returnUrl);
+      return;
+    }
+
+    // 2. Load stored redirect URI preference (defaults to https://prooflens-auth.loca.lt for PayPal sandbox whitelist)
     const storedUri = localStorage.getItem('prooflens_redirect_uri');
     if (storedUri) {
       this.selectedRedirectUri = storedUri;
@@ -64,14 +82,36 @@ export class LoginComponent implements OnInit {
     localStorage.setItem('prooflens_redirect_uri', uri);
   }
 
-  fastTrackLogin(role: 'buyer' | 'seller') {
+  extractErrorMessage(err: any): string {
+    if (!err) return 'An unexpected error occurred.';
+    if (typeof err === 'string') return err;
+    const body = err.error;
+    if (body) {
+      if (typeof body === 'string') return body;
+      if (typeof body.detail === 'string') return body.detail;
+      if (Array.isArray(body.detail)) {
+        return body.detail.map((d: any) => d.msg || d.message || JSON.stringify(d)).join('; ');
+      }
+      if (body.detail && typeof body.detail === 'object') {
+        return body.detail.message || body.detail.msg || JSON.stringify(body.detail);
+      }
+      if (body.message) return body.message;
+    }
+    return err.message || 'Authentication failed. Please verify your credentials.';
+  }
+
+  loginWithCredentials() {
+    if (!this.loginEmail.trim() || !this.loginPassword.trim()) {
+      this.errorMessage = 'Please enter both your email address and password.';
+      return;
+    }
     this.isAuthenticating = true;
     this.errorMessage = null;
 
-    const mockCode = role === 'seller' ? 'sandbox_seller' : 'sandbox_buyer';
-    this.http.post<CurrentUser>(`${API_BASE_URL}/api/auth/paypal-login`, {
-      code: mockCode,
-      role
+    this.http.post<CurrentUser>(`${API_BASE_URL}/api/auth/login`, {
+      email: this.loginEmail.trim(),
+      password: this.loginPassword.trim(),
+      role: this.selectedRole
     }).subscribe({
       next: (user) => {
         this.isAuthenticating = false;
@@ -81,7 +121,7 @@ export class LoginComponent implements OnInit {
       },
       error: (err) => {
         this.isAuthenticating = false;
-        this.errorMessage = err.error?.detail || err.message || 'Login failed.';
+        this.errorMessage = this.extractErrorMessage(err);
       }
     });
   }
@@ -105,7 +145,7 @@ export class LoginComponent implements OnInit {
         },
         error: (err) => {
           this.isRedirecting = false;
-          this.errorMessage = err.error?.detail || err.message || 'Failed to reach PayPal authentication gateway.';
+          this.errorMessage = this.extractErrorMessage(err);
         }
       });
   }
@@ -137,19 +177,26 @@ export class LoginComponent implements OnInit {
       },
       error: (err) => {
         this.isAuthenticating = false;
-        const detail = err.error?.detail || err.message || 'PayPal token exchange failed.';
-        this.errorMessage = `PayPal OAuth Error: ${detail}`;
+        this.errorMessage = `PayPal OAuth Error: ${this.extractErrorMessage(err)}`;
       }
     });
   }
 
   proceedToConsole() {
     if (!this.currentUser) return;
+    if (this.currentUser.role_type === 'seller' && this.returnUrl) {
+      this.router.navigateByUrl(this.returnUrl);
+      return;
+    }
     if (this.currentUser.role_type === 'seller') {
       this.router.navigate(['/seller']);
     } else {
       this.router.navigate(['/buyer']);
     }
+  }
+
+  private getSafeInviteReturnUrl(value: string | null): string | null {
+    return value && /^\/invite\/[^/?#]+$/.test(value) ? value : null;
   }
 
   logout() {

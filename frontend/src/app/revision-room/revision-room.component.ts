@@ -106,6 +106,15 @@ export class RevisionRoomComponent implements OnInit {
     }
   }
 
+  private getCurrentUserEmail(): string {
+    try {
+      return JSON.parse(localStorage.getItem('prooflens_user') || '{}').email || '';
+    } catch (error) {
+      console.warn('Could not read the signed-in user for the scope revision:', error);
+      return '';
+    }
+  }
+
   submitInit(): void {
     if (!this.newDescription.trim() || !this.projectId) return;
 
@@ -114,7 +123,7 @@ export class RevisionRoomComponent implements OnInit {
       description: this.newDescription.trim(),
       proposed_extra_days: Number(this.initExtraDays) || 0,
       proposed_extra_cost: Number(this.initExtraCost) || 0,
-      user_email: localStorage.getItem('user_email') || (this.currentRole === 'buyer' ? 'buyer@prooflens.com' : 'contractor@prooflens.com')
+      user_email: this.getCurrentUserEmail()
     };
 
     this.http.post<{ message: string; scope_change: ScopeChangeItem }>(
@@ -140,7 +149,7 @@ export class RevisionRoomComponent implements OnInit {
     const payload = {
       scope_change_id: this.activeScopeChange.id,
       sender_role: this.currentRole === 'seller' ? 'seller' : 'buyer',
-      sender_email: localStorage.getItem('user_email') || (this.currentRole === 'seller' ? 'Contractor' : 'Buyer'),
+      sender_email: this.getCurrentUserEmail(),
       message: this.counterMessage.trim() || undefined,
       proposed_extra_cost: Number(this.counterCost),
       proposed_extra_days: Number(this.counterDays)
@@ -168,7 +177,7 @@ export class RevisionRoomComponent implements OnInit {
     this.isAccepting = true;
     const payload = {
       scope_change_id: this.activeScopeChange.id,
-      user_email: localStorage.getItem('user_email') || undefined
+      user_email: this.getCurrentUserEmail()
     };
 
     this.http.post<any>(
@@ -197,7 +206,8 @@ export class RevisionRoomComponent implements OnInit {
     this.isAuthorizing = true;
     const payload = {
       scope_change_id: this.activeScopeChange.id,
-      paypal_order_id: this.activeScopeChange.paypal_order_id
+      paypal_order_id: this.activeScopeChange.paypal_order_id,
+      user_email: this.getCurrentUserEmail()
     };
 
     this.http.post<{ status: string; scope_change: ScopeChangeItem }>(
@@ -223,7 +233,7 @@ export class RevisionRoomComponent implements OnInit {
   formatStatus(status: string): string {
     switch (status) {
       case 'NEGOTIATING': return 'Under Negotiation';
-      case 'PENDING_FUNDS': return 'Pending Escrow Authorization';
+      case 'PENDING_FUNDS': return 'Seller Accepted · Buyer Escrow Required';
       case 'ACCEPTED': return 'Accepted & Active';
       case 'REJECTED': return 'Rejected';
       default: return status || 'Active';

@@ -61,26 +61,20 @@
                 }
               </div>
               <div class="persona-text">
-                <span class="persona-role">{{ currentRole === 'buyer' ? 'Buyer Console' : 'Seller Console' }}</span>
+                <span class="persona-role">{{ currentRole === 'buyer' ? 'Client (Buyer)' : 'Contractor' }}</span>
                 <span class="persona-email">{{ currentRole === 'buyer' ? (projectData.project.buyer_email || 'buyer@prooflens.com') : (projectData.project.seller_email || 'seller@prooflens.com') }}</span>
               </div>
-              <button (click)="toggleRole()" class="btn-role-switch" title="Toggle between Buyer and Seller perspectives">
-                <span>Switch</span>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <path d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/>
-                </svg>
-              </button>
             </div>
 
             <!-- Primary Agreement Action -->
             <div class="topbar-action-zone">
-              @if (projectData.project.status === 'accepted') {
+              @if (isSellerAccepted()) {
                 @if (isEscrowAuthorized()) {
                   <div class="accepted-seal">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
                       <polyline points="20 6 9 17 4 12"/>
                     </svg>
-                    <span>Terms Locked & Escrow Funded</span>
+                    <span>Terms Locked &amp; Escrow Funded</span>
                   </div>
                   <button (click)="goToFulfillment()" class="btn-corporate-fulfillment">
                     <span>Go to Fulfillment Desk &rarr;</span>
@@ -92,17 +86,11 @@
                     </svg>
                     <span>Authorize Escrow via PayPal (${{ Number(projectData.project.total_price).toFixed(2) }}) &rarr;&rarr;</span>
                   </button>
-                  <button (click)="goToFulfillment()" class="btn-corporate-fulfillment">
-                    <span>Go to Fulfillment Desk &rarr;</span>
-                  </button>
                 } @else {
                   <div class="buyer-awaiting-badge">
                     <span class="pulse-mini-dot"></span>
                     <span>Agreement Accepted &mdash; Awaiting Buyer Escrow Deposit</span>
                   </div>
-                  <button (click)="goToFulfillment()" class="btn-corporate-fulfillment">
-                    <span>Go to Fulfillment Desk &rarr;</span>
-                  </button>
                 }
               } @else if (currentRole === 'seller') {
                 <button
@@ -136,28 +124,15 @@
                   }
                 </button>
               } @else {
-                <button
-                  (click)="acceptAgreement()"
-                  [disabled]="isAccepting"
-                  class="btn-corporate-accept"
-                  [class.is-loading]="isAccepting"
-                  style="background: #0070ba; color: #ffffff;"
-                >
-                  @if (isAccepting) {
-                    <span class="btn-spinner"></span>
-                    <span>Launching PayPal Escrow Authorization...</span>
-                  } @else {
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.641.641 0 0 1 .632-.544h7.521c3.155 0 5.487 1.096 5.807 4.168.32 3.072-1.745 5.568-4.664 6.27-.408.098-.795.158-1.168.188l-1.072 6.804a.641.641 0 0 1-.632.544l-3.292.187z"/>
-                    </svg>
-                    <span>Accept &amp; Fund Escrow via PayPal</span>
-                  }
-                </button>
+                <div class="buyer-awaiting-badge">
+                  <span class="pulse-mini-dot"></span>
+                  <span>Awaiting Contractor Review &amp; Acceptance</span>
+                </div>
               }
             </div>
 
             <!-- Scope Change Request / Negotiation Desk (Positioned at the very LAST) -->
-            @if (isProjectActive() || projectData.project.status === 'accepted') {
+            @if (isSellerAccepted()) {
               <button (click)="openRevisionRoom()" class="btn-scope-change-nav" title="Request or view project scope changes and addenda">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -171,6 +146,22 @@
             }
           </div>
         </header>
+
+        <!-- View-Only Mode Banner for Active Projects -->
+        @if (isViewOnlyMode && isSellerAccepted()) {
+          <div class="view-only-mode-banner">
+            <div class="view-only-content">
+              <span class="status-badge badge-emerald">ACTIVE ESCROW &bull; VIEW-ONLY</span>
+              <p class="view-only-text">
+                This project agreement is finalized and escrow funded. Milestone execution, deliverable submissions, and payouts are managed at the Fulfillment Desk.
+              </p>
+            </div>
+            <button (click)="goToFulfillment()" class="btn-return-fulfillment">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+              <span>Return to Milestone Fulfillment Desk</span>
+            </button>
+          </div>
+        }
 
         <!-- Contractor Rejection Notice Banner -->
         @if (isProjectRejected()) {
@@ -230,7 +221,7 @@
         }
 
         <!-- Acceptance Banner -->
-        @if (projectData.project.status === 'accepted') {
+        @if (isSellerAccepted() && isEscrowAuthorized()) {
           <div class="celebration-card">
             <div class="seal-icon">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -240,7 +231,7 @@
               </svg>
             </div>
             <div style="flex: 1;">
-              <h3>Escrow Agreement Formally Accepted & Locked</h3>
+              <h3>Escrow Agreement Formally Accepted &amp; Locked</h3>
               <p>Both Buyer and Seller have formally ratified Version {{ projectData.agreement.version || 1 }}.0. PayPal escrow deposit is secured. Milestone releases will trigger upon verification of proof-of-work evidence.</p>
             </div>
             <button (click)="goToFulfillment()" class="btn-celebration-fulfillment">
@@ -249,8 +240,26 @@
           </div>
         }
 
-        <!-- Seller Notification: Updated terms received from buyer -->
-        @if (currentRole === 'seller' && projectData.project.status !== 'accepted' && (projectData.agreement.version > 1 || projectData.agreement.latest_buyer_message)) {
+        <!-- Seller Notification: Change request pending review by Buyer -->
+        @if (currentRole === 'seller' && projectData.project.status !== 'accepted' && projectData.agreement.latest_seller_message) {
+          <div class="notification-banner seller-pending-notice">
+            <div class="notice-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#d97706" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+            </div>
+            <div class="notice-body">
+              <strong>Change Request Sent &mdash; Awaiting Buyer Review</strong>
+              <p>You requested: <em>"{{ projectData.agreement.latest_seller_message }}"</em></p>
+              <div class="notice-cta">The Buyer has been notified to review your requested adjustment. Once revised terms are posted, you will be notified to review and accept the updated agreement.</div>
+            </div>
+          </div>
+        }
+
+        <!-- Seller Notification: Updated terms received from buyer (only when buyer responded and no pending change request from seller) -->
+        @if (currentRole === 'seller' && projectData.project.status !== 'accepted' && !projectData.agreement.latest_seller_message && (projectData.agreement.latest_buyer_message || projectData.agreement.version > 1)) {
           <div class="notification-banner seller-notice">
             <div class="notice-icon">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1d4ed8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -355,10 +364,12 @@
                         <span>Diff: ${{ Math.abs(getAvailableBudgetForMilestones() - getAllocatedMilestonesTotal()).toFixed(2) }}</span>
                       </span>
                     }
-                    <button type="button" (click)="resetMilestonesToEqualSplit()" class="btn-equal-split" title="Split remaining budget equally across milestones">
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M16 16l3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1zM2 16l3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1z"/><line x1="7" y1="21" x2="17" y2="21"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="3" y1="7" x2="21" y2="7"/></svg>
-                      <span>Split Evenly</span>
-                    </button>
+                    @if (canBuyerEditAgreement()) {
+                      <button type="button" (click)="resetMilestonesToEqualSplit()" class="btn-equal-split" title="Split remaining budget equally across milestones">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M16 16l3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1zM2 16l3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1z"/><line x1="7" y1="21" x2="17" y2="21"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="3" y1="7" x2="21" y2="7"/></svg>
+                        <span>Split Evenly</span>
+                      </button>
+                    }
                   </div>
 
                   <!-- Warranty Lock-In (Retainage Protection) Clause Card -->
@@ -369,17 +380,18 @@
                           {{ projectData.project.project_domain === 'digital' ? 'Digital Deliverable' : 'Physical Protection' }}
                         </span>
                         <span class="warranty-box-title">Warranty Lock-In &amp; Retainage Hold:</span>
-                        @if (projectData.project.status === 'accepted' || projectData.project.status === 'active') {
+                        @if (!canBuyerEditAgreement()) {
                           <span class="locked-immutable-tag"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Terms Sealed (Immutable)</span>
                         }
                       </div>
 
-                      @if (projectData.project.status !== 'accepted' && projectData.project.status !== 'active') {
+                      @if (canBuyerEditAgreement()) {
                         <!-- Editable mode for negotiation phase -->
                         <div class="room-warranty-controls">
                           <button
                             type="button"
                             (click)="setLockInType('NONE')"
+                            [disabled]="isSimpleDigitalProject()"
                             class="room-warranty-pill-btn"
                             [class.is-active]="(projectData.agreement.lock_in_type || 'NONE') === 'NONE'"
                           >
@@ -388,6 +400,7 @@
                           <button
                             type="button"
                             (click)="setLockInType('FINAL_MILESTONE')"
+                            [disabled]="isSimpleDigitalProject()"
                             class="room-warranty-pill-btn"
                             [class.is-active]="projectData.agreement.lock_in_type === 'FINAL_MILESTONE'"
                           >
@@ -396,6 +409,7 @@
                           <button
                             type="button"
                             (click)="setLockInType('CUSTOM')"
+                            [disabled]="isSimpleDigitalProject()"
                             class="room-warranty-pill-btn"
                             [class.is-active]="projectData.agreement.lock_in_type === 'CUSTOM'"
                           >
@@ -412,6 +426,7 @@
                                   max="365"
                                   [ngModel]="projectData.agreement.lock_in_days || 14"
                                   (ngModelChange)="updateLockInDays($event)"
+                                  [disabled]="isSimpleDigitalProject()"
                                   class="inline-warranty-input days"
                                 />
                               </label>
@@ -425,6 +440,7 @@
                                     [max]="getTotalBudget()"
                                     [ngModel]="projectData.agreement.lock_in_amount || 0"
                                     (ngModelChange)="updateCustomLockInAmount($event)"
+                                    [disabled]="isSimpleDigitalProject()"
                                     class="inline-warranty-input amount"
                                   />
                                 </label>
@@ -462,7 +478,7 @@
                           <div class="room-ms-title-col">
                             <div class="room-ms-badge-row">
                               <span class="room-ms-badge">Milestone {{ $index + 1 }}</span>
-                              @if (projectData.project.status !== 'accepted') {
+                              @if (canBuyerEditAgreement()) {
                                 <label class="room-ms-deadline-editable" title="Click to adjust milestone deadline directly">
                                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
@@ -493,7 +509,7 @@
                             <span class="room-ms-title">{{ ms.title }}</span>
                           </div>
                           <div class="room-ms-price-zone">
-                            @if (!isMilestoneFundReleased(ms, $index)) {
+                            @if (!isMilestoneFundReleased(ms, $index) && canBuyerEditAgreement()) {
                               <div class="ms-price-edit-box" [class.is-zero]="ms.price_allocation === 0" title="Adjust milestone amount (other unreleased milestones auto-recalculate to match total budget)">
                                 <span class="price-edit-symbol">$</span>
                                 <input
@@ -509,6 +525,10 @@
                                 @if (userLockedMilestones.has($index)) {
                                   <span class="ms-locked-indicator" title="Custom amount explicitly locked by you"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
                                 }
+                              </div>
+                            } @else if (!isMilestoneFundReleased(ms, $index)) {
+                              <div class="room-ms-price font-bold" style="font-size: 14px; color: #0F172A; font-family: 'JetBrains Mono', monospace;">
+                                ${{ Number(ms.price_allocation).toFixed(2) }} USD
                               </div>
                             } @else {
                               <div class="room-ms-price is-released" title="Milestone funds released via PayPal Escrow">
@@ -690,7 +710,7 @@
                 } @else {
                   <div class="baseline-pending-card">
                     <p>No baseline before-evidence recorded yet.</p>
-                    @if (currentRole === 'buyer' && projectData.project.is_home_renovation) {
+                    @if (currentRole === 'buyer' && projectData.project.project_domain === 'physical' && projectData.project.is_home_renovation) {
                       <div class="buyer-baseline-prompt">
                         <span class="badge-mandatory">MANDATORY FOR HOME RENOVATION</span>
                         <p>Please capture your pre-work site baseline photo now:</p>
@@ -705,33 +725,6 @@
                   </div>
                 }
               </div>
-
-              <!-- Section 3.0: Cryptographic Milestone Fulfillment Desk (Only visible when seller accepts agreement) -->
-              @if (isProjectActive()) {
-                <div class="clause-box fulfillment-nav-clause">
-                  <div class="clause-heading">
-                    <span class="clause-num">Section 3.0</span>
-                    <span class="clause-title">Cryptographic Milestone Fulfillment Desk</span>
-                  </div>
-                  <div class="evidence-subtext">
-                    Hardware live camera capture, sequential milestone submissions, and PayPal escrow payout releases are managed on the dedicated fulfillment desk.
-                  </div>
-                  <div class="fulfillment-nav-card">
-                    <div class="nav-icon-seal">
-                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5">
-                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                      </svg>
-                    </div>
-                    <div class="nav-desc-col">
-                      <h4>Agreement Terms Formally Ratified & Locked</h4>
-                      <p>Hardware live camera capture, sequential milestone submissions, and PayPal escrow payout approvals have transitioned to the Fulfillment Desk.</p>
-                    </div>
-                    <button type="button" (click)="goToFulfillment()" class="btn-open-fulfillment-page">
-                      <span>Open Milestone Fulfillment Desk &rarr;</span>
-                    </button>
-                  </div>
-                </div>
-              }
 
               <!-- Escrow Certification Seal -->
               <div class="doc-footer-seal">
@@ -761,49 +754,42 @@
 
               <!-- Negotiation Message Stream -->
               <div class="activity-feed">
-                <!-- Seller Request Card -->
-                @if (projectData.agreement.latest_seller_message) {
-                  <div class="activity-card seller-activity">
+                @for (entry of projectData.negotiation_history || []; track $index) {
+                  <div class="activity-card" [class.seller-activity]="entry.role === 'seller'" [class.buyer-activity]="entry.role !== 'seller'">
                     <div class="activity-header">
-                      <div class="activity-avatar seller-avatar">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                          <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
-                          <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
-                        </svg>
+                      <div class="activity-avatar" [class.seller-avatar]="entry.role === 'seller'" [class.buyer-avatar]="entry.role !== 'seller'">
+                        @if (entry.role === 'seller') {
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                            <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/>
+                            <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
+                          </svg>
+                        } @else {
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                          </svg>
+                        }
                       </div>
                       <div class="activity-meta">
-                        <span class="activity-author">Seller / Contractor</span>
-                        <span class="activity-sub">Requested Scope Adjustment</span>
+                        <span class="activity-author">{{ entry.role === 'seller' ? 'Seller / Contractor' : 'Buyer / Client' }}</span>
+                        <span class="activity-sub">
+                          @if (entry.action === 'terms_updated') {
+                            Revised agreement terms (v{{ entry.version }})
+                          } @else if (entry.action === 'agreement_accepted') {
+                            Agreement accepted
+                          } @else if (entry.action === 'rejected_agreement') {
+                            Agreement rejected
+                          } @else {
+                            Negotiation message
+                          }
+                        </span>
                       </div>
+                      @if (entry.timestamp) {
+                        <time class="activity-time">{{ entry.timestamp | date:'short' }}</time>
+                      }
                     </div>
-                    <div class="activity-message">
-                      "{{ projectData.agreement.latest_seller_message }}"
-                    </div>
+                    <div class="activity-message">{{ entry.content }}</div>
                   </div>
-                }
-
-                <!-- Buyer Response Card -->
-                @if (projectData.agreement.latest_buyer_message) {
-                  <div class="activity-card buyer-activity">
-                    <div class="activity-header">
-                      <div class="activity-avatar buyer-avatar">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                        </svg>
-                      </div>
-                      <div class="activity-meta">
-                        <span class="activity-author">Buyer / Client</span>
-                        <span class="activity-sub">Revised Terms Response</span>
-                      </div>
-                    </div>
-                    <div class="activity-message">
-                      "{{ projectData.agreement.latest_buyer_message }}"
-                    </div>
-                  </div>
-                }
-
-                <!-- Empty state if fresh -->
-                @if (!projectData.agreement.latest_seller_message && !projectData.agreement.latest_buyer_message) {
+                } @empty {
                   <div class="empty-activity">
                     <div class="empty-icon">
                       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -821,7 +807,7 @@
               <!-- ============================================== -->
               <!-- BUYER CONSOLE: AI RE-DRAFT & SEND REVISED TERMS -->
               <!-- ============================================== -->
-              @if (currentRole === 'buyer' && projectData.project.status !== 'accepted') {
+              @if (currentRole === 'buyer' && canBuyerEditAgreement()) {
                 <div class="buyer-ai-desk">
                   <div class="desk-header">
                     <div class="desk-title">

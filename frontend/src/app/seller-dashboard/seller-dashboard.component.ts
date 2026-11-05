@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -36,7 +36,7 @@ interface ProjectRow {
   templateUrl: './seller-dashboard.component.html',
   styleUrl: './seller-dashboard.component.scss'
 })
-export class SellerDashboardComponent implements OnInit {
+export class SellerDashboardComponent implements OnInit, OnDestroy {
   Number = Number;
   projects: ProjectRow[] = [];
 
@@ -52,6 +52,7 @@ export class SellerDashboardComponent implements OnInit {
   activeFilterTab: 'all' | 'negotiating' | 'accepted' = 'all';
   isLoadingProjects = true;
   private gridApi!: GridApi;
+  private projectRefreshInterval: ReturnType<typeof setInterval> | null = null;
 
   totalEarnings = 0;
   negotiatingCount = 0;
@@ -161,8 +162,12 @@ export class SellerDashboardComponent implements OnInit {
         let dot = '#94A3B8';
         let label = 'DRAFT';
 
-        if (val === 'accepted') {
+        if (val === 'completed') {
+          bg = '#ECFDF5'; color = '#047857'; border = '#A7F3D0'; dot = '#10B981'; label = 'DONE';
+        } else if (val === 'accepted') {
           bg = '#ECFDF5'; color = '#047857'; border = '#A7F3D0'; dot = '#10B981'; label = 'ACCEPTED & FUNDED';
+        } else if (val === 'pending_funds') {
+          bg = '#EEF2FF'; color = '#4338CA'; border = '#C7D2FE'; dot = '#6366F1'; label = 'AWAITING BUYER ESCROW';
         } else if (val === 'negotiating') {
           bg = '#FFFBEB'; color = '#B45309'; border = '#FDE68A'; dot = '#F59E0B'; label = 'IN NEGOTIATION';
         } else if (val === 'seller_joined') {
@@ -192,10 +197,11 @@ export class SellerDashboardComponent implements OnInit {
       width: 250,
       cellRenderer: (params: any) => {
         const id = params.data.id;
-        const isAccepted = (params.data.status || '').toLowerCase() === 'accepted';
+        const isAccepted = !!params.data?.is_accepted ||
+          ['accepted', 'active', 'in_review', 'warranty_period', 'completed', 'pending_funds'].includes((params.data.status || '').toLowerCase());
         const status = (params.data?.status || '').toLowerCase();
-        const canDelete = params.data?.can_delete !== false && !['accepted', 'active', 'in_review'].includes(status);
-        const disabledReason = params.data?.delete_disabled_reason || 'Cannot delete: Active PayPal escrow funds are held in vault.';
+        const canDelete = status === 'draft';
+        const disabledReason = canDelete ? '' : 'Cannot delete: Only contracts strictly in DRAFT status can be deleted.';
 
         const deleteBtnHtml = canDelete
           ? `
@@ -262,6 +268,7 @@ export class SellerDashboardComponent implements OnInit {
 
   ngOnInit() {
     this.loadProjects();
+    this.projectRefreshInterval = setInterval(() => this.loadProjects(true), 15000);
     this.fetchPayPalBalances();
 
     window.addEventListener('sellerOpenRoom', (event: any) => {
@@ -276,6 +283,13 @@ export class SellerDashboardComponent implements OnInit {
     window.addEventListener('sellerDeletePrompt', (event: any) => {
       this.promptDeleteProject(event.detail);
     });
+  }
+
+  ngOnDestroy() {
+    if (this.projectRefreshInterval) {
+      clearInterval(this.projectRefreshInterval);
+      this.projectRefreshInterval = null;
+    }
   }
 
   openProjectScopeDrawer(projectId: number) {
@@ -321,19 +335,25 @@ export class SellerDashboardComponent implements OnInit {
     this.drawerError = '';
   }
 
+  isProjectAccepted(p: any): boolean {
+    if (!p) return false;
+    const st = (p.status || '').toLowerCase();
+    return !!p.is_accepted || ['accepted', 'active', 'in_review', 'warranty_period', 'completed', 'pending_funds'].includes(st);
+  }
+
   canDeleteProject(p: any): boolean {
     if (!p) return false;
-    if (p.can_delete === false) return false;
     const st = (p.status || '').toLowerCase();
-    if (['accepted', 'active', 'in_review'].includes(st)) {
-      return false;
-    }
-    return true;
+    return st === 'draft';
   }
 
   getDeleteDisabledReason(p: any): string {
-    if (!p) return '';
-    return p.delete_disabled_reason || 'Active PayPal escrow funds are held in vault. Must complete milestones or issue refund before deleting.';
+    if (!p) return 'Cannot delete contract.';
+    const st = (p.status || '').toLowerCase();
+    if (st !== 'draft') {
+      return 'Delete is strictly permitted only for contracts in DRAFT status.';
+    }
+    return 'Cannot delete contract.';
   }
 
   promptDeleteProject(projectId: number) {
@@ -393,7 +413,8 @@ export class SellerDashboardComponent implements OnInit {
 
   getStatusBadgeClass(status: string): string {
     const s = (status || '').toLowerCase();
-    if (s === 'accepted' || s === 'active') return 'badge-emerald';
+    if (s === 'accepted' || s === 'active' || s === 'completed') return 'badge-emerald';
+    if (s === 'pending_funds') return 'badge-indigo';
     if (s === 'negotiating') return 'badge-amber';
     if (s === 'seller_joined') return 'badge-blue';
     if (s === 'invite_sent') return 'badge-indigo';
@@ -405,6 +426,8 @@ export class SellerDashboardComponent implements OnInit {
     const s = (status || '').toLowerCase();
     if (s === 'accepted') return 'ACCEPTED & FUNDED';
     if (s === 'active') return 'ACTIVE ESCROW';
+    if (s === 'pending_funds') return 'AWAITING BUYER ESCROW';
+    if (s === 'completed') return 'DONE';
     if (s === 'negotiating') return 'IN NEGOTIATION';
     if (s === 'seller_joined') return 'SELLER JOINED';
     if (s === 'invite_sent') return 'OPEN INVITE';
@@ -416,9 +439,9 @@ export class SellerDashboardComponent implements OnInit {
     this.router.navigate(['/project', projectId, 'fulfillment'], { queryParams: { role: 'seller' } });
   }
 
-  loadProjects() {
-    this.isLoadingProjects = true;
-    const start = Date.now();
+  loadProjects(silent = false) {
+    if (!silent) this.isLoadingProjects = true;
+    const start = silent ? 0 : Date.now();
     this.http.get<ProjectRow[]>(`${API_BASE_URL}/api/projects`)
       .subscribe({
         next: (data) => {
@@ -426,19 +449,26 @@ export class SellerDashboardComponent implements OnInit {
           this.calculateKpis();
           this.applyFilters();
           this.loadActiveAlerts();
-          const elapsed = Date.now() - start;
-          const remaining = Math.max(0, 450 - elapsed);
-          setTimeout(() => {
-            this.isLoadingProjects = false;
-          }, remaining);
+          if (!silent) {
+            const elapsed = Date.now() - start;
+            const remaining = Math.max(0, 450 - elapsed);
+            setTimeout(() => {
+              this.isLoadingProjects = false;
+            }, remaining);
+          }
 
-          const accepted = this.projects.find(p => (p.status || '').toLowerCase() === 'accepted');
+          const accepted = this.projects.find(p =>
+            p.is_accepted &&
+            ['accepted', 'active', 'in_review', 'warranty_period', 'completed', 'negotiating', 'pending_funds']
+              .includes((p.status || '').toLowerCase())
+          );
           if (accepted && (!this.activeProject || this.activeProject.id !== accepted.id)) {
             this.activeProject = accepted;
             this.loadActiveMilestones(accepted.id);
           }
         },
         error: () => {
+          if (silent) return;
           this.projects = [];
           this.filteredProjects = [];
           this.isLoadingProjects = false;
@@ -480,6 +510,13 @@ export class SellerDashboardComponent implements OnInit {
     if (this.activeProject?.id) {
       this.loadActiveMilestones(this.activeProject.id);
     }
+  }
+
+  getActiveProjectCollectedSum(): number {
+    if (!this.activeMilestones || this.activeMilestones.length === 0) return 0;
+    return this.activeMilestones
+      .filter((m: any) => this.isMilestoneApproved(m))
+      .reduce((acc: number, m: any) => acc + (Number(m.price_allocation) || 0), 0);
   }
 
   loadActiveAlerts() {

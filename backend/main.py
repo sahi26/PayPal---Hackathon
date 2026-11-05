@@ -4,21 +4,35 @@ import uuid
 import re
 import subprocess
 import struct
-from datetime import datetime, timedelta, date
-from typing import Optional, List, Dict, Any, Tuple
+import math
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*OpenSSL.*")
+warnings.filterwarnings("ignore", message=".*urllib3.*")
+try:
+    from urllib3.exceptions import NotOpenSSLWarning
+    warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
+except Exception:
+    pass
+
+from datetime import datetime, timedelta, date, timezone
+from typing import Optional, List, Dict, Any, Tuple, Union
+import random
+import string
 import httpx
 from dotenv import load_dotenv
 import hashlib
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy import inspect
+from sqlalchemy import inspect, func
 from pydantic import BaseModel, EmailStr
 import google.generativeai as genai
-from database import engine, get_db, run_migrations
+from database import engine, get_db, run_migrations, SessionLocal
 import models
 import paypal_service
 import ai_service
@@ -61,8 +75,36 @@ app.add_middleware(
 
 # --- Configuration ---
 PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "")
+
+# --- Real-Time Escrow & Reauthorization WebSocket Manager ---
+class EscrowNotificationManager:
+    def __init__(self):
+        self.active_connections: Dict[int, List[WebSocket]] = {}
+
+    async def connect(self, project_id: int, websocket: WebSocket):
+        await websocket.accept()
+        if project_id not in self.active_connections:
+            self.active_connections[project_id] = []
+        self.active_connections[project_id].append(websocket)
+
+    def disconnect(self, project_id: int, websocket: WebSocket):
+        if project_id in self.active_connections:
+            if websocket in self.active_connections[project_id]:
+                self.active_connections[project_id].remove(websocket)
+            if not self.active_connections[project_id]:
+                del self.active_connections[project_id]
+
+    async def broadcast_to_project(self, project_id: int, data: Dict[str, Any]):
+        if project_id in self.active_connections:
+            for connection in list(self.active_connections[project_id]):
+                try:
+                    await connection.send_json(data)
+                except Exception:
+                    self.disconnect(project_id, connection)
+
+escrow_notifier = EscrowNotificationManager()
 PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET", "")
-PAYPAL_REDIRECT_URI = os.getenv("PAYPAL_REDIRECT_URI", "http://localhost:4200")
+PAYPAL_REDIRECT_URI = os.getenv("PAYPAL_REDIRECT_URI", "https://prooflens-auth.loca.lt")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 if GEMINI_API_KEY:
@@ -74,6 +116,8 @@ FALLBACK_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_GEMINI_MODELS = [
     PRIMARY_GEMINI_MODEL,
     FALLBACK_GEMINI_MODEL,
+    "gemini-3-flash-preview",
+    "gemini-flash-latest",
 ]
 
 def get_candidate_models() -> list:
@@ -82,10 +126,62 @@ def get_candidate_models() -> list:
         return [env_model] + [m for m in DEFAULT_GEMINI_MODELS if m != env_model]
     return list(DEFAULT_GEMINI_MODELS)
 
+# --- Phase 2: Dynamic Physical Challenge & Strict File Format Definitions ---
+PHYSICAL_CHALLENGE_TEMPLATES = [
+    {"action": "Hold up 3 fingers", "code_required": False, "instruction": "Hold up 3 fingers clearly in frame next to the deliverable"},
+    {"action": "Hold up 2 fingers (peace sign)", "code_required": False, "instruction": "Hold up 2 fingers (peace sign) next to the deliverable"},
+    {"action": "Give a thumbs-up gesture", "code_required": False, "instruction": "Give a clear thumbs-up gesture in frame beside the work"},
+    {"action": "Hold up 4 fingers", "code_required": False, "instruction": "Hold up 4 fingers clearly visible next to the deliverable"},
+    {"action": "Write token on paper", "code_required": True, "instruction": "Write '{code}' clearly on paper and hold it next to the deliverable"},
+    {"action": "Place handwritten token beside work", "code_required": True, "instruction": "Write '{code}' on sticky note/paper and position beside the deliverable"}
+]
+ACTIVE_CHALLENGES: Dict[int, Dict[str, Any]] = {}
+
+def validate_file_format_against_proof_requirement(filename: Optional[str], proof_required: Optional[str]):
+    """
+    Phase 2: Strict File & Format Mapping
+    Cross-references uploaded file type against agreement's explicit proof requirement.
+    If the agreement requires a .zip file and user uploads an image, or requires PNG/SVG and
+    user uploads .dmg/executable, rejects immediately with HTTP 400 before deep analysis.
+    """
+    if not filename or not proof_required:
+        return
+
+    ext = os.path.splitext(filename.strip())[1].lower()
+    proof_lower = proof_required.lower()
+
+    # 1. Zip / Source archive requirement
+    requires_zip = any(k in proof_lower for k in [".zip", "zip archive", "zip file", "source code archive", "zipped file", "code repo"])
+    if requires_zip:
+        valid_zip_exts = [".zip", ".tar", ".gz", ".tgz", ".7z", ".rar"]
+        if ext not in valid_zip_exts:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File format mismatch: Milestone explicitly requires a .zip archive, but received an incompatible file type '{ext or 'unspecified'}' ({filename})."
+            )
+
+    # 2. Visual / Vector / Logo deliverable requirement
+    requires_visual = any(k in proof_lower for k in [
+        "png", "svg", "vector", "logo", "mockup", "deck", "presentation",
+        "graphic", "visual", "jpg", "jpeg", "pdf", "image", "boards"
+    ])
+    if requires_visual:
+        disallowed_binary_exts = [
+            ".dmg", ".exe", ".pkg", ".bin", ".msi", ".iso", ".bat", ".sh",
+            ".app", ".cmd", ".apk", ".ipa", ".dll", ".so", ".jar"
+        ]
+        if ext in disallowed_binary_exts:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File format mismatch: Milestone explicitly requires visual/vector deliverables (PNG/SVG/PDF), but received an unsupported or executable file ({ext})."
+            )
+
 # --- Pydantic Schemas ---
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+    role: Optional[str] = "buyer"
+    full_name: Optional[str] = None
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -154,6 +250,7 @@ class DraftChatResponse(BaseModel):
     requires_baseline_evidence: bool = False
     project_domain: str = "physical"
     is_renovation: bool = False
+    warranty_days: int = 0
 
 class DisputeWarrantyRequest(BaseModel):
     dispute_active: bool
@@ -169,8 +266,6 @@ class FinalizeDraftRequest(BaseModel):
 
 class FinalizeDraftResponse(BaseModel):
     project_id: int
-    invite_token: str
-    invite_url: str
     status: str
     agreement: Optional[dict] = None
 
@@ -185,6 +280,7 @@ class NegotiateRequest(BaseModel):
 class RegenerateAgreementRequest(BaseModel):
     buyer_response: str
     additional_notes: Optional[str] = None
+    role: Optional[str] = "buyer"
 
 class UpdateTermsRequest(BaseModel):
     contract_terms: str
@@ -194,12 +290,14 @@ class UpdateTermsRequest(BaseModel):
     lock_in_type: Optional[str] = None
     lock_in_amount: Optional[float] = None
     lock_in_days: Optional[int] = None
+    role: Optional[str] = "buyer"
 
 class UpdateMilestonesRequest(BaseModel):
     milestones: List[dict]
     lock_in_type: Optional[str] = None
     lock_in_amount: Optional[float] = None
     lock_in_days: Optional[int] = None
+    role: Optional[str] = "buyer"
 
 class ProjectCreateRequest(BaseModel):
     title: str
@@ -233,6 +331,7 @@ class ScopeChangeAcceptRequest(BaseModel):
 class ScopeChangeAuthorizeFundsRequest(BaseModel):
     scope_change_id: int
     paypal_order_id: Optional[str] = None
+    user_email: Optional[str] = None
 
 class WizardChatRequest(BaseModel):
     messages: List[ChatMessage]
@@ -266,6 +365,8 @@ class CapturePaymentRequest(BaseModel):
 class ReauthorizePaymentRequest(BaseModel):
     amount: Optional[float] = None
     currency: str = "USD"
+    force: bool = False
+    simulate_failure: bool = False
 
 # --- PayPal Disputes API & AI Schemas ---
 class FileDisputeRequest(BaseModel):
@@ -273,6 +374,28 @@ class FileDisputeRequest(BaseModel):
     reason: str
     disputed_by: str = "buyer" # "buyer" or "seller"
     milestone_index: Optional[int] = None
+
+class OpenDisputeRequest(BaseModel):
+    reason: str
+    disputed_by: str = "buyer" # "buyer" or "seller"
+    milestone_index: Optional[int] = None
+
+class DisputeMessageRequest(BaseModel):
+    sender_role: str = "buyer" # "buyer", "seller", "system", "ai"
+    sender_name: Optional[str] = None
+    message: str
+    proposal_type: str = "message" # "message", "remedy", "request_proof", "scope_change"
+    meta_payload: Optional[dict] = None
+
+class EscalateDisputeRequest(BaseModel):
+    notes: Optional[str] = None
+
+class EscalateToHumanRequest(BaseModel):
+    note: Optional[str] = None
+
+class ResolveDisputeRequest(BaseModel):
+    resolution_type: str = "MUTUAL_SETTLEMENT" # "SCOPE_CHANGE" or "MUTUAL_SETTLEMENT"
+    notes: Optional[str] = None
 
 # --- Basic Health & Debug Endpoints ---
 @app.get("/")
@@ -313,22 +436,49 @@ def list_projects(buyer_email: Optional[str] = None, db: Session = Depends(get_d
     )
 
     result = []
+    completion_changed = False
     for p in projects:
         agreement = p.agreement
+        completion_changed = reconcile_project_completion(p) or completion_changed
         buyer_email_val = p.buyer.email if p.buyer else p.client_email
         seller_email_val = p.seller.email if p.seller else None
-        created_str = p.created_at.strftime("%b %d, %Y") if p.created_at else "Nov 01, 2026"
+        if p.created_at:
+            dt = p.created_at
+            if dt.tzinfo is None:
+                # SQLite stores naive UTC; convert to local timezone to display user's local date
+                dt = dt.replace(tzinfo=timezone.utc).astimezone()
+            else:
+                dt = dt.astimezone()
+            created_str = dt.strftime("%b %d, %Y")
+        else:
+            created_str = date.today().strftime("%b %d, %Y")
         status_val = (p.status.value if hasattr(p.status, "value") else str(p.status or "draft")).lower()
-        has_escrow_lock = (p.id in active_payment_project_ids) and (status_val in ["accepted", "active", "in_review"])
+        active_scope_change = db.query(models.ScopeChangeRequest).filter(
+            models.ScopeChangeRequest.project_id == p.id,
+            models.ScopeChangeRequest.status.in_(["NEGOTIATING", "PENDING_FUNDS", "DRAFT"])
+        ).order_by(models.ScopeChangeRequest.id.desc()).first()
+        dashboard_status = (
+            "pending_funds" if active_scope_change and active_scope_change.status == "PENDING_FUNDS"
+            else status_val
+        )
+        has_escrow_lock = (p.id in active_payment_project_ids) and (
+            status_val in ["accepted", "active", "in_review", "negotiating"] or dashboard_status == "pending_funds"
+        )
         can_delete = not has_escrow_lock
         delete_disabled_reason = "Active PayPal escrow funds are held in vault. Complete project milestones or issue refund before deleting." if has_escrow_lock else None
+        ms_list = []
+        if agreement and agreement.milestones:
+            raw_ms = [dict(m) for m in agreement.milestones]
+            enriched_ms, _ = enrich_milestone_scope_and_proof(raw_ms, p)
+            ms_list = enriched_ms
+
         result.append({
             "id": p.id,
             "title": p.title or "Untitled Project",
             "industry_type": p.industry_type or "General",
             "description": p.description or "",
             "total_price": p.total_price or 0.0,
-            "status": p.status or "draft",
+            "status": dashboard_status,
             "invite_token": p.invite_token,
             "buyer_email": buyer_email_val or "buyer@prooflens.com",
             "seller_email": seller_email_val or "Awaiting Seller",
@@ -336,12 +486,14 @@ def list_projects(buyer_email: Optional[str] = None, db: Session = Depends(get_d
             "deadline": p.deadline,
             "version": agreement.version if agreement else 1,
             "has_agreement": agreement is not None,
-            "milestones": agreement.milestones if agreement and agreement.milestones else [],
+            "milestones": ms_list,
             "is_accepted": bool(agreement and agreement.is_accepted_by_client),
             "contractor_rejection_reason": getattr(p, "contractor_rejection_reason", None),
             "can_delete": can_delete,
             "delete_disabled_reason": delete_disabled_reason
         })
+    if completion_changed:
+        db.commit()
     return result
 
 # --- Phase 2: Negotiation Loop Endpoints ---
@@ -449,6 +601,196 @@ def determine_requires_baseline_evidence(title: str = "", industry: str = "", de
         return False
         
     return any(k in corpus for k in modification_keywords)
+
+def enrich_milestone_scope_and_proof(milestones: list, project: Any) -> Tuple[list, bool]:
+    """
+    Ensures every milestone throughout the application has:
+    1. Meaningful milestone title / phase name (not generic 'M1' or 'Milestone 1').
+    2. Detailed deliverable requirement (scope of work description).
+    3. Distinct, mandatory evidence verification criteria (proof_required) appropriate to the specific milestone phase.
+       Eliminates repeating generic 'Vector files' across all milestones.
+    Returns (enriched_milestones, changed_boolean).
+    """
+    if not milestones or not isinstance(milestones, list):
+        return milestones, False
+
+    title_corp = (getattr(project, "title", None) or "").lower()
+    ind_corp = (getattr(project, "industry_type", None) or "").lower()
+    desc_corp = (getattr(project, "description", None) or "").lower()
+    full_corpus = f"{title_corp} {ind_corp} {desc_corp}"
+
+    is_graphic = any(k in full_corpus for k in [
+        "logo", "brand", "graphic", "illustration", "vector", "identity",
+        "icon", "mascot", "badge", "packaging", "banner", "poster", "art", "digital art"
+    ])
+    is_software = not is_graphic and any(k in full_corpus for k in [
+        "web", "app", "software", "api", "code", "frontend", "backend",
+        "fullstack", "saas", "mobile", "site", "platform", "ui", "ux", "figma"
+    ])
+    is_renovation = any(k in full_corpus for k in [
+        "bath", "kitchen", "plumb", "pipe", "sink", "renovat", "remodel",
+        "drywall", "tile", "paint", "fixture", "caulk", "drain"
+    ])
+    is_woodworking = any(k in full_corpus for k in [
+        "table", "desk", "chair", "wood", "timber", "cabinet", "shelf", "furniture", "walnut", "oak", "carpentry"
+    ])
+    is_jewelry = any(k in full_corpus for k in [
+        "ring", "jewelry", "gold", "silver", "necklace", "pendant", "bracelet", "karat", "diamond"
+    ])
+
+    changed = False
+    enriched = []
+
+    # Domain-specific milestone blueprint sets (Phase 1, Phase 2, Phase 3, etc.)
+    if is_graphic:
+        blueprints = [
+            {
+                "title": "Creative Brief Alignment, Moodboard & Initial Concepts",
+                "description": f"Develop 3 distinct creative concepts, moodboard explorations, and typography pairings for '{getattr(project, 'title', 'Project')}'.",
+                "proof_required": "Presentation deck (PDF or images) containing 3 distinct concept boards with color swatches and typography hierarchy."
+            },
+            {
+                "title": "Concept Refinement, Iterations & Lockup Variations",
+                "description": "Refine chosen direction with client revisions, finalize geometry, horizontal/vertical lockups, and application previews.",
+                "proof_required": "High-resolution mockups (PNG or PDF) showing primary mark, secondary badge, monochrome versions, and scale legibility checks."
+            },
+            {
+                "title": "Final Master Production Package, Style Guide & Asset Handover",
+                "description": "Export complete production package: vector master files (AI, EPS, SVG), print-ready PDF (CMYK), web-optimized transparent PNGs (RGB), and brand style guide.",
+                "proof_required": "Production master archive package (.zip or folder) containing verified vector files (AI, EPS, SVG), transparent PNGs, PDF specs, and signed copyright transfer."
+            }
+        ]
+    elif is_software:
+        blueprints = [
+            {
+                "title": "System Architecture, API Specification & UI/UX Wireframes",
+                "description": f"System architecture diagram, API contract specs, and UI/UX wireframes for '{getattr(project, 'title', 'Project')}'.",
+                "proof_required": "Clickable Figma prototype link or approved technical architecture & API specification document."
+            },
+            {
+                "title": "Core Feature Implementation & Staging Environment Demo",
+                "description": "Development of core user workflows, database schema migration, and interactive demo on a live staging environment.",
+                "proof_required": "Live staging preview URL with screen recording demonstration and passing automated test report."
+            },
+            {
+                "title": "Production Deployment, Acceptance Testing & Asset Handover",
+                "description": "Deploy to production cloud infrastructure, complete end-to-end acceptance tests, and transfer code repository access.",
+                "proof_required": "Production deployment URL, verified Git commit hash, clean test suite run report, and administrator credential transfer."
+            }
+        ]
+    elif is_renovation:
+        blueprints = [
+            {
+                "title": "Site Surface Prep, Demolition & Moisture-Resistant Primer",
+                "description": f"Protect existing fixtures, demo obsolete materials, patch substrate, and apply moisture-resistant primer barrier for '{getattr(project, 'title', 'Project')}'.",
+                "proof_required": "High-resolution inspection photos showing prepped worksite, patched surfaces with uniform moisture barrier, and secured utility valves."
+            },
+            {
+                "title": "Core System Installation, Rough-In & Pressure Leak Testing",
+                "description": "Execute plumbing lines/fixtures installation, assemble drain/P-trap, and perform pressurized flow testing.",
+                "proof_required": "Continuous 30-second live camera video demonstrating full pressurized water flow and dry paper towel check under connections with zero leaks."
+            },
+            {
+                "title": "Finish Trim, Sanitary Silicone Sealing & Final Worksite Handover",
+                "description": "Apply finish coats, perimeter sanitary waterproof silicone caulking, fixture polish, and complete site cleanup.",
+                "proof_required": "Wide-angle inspection photos of completed project with uniform finish, close-up photo of watertight caulking beads, and clean worksite."
+            }
+        ]
+    elif is_woodworking:
+        blueprints = [
+            {
+                "title": "Lumber Selection, Milling & Precision Joinery Rough-out",
+                "description": f"Source premium hardwood timber, mill to square dimensions, and cut precision joinery for '{getattr(project, 'title', 'Project')}'.",
+                "proof_required": "Photos of dimensioned timber boards and test mortise/tenon joinery with digital scale check."
+            },
+            {
+                "title": "Full Assembly, Joinery Clamping & Multi-Grit Surface Sanding",
+                "description": "Dry-fit and glue-up carcass structure, clamp square, and progressive grit sanding up to 220-grit.",
+                "proof_required": "Photos with calipers and tape measure confirming exact agreed dimensions, flatness, and joinery alignment."
+            },
+            {
+                "title": "Protective Multi-Coat Finish & Insured White-Glove Handover",
+                "description": "Apply protective hardwax/poly finish coats, cure, wrap in protective blanket packaging, and dispatch.",
+                "proof_required": "High-definition video of cured surface finish and carrier dispatch tracking receipt with insured signature confirmation."
+            }
+        ]
+    elif is_jewelry:
+        blueprints = [
+            {
+                "title": "CAD 3D Modeling, Wax Carving & Gauge Proportions",
+                "description": f"Create detailed 3D CAD design, carve precision casting wax pattern, and verify dimensions for '{getattr(project, 'title', 'Project')}'.",
+                "proof_required": "Macro photo of wax pattern on ring mandrel showing exact mm gauge, profile, and stone seatings."
+            },
+            {
+                "title": "Precious Metal Casting & Precision Stone Setting",
+                "description": "Lost-wax cast in precious metal, clean, mount gemstone/diamonds, and execute bezel/prong tightening.",
+                "proof_required": "Macro photos and electronic metal purity test certificate showing secure stone settings under magnification."
+            },
+            {
+                "title": "High-Luster Mirror Polish, Hallmark Stamping & Insured Delivery",
+                "description": "Hand-buff to mirror luster, stamp official assay hallmark, and package in presentation vault box.",
+                "proof_required": "360-degree video inspection showing hallmark stamp and signature courier tracking receipt."
+            }
+        ]
+    else:
+        blueprints = [
+            {
+                "title": "Discovery, Technical Specifications & Milestone Roadmap",
+                "description": f"Define detailed project scope, technical specifications, and stakeholder requirements for '{getattr(project, 'title', 'Project')}'.",
+                "proof_required": "Approved project roadmap, technical specification document, or initial draft presentation."
+            },
+            {
+                "title": "Core Deliverable Development & Stakeholder Interim Review",
+                "description": "Complete main deliverable execution, integrate interim revisions, and prepare staging preview.",
+                "proof_required": "Comprehensive intermediate deliverable draft, test results report, or live prototype demonstration."
+            },
+            {
+                "title": "Final Acceptance Package, Documentation & Knowledge Transfer",
+                "description": "Deliver completed work product, technical documentation, transfer copyright ownership, and complete client handover.",
+                "proof_required": "Final verified deliverable archive, signed transfer of ownership documentation, and client acceptance sign-off."
+            }
+        ]
+
+    for idx, m in enumerate(milestones):
+        item = dict(m)
+        bp = blueprints[min(idx, len(blueprints) - 1)]
+
+        cur_title = (item.get("title") or "").strip()
+        is_generic_title = (
+            not cur_title or
+            cur_title.lower() in ["m1", "m2", "m3", "m4", "m5", "m6"] or
+            cur_title.lower() in ["milestone 1", "milestone 2", "milestone 3", "milestone 4"] or
+            (cur_title.lower().startswith("milestone ") and cur_title[10:].isdigit())
+        )
+        if is_generic_title:
+            item["title"] = bp["title"]
+            changed = True
+
+        cur_desc = (item.get("description") or "").strip()
+        if not cur_desc or cur_desc.lower() == cur_title.lower() or cur_desc.lower() == "deliverable verified":
+            item["description"] = bp["description"]
+            changed = True
+
+        cur_proof = (item.get("proof_required") or "").strip()
+        norm_proof = cur_proof.lower().rstrip('.').strip()
+        is_generic_proof = (
+            not norm_proof or
+            norm_proof in [
+                "vector files", "vector file", "vector", "vectors", "proof", "visual inspection",
+                "visual inspection photos", "none", "n/a", "deliverable", "evidence", "deliverable specifications",
+                "photographic or verifiable digital deliverable proof",
+                "deliverable specifications as established in active agreement"
+            ] or
+            # If all milestones repeat the identical proof string (e.g. "Vector files" on M1, M2, M3)
+            (idx > 0 and norm_proof == (milestones[0].get("proof_required") or "").strip().lower().rstrip('.'))
+        )
+        if is_generic_proof:
+            item["proof_required"] = bp["proof_required"]
+            changed = True
+
+        enriched.append(item)
+
+    return enriched, changed
 
 def synthesize_interactive_draft_fallback(project: models.Project, messages: list, current_message: str) -> dict:
     """
@@ -644,19 +986,45 @@ def interactive_draft(request: InteractiveDraftRequest, db: Session = Depends(ge
     project.is_renovation = is_renov
     project.requires_baseline_evidence = is_renov
 
+    w_days = ai_service.determine_warranty_days(
+        project.title,
+        project.industry_type,
+        project.description,
+        domain=str(domain)
+    )
     milestones_list = ai_data.get("milestones") or []
     if ai_data.get("ready_to_finalize") and milestones_list:
+        milestones_list = normalize_milestone_schedule(
+            milestones_list,
+            project.deadline,
+            created_at=project.created_at,
+            total_price=float(project.total_price or 0.0)
+        )
+        ai_data["milestones"] = milestones_list
+    if ai_data.get("ready_to_finalize") and milestones_list:
+        l_type = "NONE" if w_days == 0 else "FINAL_MILESTONE"
+        l_amount = 0.0 if w_days == 0 else round(float(milestones_list[-1].get("price_allocation", 0.0)), 2)
+        l_days = w_days
+
         if not project.agreement:
             agreement = models.Agreement(
                 project_id=project.id,
                 milestones=milestones_list,
                 ai_generated_contract=ai_data.get("contract_terms") or json.dumps(milestones_list, indent=2),
                 evidence_requirements=ai_data.get("evidence_requirements") or "\n".join([f"• {m.get('title')}: {m.get('proof_required')}" for m in milestones_list]),
-                version=1
+                version=1,
+                lock_in_type=l_type,
+                lock_in_amount=l_amount,
+                lock_in_days=l_days,
+                warranty_days=w_days
             )
             db.add(agreement)
         else:
             project.agreement.milestones = milestones_list
+            project.agreement.lock_in_type = l_type
+            project.agreement.lock_in_amount = l_amount
+            project.agreement.lock_in_days = l_days
+            project.agreement.warranty_days = w_days
             if ai_data.get("contract_terms"):
                 project.agreement.ai_generated_contract = ai_data.get("contract_terms")
             if ai_data.get("evidence_requirements"):
@@ -674,38 +1042,267 @@ def interactive_draft(request: InteractiveDraftRequest, db: Session = Depends(ge
         "requires_baseline_evidence": bool(project.requires_baseline_evidence),
         "project_domain": str(project.project_domain or "physical"),
         "is_renovation": bool(project.is_renovation),
+        "warranty_days": w_days,
         "milestones": milestones_list
     }
 
-def calculate_milestone_deadlines(deadline_str: Optional[str], num_milestones: int = 3, start_date: Optional[date] = None) -> list:
+def create_system_notification(
+    db: Session,
+    user_id: Optional[int],
+    title: str,
+    message: str,
+    type: str = "GENERAL",
+    project_id: Optional[int] = None,
+    action_url: Optional[str] = None,
+    action_data: Optional[Dict[str, Any]] = None,
+    fallback_role: Optional[str] = None
+) -> Optional[models.Notification]:
     """
-    Computes realistic sequential intermediate deadlines for each milestone leading up to the final target deadline.
+    Creates an authoritative notification record in the database.
+    If user_id is missing, resolves the project participant matching fallback_role.
     """
-    if not start_date:
-        start_date = date.today()
-    if not deadline_str:
-        final_date = start_date + timedelta(days=14)
-    else:
+    if fallback_role and project_id:
+        project = db.query(models.Project).filter(models.Project.id == project_id).first()
+        if project:
+            target_role = fallback_role.lower()
+            participant_id = project.buyer_id if target_role in ["buyer", "customer"] else project.seller_id
+            participant_email = (
+                project.client_email
+                if target_role in ["buyer", "customer"]
+                else (project.seller.email if project.seller else None)
+            )
+            if participant_email:
+                participant = db.query(models.User).filter(
+                    func.lower(models.User.email) == participant_email.lower()
+                ).first()
+                if participant:
+                    participant_id = participant.id
+            user_id = participant_id or user_id
+
+    if not user_id and fallback_role and not project_id:
+        target_role = fallback_role.lower()
+        role_alias = "customer" if target_role == "buyer" else "maker"
+        user = db.query(models.User).filter(
+            (models.User.role_type == target_role) | (models.User.role_type == role_alias)
+        ).first()
+        if user:
+            user_id = user.id
+
+    if not user_id:
+        return None
+
+    try:
+        notif = models.Notification(
+            user_id=user_id,
+            project_id=project_id,
+            title=title,
+            message=message,
+            type=type,
+            is_read=False,
+            action_url=action_url,
+            action_data=action_data
+        )
+        db.add(notif)
+        db.commit()
+        db.refresh(notif)
+        return notif
+    except Exception as e:
+        print(f"[WARN] Error creating system notification: {e}")
         try:
-            final_date = datetime.strptime(deadline_str.strip()[:10], "%Y-%m-%d").date()
-            if final_date <= start_date:
-                final_date = start_date + timedelta(days=7)
+            db.rollback()
         except Exception:
-            final_date = start_date + timedelta(days=14)
-            
-    total_days = max(num_milestones, (final_date - start_date).days)
-    deadlines = []
-    for i in range(1, num_milestones + 1):
-        if i == num_milestones:
-            m_date = final_date
+            pass
+        return None
+
+
+def reconcile_project_completion(project: models.Project) -> bool:
+    agreement = project.agreement
+    milestones = (agreement.milestones or []) if agreement else []
+    if not agreement or not milestones:
+        return False
+
+    all_milestones_complete = all(
+        (milestone.get("status") or "").lower() in ["approved", "completed"]
+        for milestone in milestones
+    )
+    captured_amount = float(getattr(project, "captured_amount", 0.0) or 0.0)
+    total_price = float(project.total_price or 0.0)
+    lock_in_amount = float(getattr(agreement, "lock_in_amount", 0.0) or 0.0)
+    lock_in_type = (getattr(agreement, "lock_in_type", "NONE") or "NONE").upper()
+    retainage_pending = (
+        lock_in_type in ["FINAL_MILESTONE", "CUSTOM"]
+        and lock_in_amount > 0
+        and getattr(agreement, "warranty_payout_status", None) != "SUCCESS"
+    )
+    retainage_paid = (
+        lock_in_type in ["FINAL_MILESTONE", "CUSTOM"]
+        and lock_in_amount > 0
+        and getattr(agreement, "warranty_payout_status", None) == "SUCCESS"
+    )
+    paid_total = captured_amount + (lock_in_amount if retainage_paid else 0.0)
+    is_complete = (
+        all_milestones_complete
+        and paid_total + 0.01 >= total_price
+        and not retainage_pending
+    )
+
+    if is_complete:
+        changed = project.status != models.ProjectStatus.COMPLETED or agreement.status != "COMPLETED"
+        project.status = models.ProjectStatus.COMPLETED
+        agreement.status = "COMPLETED"
+        return changed
+
+    if project.status == models.ProjectStatus.COMPLETED:
+        project.status = (
+            models.ProjectStatus.WARRANTY_PERIOD if retainage_pending else models.ProjectStatus.ACTIVE
+        )
+        agreement.status = "WARRANTY_PERIOD" if retainage_pending else "ACTIVE"
+        return True
+    return False
+
+
+def calculate_milestone_deadlines(
+    deadline_str: Optional[str],
+    num_milestones: Optional[int] = 3,
+    start_date: Optional[Union[date, datetime]] = None,
+    created_at: Optional[Any] = None,
+    total_price: float = 0.0
+) -> list:
+    """
+    Phase 1 T+1 Milestone Calculation:
+    The project phase must strictly start on the next calendar day relative to the created_at date (Day 1 = created_at + 1).
+    If the project is 1 day total, the sole milestone is due on Day 1 (T+1).
+    Milestone count dynamically scales with the project vastness, but the timeline always anchors to T+1.
+    """
+    today_date = date.today()
+    created_dt = created_at or start_date or today_date
+    if isinstance(created_dt, datetime):
+        if created_dt.tzinfo is not None:
+            created_date = created_dt.astimezone().date()
         else:
-            fraction = i / num_milestones
-            offset = max(i, int(round(total_days * fraction)))
-            m_date = start_date + timedelta(days=offset)
-            if m_date >= final_date:
-                m_date = final_date - timedelta(days=num_milestones - i)
-        deadlines.append(m_date.strftime("%Y-%m-%d"))
-    return deadlines
+            created_date = created_dt.date()
+    elif isinstance(created_dt, date):
+        created_date = created_dt
+    else:
+        created_date = today_date
+
+    # Strictly anchor work start to T+1 (next calendar day relative to created_date)
+    day_1 = created_date + timedelta(days=1)
+
+    if deadline_str:
+        try:
+            final_date = datetime.strptime(str(deadline_str).strip()[:10], "%Y-%m-%d").date()
+        except Exception:
+            final_date = day_1 + timedelta(days=13)
+    else:
+        final_date = day_1 + timedelta(days=13)
+
+    if final_date < day_1:
+        final_date = day_1
+
+    total_project_days = max(1, (final_date - day_1).days + 1)
+
+    # Determine milestone count n
+    if num_milestones and num_milestones > 0:
+        n = min(num_milestones, total_project_days)
+    else:
+        # Dynamically scale milestone count based on project vastness
+        if total_project_days <= 1:
+            n = 1
+        elif total_project_days <= 3 or (total_price > 0 and total_price <= 150):
+            n = min(2, total_project_days)
+        elif total_project_days <= 10 or (total_price > 0 and total_price <= 600):
+            n = min(3, total_project_days)
+        elif total_project_days <= 21:
+            n = min(4, total_project_days)
+        else:
+            n = min(5, total_project_days)
+
+    if n <= 1:
+        return [final_date.strftime("%Y-%m-%d")]
+
+    deadlines = []
+    if total_project_days < n:
+        # If total days is smaller than requested milestone count, distribute across available days up to final_date
+        for i in range(1, n + 1):
+            offset = min(total_project_days - 1, i - 1)
+            m_date = min(final_date, day_1 + timedelta(days=offset))
+            deadlines.append(m_date.strftime("%Y-%m-%d"))
+        deadlines[-1] = final_date.strftime("%Y-%m-%d")
+    else:
+        for i in range(1, n + 1):
+            if i == n:
+                m_date = final_date
+            else:
+                fraction = (i - 1) / (n - 1) if n > 1 else 1.0
+                offset = int(round((total_project_days - 1) * fraction))
+                m_date = day_1 + timedelta(days=offset)
+                if i > 1 and deadlines and m_date <= datetime.strptime(deadlines[-1], "%Y-%m-%d").date():
+                    m_date = datetime.strptime(deadlines[-1], "%Y-%m-%d").date() + timedelta(days=1)
+                if m_date >= final_date:
+                    m_date = final_date - timedelta(days=n - i)
+            deadlines.append(m_date.strftime("%Y-%m-%d"))
+
+    # Strictly guarantee that len(deadlines) is ALWAYS exactly n
+    while len(deadlines) < n:
+        deadlines.append(final_date.strftime("%Y-%m-%d"))
+    return deadlines[:n]
+
+def normalize_milestone_schedule(
+    milestones: list,
+    deadline_str: Optional[str],
+    created_at: Optional[Any] = None,
+    total_price: float = 0.0
+) -> list:
+    """Fit milestone scope to the project duration and assign every deadline."""
+    if not milestones:
+        return milestones
+
+    start_date = created_at or date.today()
+    if isinstance(start_date, datetime):
+        created_date = start_date.astimezone().date() if start_date.tzinfo else start_date.date()
+    elif isinstance(start_date, date):
+        created_date = start_date
+    else:
+        created_date = date.today()
+    deadlines = calculate_milestone_deadlines(
+        deadline_str,
+        num_milestones=len(milestones),
+        created_at=start_date,
+        total_price=total_price
+    )
+    target_count = len(deadlines)
+    if target_count < len(milestones):
+        grouped = []
+        for group_index in range(target_count):
+            first = group_index * len(milestones) // target_count
+            stop = (group_index + 1) * len(milestones) // target_count
+            group = [dict(m) for m in milestones[first:stop]]
+            if len(group) == 1:
+                grouped.append(group[0])
+                continue
+
+            combined = dict(group[0])
+            titles = [str(m.get("title", "")).strip() for m in group if m.get("title")]
+            descriptions = [str(m.get("description", "")).strip() for m in group if m.get("description")]
+            proofs = [str(m.get("proof_required", "")).strip() for m in group if m.get("proof_required")]
+            combined["title"] = " + ".join(titles) or f"Milestone {group_index + 1}"
+            combined["description"] = "\n\n".join(descriptions)
+            combined["proof_required"] = "\n".join(proofs)
+            combined["price_allocation"] = round(
+                sum(float(m.get("price_allocation") or 0.0) for m in group), 2
+            )
+            grouped.append(combined)
+        milestones = grouped
+
+    for index, milestone in enumerate(milestones):
+        milestone["deadline"] = deadlines[index]
+        due_date = datetime.strptime(deadlines[index], "%Y-%m-%d").date()
+        offset_days = (due_date - created_date).days
+        unit = "day" if offset_days == 1 else "days"
+        milestone["relative_deadline"] = f"Due {offset_days} {unit} from project creation"
+
+    return milestones
 
 def apply_negotiated_deadlines(
     milestones: list,
@@ -722,15 +1319,17 @@ def apply_negotiated_deadlines(
     base_date = date.today()
     if created_at:
         if isinstance(created_at, datetime):
-            base_date = created_at.date()
+            if created_at.tzinfo is not None:
+                base_date = created_at.astimezone().date()
+            else:
+                base_date = created_at.date()
         elif isinstance(created_at, date):
             base_date = created_at
-    
     # 1. Ensure initial deadlines exist on all milestones
-    initial_deadlines = calculate_milestone_deadlines(project_deadline, len(milestones), start_date=base_date)
+    initial_deadlines = calculate_milestone_deadlines(project_deadline, len(milestones), created_at=base_date)
     for idx, m in enumerate(milestones):
         if not m.get("deadline") or m.get("deadline") in ["Per Schedule", "None", "", None]:
-            m["deadline"] = initial_deadlines[idx]
+            m["deadline"] = initial_deadlines[idx] if idx < len(initial_deadlines) else (initial_deadlines[-1] if initial_deadlines else date.today().strftime("%Y-%m-%d"))
         try:
             cur_d = datetime.strptime(m["deadline"][:10], "%Y-%m-%d").date()
             diff_days = max(1, (cur_d - base_date).days)
@@ -738,6 +1337,42 @@ def apply_negotiated_deadlines(
                 m["relative_deadline"] = f"Due {diff_days} days from project creation"
         except Exception:
             pass
+
+    accepted_duration = re.search(
+        r"\b(?:accept|agree(?:\s+to)?)\s+(\d+)\s*(day|week)s?\b",
+        (buyer_response or "").lower()
+    )
+    requested_total_duration = re.search(
+        r"\b(?:need|want|require|take|give\s*me)\s*(\d+)\s*(day|week)s?\s+(?:instead of|rather than)\s+\d+\s*(?:day|week)s?\b",
+        combined
+    )
+    unqualified_duration = re.search(
+        r"\b(?:need|want|require|take|give\s*me)\s+(\d+)\s*(day|week)s?\b",
+        combined
+    )
+    if unqualified_duration and re.match(
+        r"\s+(?:more|extra|additional|another)\b",
+        combined[unqualified_duration.end():]
+    ):
+        unqualified_duration = None
+    total_duration = accepted_duration or requested_total_duration or unqualified_duration
+    if total_duration:
+        amount = int(total_duration.group(1))
+        unit = total_duration.group(2)
+        total_days = amount * 7 if unit == "week" else amount
+        final_date = base_date + timedelta(days=max(1, total_days))
+        deadlines = calculate_milestone_deadlines(
+            final_date.strftime("%Y-%m-%d"),
+            len(milestones),
+            created_at=base_date
+        )
+        for idx, milestone in enumerate(milestones):
+            if idx < len(deadlines):
+                milestone["deadline"] = deadlines[idx]
+                offset_days = (datetime.strptime(deadlines[idx], "%Y-%m-%d").date() - base_date).days
+                unit = "day" if offset_days == 1 else "days"
+                milestone["relative_deadline"] = f"Due {offset_days} {unit} from project creation"
+        return milestones, True
 
     updated_any = False
     months = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"]
@@ -792,7 +1427,20 @@ def apply_negotiated_deadlines(
             except Exception:
                 pass
 
-    # 4. Check if seller or buyer requested to establish / set / negotiate / change deadlines (e.g. "set deadlines for each milestone", "wat are the milestone deadlines")
+    # 4. Check for explicit total timeline span (e.g. "1 day", "2 days", "3 days", "1 week", "within 1 day")
+    if not updated_any:
+        span_matches = re.findall(r"\b(\d+)\s*(day|week)s?\b", combined)
+        if span_matches:
+            amt = int(span_matches[-1][0])
+            total_days = amt * 7 if "week" in span_matches[-1][1] else amt
+            for idx, m in enumerate(milestones):
+                step_days = max(1, round((idx + 1) * total_days / len(milestones)))
+                new_d = base_date + timedelta(days=step_days)
+                m["deadline"] = new_d.strftime("%Y-%m-%d")
+                m["relative_deadline"] = f"Due {step_days} day{'s' if step_days > 1 else ''} from project creation"
+            updated_any = True
+
+    # 5. Check if seller or buyer requested to establish / set / negotiate / change deadlines (e.g. "set deadlines for each milestone", "wat are the milestone deadlines")
     if not updated_any and any(k in combined for k in [
         "set deadline", "set deadlines", "give deadline", "give deadlines", "milestone deadline",
         "deadlines for each milestone", "deadline for each", "update deadline", "update deadlines",
@@ -972,6 +1620,89 @@ def apply_flexible_milestone_allocations(milestones: list, user_text: str, total
 
     return milestones, applied_changes
 
+def extract_user_design_directives(text: str) -> Dict[str, Any]:
+    """
+    Extracts custom design specifications, colors, styles, layouts, and constraints from user messages.
+    Ensures that buyer specifications (such as 'blue colour logo only', 'monochrome', 'bold', 'horizontal lockup')
+    are faithfully bound into milestone proof criteria and descriptions rather than using hardcoded generic text.
+    """
+    if not text:
+        return {"has_custom": False, "colors": [], "color_spec": "", "strict_only": False, "formats": [], "lockups": [], "styles": [], "raw": ""}
+
+    text_lower = text.lower()
+
+    # 1. Detect colors and color-specific phrasing (longer/compound color names checked first)
+    color_keywords = [
+        "royal blue", "sky blue", "navy blue", "forest green", "mint green", "olive green",
+        "rose gold", "yellow gold", "white gold",
+        "blue", "navy", "cyan", "teal", "indigo",
+        "red", "crimson", "scarlet", "burgundy",
+        "green", "emerald", "olive", "mint",
+        "yellow", "gold", "golden", "amber",
+        "orange", "coral", "peach",
+        "purple", "violet", "lavender", "magenta",
+        "black", "white", "monochrome", "grayscale", "greyscale", "grey", "gray",
+        "ivory", "cream", "silver", "bronze", "copper"
+    ]
+
+    colors_found = []
+    color_spec = ""
+    strict_only = "only" in text_lower
+
+    for c in color_keywords:
+        pattern = rf"\b{re.escape(c)}\b"
+        if re.search(pattern, text_lower):
+            colors_found.append(c)
+            if strict_only:
+                color_spec = f"{c} color only"
+            else:
+                color_spec = f"{c} color scheme"
+            break
+
+    # 2. Formats
+    formats = []
+    if any(k in text_lower for k in ["png", ".png", "transparent png"]):
+        formats.append("transparent PNG")
+    if any(k in text_lower for k in ["vector", "svg", "eps", ".ai", "ai format", "vector files", "vector master"]):
+        formats.append("vector master files (AI, EPS, SVG)")
+    if "pdf" in text_lower:
+        formats.append("print-ready PDF")
+    if "figma" in text_lower:
+        formats.append("interactive Figma workspace")
+
+    # 3. Layout / Variations
+    lockups = []
+    if "horizontal" in text_lower and "vertical" in text_lower:
+        lockups.append("horizontal and vertical lockups")
+    elif "horizontal" in text_lower:
+        lockups.append("horizontal lockup")
+    elif "vertical" in text_lower:
+        lockups.append("vertical lockup")
+    elif "lockup" in text_lower or "lockups" in text_lower:
+        lockups.append("horizontal/vertical lockup variations")
+
+    if any(k in text_lower for k in ["variation", "variations", "badge", "icon", "mark"]):
+        lockups.append("primary and secondary variations")
+
+    # 4. Styles (bold, modern, minimal, etc.)
+    styles = []
+    for s in ["bold", "minimal", "modern", "vintage", "retro", "geometric", "flat", "3d"]:
+        if re.search(rf"\b{s}\b", text_lower):
+            styles.append(s)
+
+    has_custom = bool(color_spec or formats or lockups or styles)
+
+    return {
+        "has_custom": has_custom,
+        "colors": colors_found,
+        "color_spec": color_spec,
+        "strict_only": strict_only,
+        "formats": formats,
+        "lockups": lockups,
+        "styles": styles,
+        "raw": text.strip()
+    }
+
 def synthesize_draft_chat_fallback(project: models.Project, history: list) -> dict:
     """
     Intelligent domain-aware fallback for draft-chat endpoint when Gemini API is rate-limited, quota-constrained, or offline.
@@ -1010,216 +1741,421 @@ def synthesize_draft_chat_fallback(project: models.Project, history: list) -> di
     req_baseline = determine_requires_baseline_evidence(project.title, project.industry_type, project.description)
 
     total_p = float(project.total_price or 0.0)
-    p1 = round(total_p * 0.30, 2)
-    p2 = round(total_p * 0.40, 2)
-    p3 = round(total_p - p1 - p2, 2)
 
-    # --- Turn 1: Ask Domain-Specific Technical Questions ---
-    if user_turns <= 1:
-        if is_renovation:
-            return {
-                "status": "asking",
-                "ai_response_text": (
-                    f"Hello! As your licensed contractor preparing '{project.title}' (${total_p:,.2f} USD):\n"
-                    "1. Plumbing & Fixtures: Are the existing water supply shut-off valves and P-trap drain lines intact and functional, or do new pipes need to be roughed in?\n"
-                    "2. Wall Surface & Paint: What is the current condition of the bathroom walls (any drywall patching, sanding, or moisture/mold-resistant primer required before painting)?"
-                ),
-                "milestones": [],
-                "requires_baseline_evidence": req_baseline,
-                "project_domain": domain_val
-            }
+    # --- 1. Missing Requirements Check: Ask intelligent trade questions if details are missing ---
+    has_specific_specs = any(k in combined_user_text for k in [
+        "png", ".png", "svg", "eps", "vector", "lockup", "figma", "pdf", "prototype",
+        "leak", "shutoff", "primer", "drywall", "caulk", "sink", "faucet", "vanity", "toilet",
+        "walnut", "oak", "caliper", "joinery", "thickness",
+        "karat", "18k", "24k", "gauge", "hallmark",
+        "staging", "repo", "github", "api", "test suite", "react", "angular",
+        "1 day", "2 days", "3 days", "week", "three milestones", "3 milestones"
+    ])
+
+    if user_turns <= 1 and not has_specific_specs:
+        if is_graphic_design:
+            q_text = (
+                f"Hello! I am your AI scoping assistant for '{project.title}' (${total_p:,.2f} USD). "
+                f"To establish dispute-proof escrow milestones tailored to your timeline ({project.deadline or 'Per Schedule'}), please clarify:\n"
+                "1. What deliverable formats or variations are required (e.g., transparent PNG lockups, vector SVG/AI source files)?\n"
+                "2. Do you have preferred brand colors, style guidelines, or specific horizontal and vertical lockup needs?\n"
+                "Once you respond, I will formulate your milestone schedule and verification criteria!"
+            )
+        elif is_renovation:
+            q_text = (
+                f"Hello! I am your AI contractor scoping assistant for '{project.title}' (${total_p:,.2f} USD). "
+                f"To establish dispute-proof escrow milestones tailored to your timeline ({project.deadline or 'Per Schedule'}), please clarify:\n"
+                "1. Are water supply shutoff valves accessible and functional, and which specific fixtures or lines need replacement?\n"
+                "2. What paint color and sheen are agreed upon, and does the drywall require patching or moisture-resistant primer?\n"
+                "Once you respond, I will formulate your milestone schedule and verification criteria!"
+            )
         elif is_woodworking:
-            return {
-                "status": "asking",
-                "ai_response_text": (
-                    f"Hello! As your master woodworker preparing '{project.title}' (${total_p:,.2f} USD):\n"
-                    "What are the exact dimensions (L x W x H), preferred wood species (e.g. walnut, white oak, maple), and surface protective finish (e.g. satin hardwax oil or polyurethane)?"
-                ),
-                "milestones": [],
-                "requires_baseline_evidence": req_baseline,
-                "project_domain": domain_val
-            }
+            q_text = (
+                f"Hello! I am your AI craftsmanship assistant for '{project.title}' (${total_p:,.2f} USD). "
+                f"To establish dispute-proof escrow milestones tailored to your timeline ({project.deadline or 'Per Schedule'}), please clarify:\n"
+                "1. What are the agreed dimensions (length x width x thickness) and preferred wood species (e.g., solid walnut, white oak)?\n"
+                "2. What joinery type (mortise & tenon, dovetail) and protective surface finish are required?\n"
+                "Once you respond, I will formulate your milestone schedule and verification criteria!"
+            )
         elif is_jewelry:
-            return {
-                "status": "asking",
-                "ai_response_text": (
-                    f"Hello! As your jeweler crafting '{project.title}' (${total_p:,.2f} USD):\n"
-                    "What is the exact ring size/diameter, base metal (solid 925 sterling silver or jeweler brass), gold plating karat (18K/24K), and any custom engraving?"
-                ),
-                "milestones": [],
-                "requires_baseline_evidence": req_baseline,
-                "project_domain": domain_val
-            }
-        elif is_graphic_design:
-            return {
-                "status": "asking",
-                "ai_response_text": (
-                    f"Hello! As your lead brand identity & graphic designer for '{project.title}' (${total_p:,.2f} USD):\n"
-                    "1. Brand Identity & Style: What are your preferred color palette, typography style, and design vibe (e.g., minimalist, modern, vintage, or bold)?\n"
-                    "2. Deliverables & Formats: Do you need vector source files (AI/EPS/SVG), high-res transparent PNGs, and horizontal/vertical lockup variations?"
-                ),
-                "milestones": [],
-                "requires_baseline_evidence": req_baseline,
-                "project_domain": domain_val
-            }
+            q_text = (
+                f"Hello! I am your AI jewelry scoping assistant for '{project.title}' (${total_p:,.2f} USD). "
+                f"To establish dispute-proof escrow milestones tailored to your timeline ({project.deadline or 'Per Schedule'}), please clarify:\n"
+                "1. What is the target ring size / mm gauge and precious metal specification (e.g., 18k gold plating, sterling silver)?\n"
+                "2. Are custom engravings, stone settings, or hallmark stamps required?\n"
+                "Once you respond, I will formulate your milestone schedule and verification criteria!"
+            )
         elif is_software:
-            return {
-                "status": "asking",
-                "ai_response_text": (
-                    f"Hello! As your lead software architect for '{project.title}' (${total_p:,.2f} USD):\n"
-                    "What are the core user flows, preferred tech stack, responsive device requirements, and deployment environment?"
-                ),
-                "milestones": [],
-                "requires_baseline_evidence": req_baseline,
-                "project_domain": domain_val
-            }
+            q_text = (
+                f"Hello! I am your AI technical scoping assistant for '{project.title}' (${total_p:,.2f} USD). "
+                f"To establish dispute-proof escrow milestones tailored to your timeline ({project.deadline or 'Per Schedule'}), please clarify:\n"
+                "1. What is the target tech stack, responsive browser support, and API specification?\n"
+                "2. What deployment verification is required (live staging URL walkthrough, automated test suite, GitHub repository transfer)?\n"
+                "Once you respond, I will formulate your milestone schedule and verification criteria!"
+            )
         else:
-            return {
-                "status": "asking",
-                "ai_response_text": (
-                    f"Hello! As your fulfillment specialist for '{project.title}' (${total_p:,.2f} USD):\n"
-                    "What are the key technical specifications, preferred materials, and exact delivery verification standards required?"
-                ),
-                "milestones": [],
-                "requires_baseline_evidence": req_baseline,
-                "project_domain": domain_val
-            }
+            q_text = (
+                f"Hello! I am your AI scoping assistant for '{project.title}' (${total_p:,.2f} USD). "
+                f"To establish dispute-proof escrow milestones tailored to your timeline ({project.deadline or 'Per Schedule'}), please clarify:\n"
+                "1. What are the mandatory deliverable specifications, file formats, or material requirements?\n"
+                "2. What objective verification evidence is required to unlock each milestone payout via PayPal Escrow?\n"
+                "Once you respond, I will formulate your milestone schedule and verification criteria!"
+            )
 
-    # --- Turn 2+: Generate or Refine Milestones with Real Trade Logic ---
-    if is_renovation:
-        color_name = "Ivory" if "ivory" in full_corpus else ("White" if "white" in full_corpus else "Bathroom-Grade")
-        walls_desc = "all 4 walls" if ("4" in full_corpus or "four" in full_corpus) else "specified bathroom walls"
-        milestones = [
-            {
-                "title": "Wall Surface Prep & Moisture-Resistant Primer",
-                "description": f"Patch drywall defects, sand, and apply mold/moisture-resistant primer basecoat to {walls_desc}; safely disconnect existing plumbing lines and verify shutoff valves for '{project.title}'.",
-                "price_allocation": p1,
-                "proof_required": f"High-resolution inspection photos showing {walls_desc} patched and primed with uniform moisture barrier, and secured water shutoff valves."
-            },
-            {
-                "title": "Plumbing Reconnection, Sink Installation & Pressure Leak Test",
-                "description": f"Mount bathroom sink basin, install faucet, connect hot/cold flexible braided supply lines, assemble P-trap drain, and execute pressurized flow test.",
-                "price_allocation": p2,
-                "proof_required": "Continuous 30-second video demonstrating full faucet water flow and showing dry paper towel check under P-trap with zero drips or leaks."
-            },
-            {
-                "title": f"Two-Coat {color_name} Finish Paint, Silicone Seal & Final Cleanup",
-                "description": f"Apply 2 coats of premium bathroom-grade satin {color_name.lower()} paint to {walls_desc}, apply sanitary waterproof silicone caulking around sink perimeter, and perform full work area cleanup.",
-                "price_allocation": p3,
-                "proof_required": f"Wide-angle inspection photos of {walls_desc} with uniform, streak-free {color_name.lower()} finish and close-up photo of watertight perimeter silicone caulking bead."
-            }
-        ]
-    elif is_woodworking:
-        wood_species = "Solid Walnut" if "walnut" in full_corpus else ("White Oak" if "oak" in full_corpus else "Hardwood")
-        milestones = [
-            {
-                "title": f"{wood_species} Lumber Selection, Milling & Joinery Rough-out",
-                "description": f"Source premium {wood_species.lower()} timber, mill to square dimensions, and cut precision joinery for '{project.title}'.",
-                "price_allocation": p1,
-                "proof_required": "Photos of dimensioned timber boards and test mortise/tenon joinery with digital scale check."
-            },
-            {
-                "title": "Full Assembly & Precision Surface Sanding",
-                "description": f"Dry-fit and glue-up carcass/structure, clamp square, and progressive grit sanding up to 220-grit.",
-                "price_allocation": p2,
-                "proof_required": "Photos with calipers and tape measure confirming exact agreed dimensions, flatness, and squareness."
-            },
-            {
-                "title": "Protective Multi-Coat Finish & Insured Delivery",
-                "description": f"Apply protective satin finish coats, cure, wrap in protective packaging, and dispatch.",
-                "price_allocation": p3,
-                "proof_required": "High-definition video of cured surface finish and carrier dispatch tracking receipt."
-            }
-        ]
-    elif is_jewelry:
-        milestones = [
-            {
-                "title": "Master CAD Blueprint & 3D Wax Mold",
-                "description": f"Create 3D CAD design blueprints and 3D wax model to exact diameter/size for '{project.title}'.",
-                "price_allocation": p1,
-                "proof_required": "Macro photo of wax pattern on ring mandrel showing exact mm gauge and profile."
-            },
-            {
-                "title": "Metal Casting & Precision Gold Electroplating",
-                "description": f"Cast in base metal, clean, and deposit heavy gold electroplate finish.",
-                "price_allocation": p2,
-                "proof_required": "Macro photos and electronic thickness/plating test certificate."
-            },
-            {
-                "title": "Final Polishing, Hallmark Stamping & Insured Delivery",
-                "description": f"Hand-buff mirror polish, stamp hallmark, and ship with signature courier tracking.",
-                "price_allocation": p3,
-                "proof_required": "360-degree video inspection showing hallmark stamp and signature courier tracking receipt."
-            }
-        ]
-    elif is_graphic_design:
-        milestones = [
-            {
-                "title": "Creative Brief Alignment, Moodboard & Initial Logo Concepts",
-                "description": f"Develop 3 distinct creative logo concepts, typography pairings, and color palette explorations for '{project.title}'.",
-                "price_allocation": p1,
-                "proof_required": "Presentation deck containing 3 unique vector logo concept boards with color swatches and typography hierarchy."
-            },
-            {
-                "title": "Concept Refinement, Iterations & Lockup Variations",
-                "description": f"Refine chosen logo direction with client revisions, finalize geometry, horizontal/vertical lockups, and favicon/app icon versions.",
-                "price_allocation": p2,
-                "proof_required": "High-resolution mockups showing primary logo, secondary badge, black/white monochrome versions, and scale legibility checks."
-            },
-            {
-                "title": "Final Vector Master Assets, Style Guide & Package Delivery",
-                "description": f"Export complete production package: vector master files (AI, EPS, SVG), print-ready PDF (CMYK), web-optimized transparent PNGs (RGB), and mini brand guidelines document.",
-                "price_allocation": p3,
-                "proof_required": "Downloadable production zip archive link with verified vector EPS/SVG assets and signed brand asset copyright release."
-            }
-        ]
-    elif is_software:
-        milestones = [
-            {
-                "title": "Wireframes, Architecture Schema & Design Approval",
-                "description": f"System architecture diagram, API contract specs, and UI/UX wireframes for '{project.title}'.",
-                "price_allocation": p1,
-                "proof_required": "Clickable Figma prototype link or approved technical architecture document."
-            },
-            {
-                "title": "Core Feature Implementation & Staging Demo",
-                "description": f"Development of core user workflows and interactive demo on a live staging environment.",
-                "price_allocation": p2,
-                "proof_required": "Live staging preview URL with screen recording demonstrating core workflows."
-            },
-            {
-                "title": "QA Testing, Bug Resolution & Source Repository Handover",
-                "description": f"Automated test coverage, production readiness audit, and Git repository transfer.",
-                "price_allocation": p3,
-                "proof_required": "Passing automated test suite report and GitHub repository transfer with deployment signoff."
-            }
-        ]
+        return {
+            "status": "asking",
+            "ai_response_text": q_text,
+            "milestones": [],
+            "requires_baseline_evidence": req_baseline,
+            "project_domain": domain_val
+        }
+
+    # --- 2. Timeline & Milestone Count Calculation ---
+    # One milestone per available project day; longer schedules retain complexity-based phases.
+    base_date = date.today()
+    if project.created_at:
+        if isinstance(project.created_at, datetime):
+            if project.created_at.tzinfo is not None:
+                base_date = project.created_at.astimezone().date()
+            else:
+                base_date = project.created_at.date()
+        elif isinstance(project.created_at, date):
+            base_date = project.created_at
+    if base_date < date.today():
+        base_date = date.today()
+
+    day_1 = base_date + timedelta(days=1)
+
+    span_matches = re.findall(r"\b(\d+)\s*(day|week)s?\b", combined_user_text)
+    if span_matches:
+        amt = int(span_matches[-1][0])
+        total_days = amt * 7 if "week" in span_matches[-1][1] else amt
+    elif project.deadline:
+        try:
+            d_date = datetime.strptime(str(project.deadline).strip()[:10], "%Y-%m-%d").date()
+            total_days = max(1, (d_date - base_date).days)
+        except Exception:
+            total_days = 14
     else:
-        milestones = [
-            {
-                "title": "Project Initiation & Specification Alignment",
-                "description": f"Detailed kickoff, material procurement, and foundational work for '{project.title}'.",
-                "price_allocation": p1,
-                "proof_required": "Kickoff specification document or initial raw material inspection photos."
-            },
-            {
-                "title": "Core Execution & Deliverable Assembly",
-                "description": f"Primary production or fulfillment phase meeting agreed project requirements.",
-                "price_allocation": p2,
-                "proof_required": "Photographic and video progress proof of the assembled deliverables."
-            },
-            {
-                "title": "Final Quality Review, Delivery & Verification",
-                "description": f"Final inspection, verification against requirements, and completed delivery handover.",
-                "price_allocation": p3,
-                "proof_required": "Completed deliverable signoff inspection and delivery confirmation receipt."
-            }
-        ]
+        total_days = 14
+
+    final_date = base_date + timedelta(days=max(1, total_days))
+
+    wants_three_milestones = any(k in combined_user_text for k in [
+        "three milestones", "3 milestones", "split into 3", "split in 3", "3 phases", "three phases"
+    ])
+
+    if total_days <= 1:
+        milestone_count = 1
+    elif total_days == 2:
+        milestone_count = 2
+    elif wants_three_milestones:
+        milestone_count = 3
+    else:
+        milestone_count = 3
+
+    user_specs = extract_user_design_directives(combined_user_text)
+    latest_specs = extract_user_design_directives(last_user_msg)
+
+    # --- 3. Build Milestones Matching Count & Trade ---
+    if milestone_count == 1:
+        # Complete project in 1 day itself (100% price allocation)
+        if is_graphic_design:
+            c_spec = latest_specs["color_spec"] or user_specs["color_spec"]
+            color_clause = f" strictly featuring the logo in {c_spec} (per client specification)" if c_spec else ""
+            fmt_str = " & ".join(user_specs["formats"]) if user_specs["formats"] else "transparent PNG and vector files"
+            lockup_str = f" with {', '.join(user_specs['lockups'])}" if user_specs["lockups"] else " with horizontal and vertical lockup variations"
+            style_str = f" in {', '.join(user_specs['styles'])} styling" if user_specs["styles"] else ""
+
+            p_req = f"High-resolution {fmt_str} mockups{color_clause}{style_str}{lockup_str}."
+            desc_color = f" (in {c_spec})" if c_spec else ""
+            milestones = [
+                {
+                    "title": f"Complete {project.title} & Verified Asset Handover",
+                    "description": f"Design, client iterations, lockup variations, and export of all finalized production assets for '{project.title}'{desc_color}.",
+                    "price_allocation": total_p,
+                    "deadline": final_date.strftime("%Y-%m-%d"),
+                    "proof_required": p_req
+                }
+            ]
+        elif is_renovation:
+            milestones = [
+                {
+                    "title": "Complete Renovation Execution, Installation & Leak Test",
+                    "description": f"Complete surface prep, plumbing/electrical fixtures, finish coatings, and full cleanup for '{project.title}'.",
+                    "price_allocation": total_p,
+                    "deadline": final_date.strftime("%Y-%m-%d"),
+                    "proof_required": "High-resolution inspection photos and 30-second continuous video demonstration of completed, functioning work with zero leaks."
+                }
+            ]
+        elif is_software:
+            milestones = [
+                {
+                    "title": "Full Feature Implementation, Verification & Handover",
+                    "description": f"Complete development of agreed features, passing automated test suite, and repository handover for '{project.title}'.",
+                    "price_allocation": total_p,
+                    "deadline": final_date.strftime("%Y-%m-%d"),
+                    "proof_required": "Live staging preview URL demonstration and passing automated test suite with repository handover."
+                }
+            ]
+        elif is_woodworking:
+            milestones = [
+                {
+                    "title": f"Fabrication, Precision Assembly & Finished Delivery",
+                    "description": f"Mill lumber, cut joinery, assemble square, apply protective finish, and package for delivery for '{project.title}'.",
+                    "price_allocation": total_p,
+                    "deadline": final_date.strftime("%Y-%m-%d"),
+                    "proof_required": "High-resolution photos with digital calipers confirming dimensions and video of cured finish surface."
+                }
+            ]
+        elif is_jewelry:
+            milestones = [
+                {
+                    "title": f"CAD Modeling, Casting & Hallmark Stamped Delivery",
+                    "description": f"Complete 3D CAD modeling, metal casting, finish polish, hallmark stamp, and secure courier handover for '{project.title}'.",
+                    "price_allocation": total_p,
+                    "deadline": final_date.strftime("%Y-%m-%d"),
+                    "proof_required": "Macro photo showing hallmark stamp and digital caliper ring size check with courier tracking receipt."
+                }
+            ]
+        else:
+            milestones = [
+                {
+                    "title": f"Project Execution, Quality Review & Verified Delivery",
+                    "description": f"Complete all agreed deliverables and perform final quality review for '{project.title}'.",
+                    "price_allocation": total_p,
+                    "deadline": final_date.strftime("%Y-%m-%d"),
+                    "proof_required": "High-resolution photographic/video inspection of completed deliverable and delivery confirmation receipt."
+                }
+            ]
+
+    elif milestone_count == 2:
+        # 2 days -> 2 milestones (50% / 50%)
+        p1 = round(total_p * 0.50, 2)
+        p2 = round(total_p - p1, 2)
+        if is_graphic_design:
+            c_spec = latest_specs["color_spec"] or user_specs["color_spec"]
+            color_clause = f" strictly featuring the logo in {c_spec} (per client specification)" if c_spec else ""
+            fmt_str = " & ".join(user_specs["formats"]) if user_specs["formats"] else "transparent PNG and vector files"
+            lockup_str = f" with {', '.join(user_specs['lockups'])}" if user_specs["lockups"] else " with horizontal and vertical lockups"
+            style_str = f" in {', '.join(user_specs['styles'])} styling" if user_specs["styles"] else ""
+            p2_req = f"High-resolution {fmt_str} mockups{color_clause}{style_str}{lockup_str}."
+            desc_color = f" in {c_spec}" if c_spec else ""
+            milestones = [
+                {
+                    "title": "Creative Brief Alignment, Concepts & Lockup Draft",
+                    "description": f"Develop initial concepts, color palette, and primary lockup exploration for '{project.title}'{desc_color}.",
+                    "price_allocation": p1,
+                    "deadline": day_1.strftime("%Y-%m-%d"),
+                    "proof_required": "Presentation deck (PDF or PNG) showing concept explorations with typography hierarchy."
+                },
+                {
+                    "title": "Final Master Production Package, Style Guide & Asset Handover",
+                    "description": f"Refine selected mark, generate transparent PNG lockups, export vector files, and deliver master package.",
+                    "price_allocation": p2,
+                    "deadline": final_date.strftime("%Y-%m-%d"),
+                    "proof_required": p2_req
+                }
+            ]
+        elif is_renovation:
+            milestones = [
+                {
+                    "title": "Surface Prep, Rough-in & Fixture Mounting",
+                    "description": f"Patch drywall defects, sand, disconnect plumbing lines safely, and mount fixtures for '{project.title}'.",
+                    "price_allocation": p1,
+                    "deadline": day_1.strftime("%Y-%m-%d"),
+                    "proof_required": "High-resolution inspection photos showing patched surface, moisture-resistant primer, and secure shutoff valves."
+                },
+                {
+                    "title": "Finish Paint, Perimeter Seal & 30-Sec Pressure Leak Test",
+                    "description": f"Apply two coats finish paint, sanitary waterproof caulking bead, and execute pressurized flow test.",
+                    "price_allocation": p2,
+                    "deadline": final_date.strftime("%Y-%m-%d"),
+                    "proof_required": "Continuous 30-second video demonstrating full faucet water flow with dry paper towel check under P-trap showing zero leaks."
+                }
+            ]
+        elif is_software:
+            milestones = [
+                {
+                    "title": "Architecture, Wireframes & Core Workflow Implementation",
+                    "description": f"API specifications, database schema, and interactive core feature implementation for '{project.title}'.",
+                    "price_allocation": p1,
+                    "deadline": day_1.strftime("%Y-%m-%d"),
+                    "proof_required": "Live staging preview URL with screen recording demonstrating core workflows."
+                },
+                {
+                    "title": "QA Testing, Automated Test Pass & GitHub Handover",
+                    "description": f"Automated test coverage, production readiness audit, and Git repository transfer with deployment signoff.",
+                    "price_allocation": p2,
+                    "deadline": final_date.strftime("%Y-%m-%d"),
+                    "proof_required": "Passing automated test suite report and GitHub repository transfer with deployment signoff."
+                }
+            ]
+        else:
+            milestones = [
+                {
+                    "title": "Core Execution & Assembled Draft",
+                    "description": f"Kickoff, material preparation, and foundational fabrication meeting agreed specifications for '{project.title}'.",
+                    "price_allocation": p1,
+                    "deadline": day_1.strftime("%Y-%m-%d"),
+                    "proof_required": "Photographic and inspection progress proof of the assembled deliverables."
+                },
+                {
+                    "title": "Final Quality Review, Delivery & Verification",
+                    "description": f"Final inspection, verification against requirements, and completed delivery handover.",
+                    "price_allocation": p2,
+                    "deadline": final_date.strftime("%Y-%m-%d"),
+                    "proof_required": "Completed deliverable signoff inspection and delivery confirmation receipt."
+                }
+            ]
+
+    else:
+        # 3 or more milestones (30% / 40% / 30%)
+        p1 = round(total_p * 0.30, 2)
+        p2 = round(total_p * 0.40, 2)
+        p3 = round(total_p - p1 - p2, 2)
+        if is_renovation:
+            color_name = "Ivory" if "ivory" in full_corpus else ("White" if "white" in full_corpus else "Bathroom-Grade")
+            walls_desc = "all 4 walls" if ("4" in full_corpus or "four" in full_corpus) else "specified bathroom walls"
+            milestones = [
+                {
+                    "title": "Wall Surface Prep & Moisture-Resistant Primer",
+                    "description": f"Patch drywall defects, sand, and apply mold/moisture-resistant primer basecoat to {walls_desc}; safely disconnect existing plumbing lines and verify shutoff valves for '{project.title}'.",
+                    "price_allocation": p1,
+                    "proof_required": f"High-resolution inspection photos showing {walls_desc} patched and primed with uniform moisture barrier, and secured water shutoff valves."
+                },
+                {
+                    "title": "Plumbing Reconnection, Sink Installation & Pressure Leak Test",
+                    "description": f"Mount bathroom sink basin, install faucet, connect hot/cold flexible braided supply lines, assemble P-trap drain, and execute pressurized flow test.",
+                    "price_allocation": p2,
+                    "proof_required": "Continuous 30-second video demonstrating full faucet water flow and showing dry paper towel check under P-trap with zero drips or leaks."
+                },
+                {
+                    "title": f"Two-Coat {color_name} Finish Paint, Silicone Seal & Final Cleanup",
+                    "description": f"Apply 2 coats of premium bathroom-grade satin {color_name.lower()} paint to {walls_desc}, apply sanitary waterproof silicone caulking around sink perimeter, and perform full work area cleanup.",
+                    "price_allocation": p3,
+                    "proof_required": f"Wide-angle inspection photos of {walls_desc} with uniform, streak-free {color_name.lower()} finish and close-up photo of watertight perimeter silicone caulking bead."
+                }
+            ]
+        elif is_woodworking:
+            wood_species = "Solid Walnut" if "walnut" in full_corpus else ("White Oak" if "oak" in full_corpus else "Hardwood")
+            milestones = [
+                {
+                    "title": f"{wood_species} Lumber Selection, Milling & Joinery Rough-out",
+                    "description": f"Source premium {wood_species.lower()} timber, mill to square dimensions, and cut precision joinery for '{project.title}'.",
+                    "price_allocation": p1,
+                    "proof_required": "Photos of dimensioned timber boards and test mortise/tenon joinery with digital scale check."
+                },
+                {
+                    "title": "Full Assembly & Precision Surface Sanding",
+                    "description": f"Dry-fit and glue-up carcass/structure, clamp square, and progressive grit sanding up to 220-grit.",
+                    "price_allocation": p2,
+                    "proof_required": "Photos with calipers and tape measure confirming exact agreed dimensions, flatness, and squareness."
+                },
+                {
+                    "title": "Protective Multi-Coat Finish & Insured Delivery",
+                    "description": f"Apply protective satin finish coats, cure, wrap in protective packaging, and dispatch.",
+                    "price_allocation": p3,
+                    "proof_required": "High-definition video of cured surface finish and carrier dispatch tracking receipt."
+                }
+            ]
+        elif is_jewelry:
+            milestones = [
+                {
+                    "title": "Master CAD Blueprint & 3D Wax Mold",
+                    "description": f"Create 3D CAD design blueprints and 3D wax model to exact diameter/size for '{project.title}'.",
+                    "price_allocation": p1,
+                    "proof_required": "Macro photo of wax pattern on ring mandrel showing exact mm gauge and profile."
+                },
+                {
+                    "title": "Metal Casting & Precision Gold Electroplating",
+                    "description": f"Cast in base metal, clean, and deposit heavy gold electroplate finish.",
+                    "price_allocation": p2,
+                    "proof_required": "Macro photos and electronic thickness/plating test certificate."
+                },
+                {
+                    "title": "Final Polishing, Hallmark Stamping & Insured Delivery",
+                    "description": f"Hand-buff mirror polish, stamp hallmark, and ship with signature courier tracking.",
+                    "price_allocation": p3,
+                    "proof_required": "360-degree video inspection showing hallmark stamp and signature courier tracking receipt."
+                }
+            ]
+        elif is_graphic_design:
+            c_spec = latest_specs["color_spec"] or user_specs["color_spec"]
+            color_clause = f" strictly featuring the logo in {c_spec} (per client specification)" if c_spec else ""
+            m2_proof = (
+                f"High-resolution mockups (PNG or PDF){color_clause} showing primary mark, secondary badge, and scale legibility checks."
+                if c_spec else
+                "High-resolution mockups (PNG or PDF) showing primary mark, secondary badge, monochrome versions, and scale legibility checks."
+            )
+            desc_color = f" in {c_spec}" if c_spec else ""
+            milestones = [
+                {
+                    "title": "Creative Brief Alignment, Moodboard & Initial Concepts",
+                    "description": f"Develop 3 distinct creative concepts, moodboard explorations, and typography pairings for '{project.title}'{desc_color}.",
+                    "price_allocation": p1,
+                    "proof_required": "Presentation deck (PDF or images) containing 3 distinct concept boards with color swatches and typography hierarchy."
+                },
+                {
+                    "title": "Concept Refinement, Iterations & Lockup Variations",
+                    "description": f"Refine chosen direction with client revisions, finalize geometry, horizontal/vertical lockups, and application previews.",
+                    "price_allocation": p2,
+                    "proof_required": m2_proof
+                },
+                {
+                    "title": "Final Master Production Package, Style Guide & Asset Handover",
+                    "description": f"Export complete production package: vector master files (AI, EPS, SVG), print-ready PDF (CMYK), web-optimized transparent PNGs (RGB), and mini brand guidelines document.",
+                    "price_allocation": p3,
+                    "proof_required": "Downloadable production archive package containing all verified master files, exported assets, and signed brand copyright release."
+                }
+            ]
+        elif is_software:
+            milestones = [
+                {
+                    "title": "Wireframes, Architecture Schema & Design Approval",
+                    "description": f"System architecture diagram, API contract specs, and UI/UX wireframes for '{project.title}'.",
+                    "price_allocation": p1,
+                    "proof_required": "Clickable Figma prototype link or approved technical architecture document."
+                },
+                {
+                    "title": "Core Feature Implementation & Staging Demo",
+                    "description": f"Development of core user workflows and interactive demo on a live staging environment.",
+                    "price_allocation": p2,
+                    "proof_required": "Live staging preview URL with screen recording demonstrating core workflows."
+                },
+                {
+                    "title": "QA Testing, Bug Resolution & Source Repository Handover",
+                    "description": f"Automated test coverage, production readiness audit, and Git repository transfer.",
+                    "price_allocation": p3,
+                    "proof_required": "Passing automated test suite report and GitHub repository transfer with deployment signoff."
+                }
+            ]
+        else:
+            milestones = [
+                {
+                    "title": "Project Initiation & Specification Alignment",
+                    "description": f"Detailed kickoff, material procurement, and foundational work for '{project.title}'.",
+                    "price_allocation": p1,
+                    "proof_required": "Kickoff specification document or initial raw material inspection photos."
+                },
+                {
+                    "title": "Core Execution & Deliverable Assembly",
+                    "description": f"Primary production or fulfillment phase meeting agreed project requirements.",
+                    "price_allocation": p2,
+                    "proof_required": "Photographic and video progress proof of the assembled deliverables."
+                },
+                {
+                    "title": "Final Quality Review, Delivery & Verification",
+                    "description": f"Final inspection, verification against requirements, and completed delivery handover.",
+                    "price_allocation": p3,
+                    "proof_required": "Completed deliverable signoff inspection and delivery confirmation receipt."
+                }
+            ]
 
     # Populate sequential milestone deadlines from the project target deadline from the very start
-    initial_deadlines = calculate_milestone_deadlines(project.deadline, len(milestones))
+    initial_deadlines = calculate_milestone_deadlines(final_date.strftime("%Y-%m-%d"), len(milestones), start_date=base_date)
     for idx, m in enumerate(milestones):
-        m["deadline"] = initial_deadlines[idx]
+        m["deadline"] = initial_deadlines[idx] if idx < len(initial_deadlines) else (initial_deadlines[-1] if initial_deadlines else final_date.strftime("%Y-%m-%d"))
 
     # --- DYNAMIC INSTRUCTION & REVISION ENGINE ---
     applied_changes = []
@@ -1235,51 +2171,112 @@ def synthesize_draft_chat_fallback(project: models.Project, history: list) -> di
     if alloc_changes:
         applied_changes.extend(alloc_changes)
 
-    # 2. Check for digital caliper / thickness proof request
-    if any(k in combined_user_text for k in ["caliper", "thickness", "1.5 inch", "1.5\"", "gauge", "micrometer"]):
-        target_idx = 1 if len(milestones) > 1 else 0
+    target_idx = 0 if len(milestones) == 1 else 1
+    target_name = f"Milestone {target_idx + 1}"
+
+    # 1. Dynamic Color Specification from latest user message or combined context
+    latest_specs = extract_user_design_directives(last_user_msg)
+    active_color = latest_specs["color_spec"] or (user_specs["color_spec"] if ("color" in last_user_msg.lower() or "colour" in last_user_msg.lower()) else "")
+    if active_color:
+        target_ms = milestones[target_idx]
+        has_png = any(k in combined_user_text for k in ["png", ".png"])
+        has_lockups = any(k in combined_user_text for k in ["lockup", "lockups", "horizontal", "vertical"])
+        fmt_desc = "transparent PNG mockups" if has_png else "deliverable mockups"
+        lockup_desc = ", with horizontal and vertical lockup variations" if has_lockups else ""
+
+        target_ms["proof_required"] = (
+            f"High-resolution {fmt_desc} strictly featuring the logo in {active_color} (per client specification){lockup_desc}."
+        )
+        if active_color not in target_ms.get("description", "").lower():
+            target_ms["description"] += f" (Strict color specification: {active_color})"
+        applied_changes.append(f"Updated {target_name} proof criteria to strictly mandate {active_color} logo")
+
+    # 2. Check for PNG / Lockup variations in latest message (if not already handled by color)
+    elif any(k in last_user_msg.lower() for k in ["png", ".png", "lockup", "lockups"]):
+        c_clause = f" strictly featuring the logo in {user_specs['color_spec']}" if user_specs["color_spec"] else ""
+        milestones[target_idx]["proof_required"] = (
+            f"High-resolution transparent PNG mockups{c_clause} showing primary and secondary variations with horizontal and vertical lockups."
+        )
+        applied_changes.append(f"Updated {target_name} proof criteria to require transparent PNGs with horizontal/vertical lockup variations")
+
+    # 3. Check for vector / SVG / source files request in last message
+    if any(k in last_user_msg.lower() for k in ["vector", "svg", "eps", ".ai", "vector files", "vector file"]):
+        last_idx = len(milestones) - 1
+        last_name = f"Milestone {last_idx + 1}"
+        milestones[last_idx]["proof_required"] = (
+            "Complete downloadable vector production archive (AI, EPS, SVG) and high-resolution master asset handover."
+        )
+        applied_changes.append(f"Updated {last_name} proof to mandate vector source files (AI/EPS/SVG)")
+
+    # 4. Check for Figma workspace link request in last message
+    if "figma" in last_user_msg.lower():
+        milestones[0]["proof_required"] = (
+            "Interactive Figma design workspace link with component design tokens."
+        )
+        applied_changes.append("Updated Milestone 1 proof criteria to require interactive Figma design workspace")
+
+    # 5. Check for continuous video walkthrough request in last message
+    if "video" in last_user_msg.lower():
+        milestones[target_idx]["proof_required"] = (
+            "Continuous high-definition video walkthrough demonstrating agreed deliverable functionality."
+        )
+        applied_changes.append(f"Added continuous HD video inspection to {target_name} proof")
+
+    # 6. Check for photo / camera capture request in last message
+    if any(k in last_user_msg.lower() for k in ["photo", "photos", "image", "images", "camera"]):
+        milestones[target_idx]["proof_required"] = (
+            "High-resolution multi-angle photographic inspection of completed deliverable."
+        )
+        applied_changes.append(f"Updated {target_name} proof to require multi-angle inspection photos")
+
+    # 7. Check for digital caliper / thickness proof request in last message
+    if any(k in last_user_msg.lower() for k in ["caliper", "thickness", "1.5 inch", "1.5\"", "gauge", "micrometer"]):
         milestones[target_idx]["proof_required"] = (
             "Photos with digital calipers showing table top thickness is at least 1.5 inches, "
             "along with overall dimension verification and joinery inspection."
         )
-        applied_changes.append("Updated Milestone 2 proof criteria to mandate digital caliper photos confirming minimum 1.5-inch table top thickness")
+        applied_changes.append(f"Updated {target_name} proof criteria to mandate digital caliper photos confirming minimum 1.5-inch table top thickness")
 
-    # 3. Check for leak pressure test request
-    if any(k in combined_user_text for k in ["leak", "pressure test", "water flow", "plumb"]):
-        target_idx = 1 if len(milestones) > 1 else 0
+    # 8. Check for leak pressure test request in last message
+    if any(k in last_user_msg.lower() for k in ["leak", "pressure test", "water flow", "plumb"]):
         milestones[target_idx]["proof_required"] = (
             "Continuous 30-second video demonstrating full faucet water flow and showing dry paper towel check under P-trap with zero drips or leaks."
         )
-        applied_changes.append("Updated plumbing proof to require 30-second water leak pressure test video")
+        applied_changes.append(f"Updated {target_name} plumbing proof to require 30-second water leak pressure test video")
 
-    # 4. Check for vanity mirror mounting
-    if "mirror" in combined_user_text:
-        target_idx = 2 if len(milestones) > 2 else (len(milestones) - 1)
-        if "mirror" not in milestones[target_idx]["description"].lower():
-            milestones[target_idx]["description"] += " Includes secure wall mounting and leveling of vanity mirror."
-            milestones[target_idx]["proof_required"] += " Wide-angle photo of mounted and leveled vanity mirror."
-            applied_changes.append("Added vanity mirror mounting and leveling inspection to Milestone 3")
+    # 9. Check for vanity mirror mounting in last message
+    if "mirror" in last_user_msg.lower():
+        target_idx_m = 2 if len(milestones) > 2 else (len(milestones) - 1)
+        target_name_m = f"Milestone {target_idx_m + 1}"
+        if "mirror" not in milestones[target_idx_m]["description"].lower():
+            milestones[target_idx_m]["description"] += " Includes secure wall mounting and leveling of vanity mirror."
+            milestones[target_idx_m]["proof_required"] += " Wide-angle photo of mounted and leveled vanity mirror."
+            applied_changes.append(f"Added vanity mirror mounting and leveling inspection to {target_name_m}")
 
-    # 5. Check for ivory / custom paint color
-    if ("ivory" in combined_user_text or "paint" in combined_user_text) and is_renovation:
-        target_idx = 2 if len(milestones) > 2 else 0
-        if "ivory" in combined_user_text and "ivory" not in milestones[target_idx]["title"].lower():
-            milestones[target_idx]["title"] = milestones[target_idx]["title"].replace("Bathroom-Grade", "Ivory").replace("Finish Paint", "Ivory Finish Paint")
-            applied_changes.append("Confirmed 2-coat ivory finish paint specification")
+    # 10. Check for ivory / custom paint color in last message
+    if ("ivory" in last_user_msg.lower() or "paint" in last_user_msg.lower()) and is_renovation:
+        target_idx_p = 2 if len(milestones) > 2 else 0
+        target_name_p = f"Milestone {target_idx_p + 1}"
+        if "ivory" in last_user_msg.lower() and "ivory" not in milestones[target_idx_p]["title"].lower():
+            milestones[target_idx_p]["title"] = milestones[target_idx_p]["title"].replace("Bathroom-Grade", "Ivory").replace("Finish Paint", "Ivory Finish Paint")
+            applied_changes.append(f"Confirmed 2-coat ivory finish paint specification on {target_name_p}")
 
-    # 6. Check for warranty / guarantee
-    if any(w in combined_user_text for w in ["warranty", "guarantee"]):
+    # 11. Check for warranty / guarantee in last message
+    if any(w in last_user_msg.lower() for w in ["warranty", "guarantee"]):
         last_idx = len(milestones) - 1
+        last_name = f"Milestone {last_idx + 1}"
         milestones[last_idx]["description"] += " Includes signed craftsman/contractor warranty coverage documentation."
         milestones[last_idx]["proof_required"] += " Signed warranty certificate."
-        applied_changes.append("Added formal warranty documentation to final milestone")
+        applied_changes.append(f"Added formal warranty documentation to {last_name}")
 
-    # 7. General user revision directive (handles 'change agreement', 'chae the aggrement', 'update terms', etc.)
-    if not applied_changes and any(w in last_user_msg.lower() for w in ["change", "chae", "update", "modify", "adjust", "ensure", "make sure", "add", "include", "require", "split", "agreement", "aggrement"]):
-        target_idx = min(len(milestones) - 1, 1)
-        milestones[target_idx]["description"] += f" [Updated spec: {last_user_msg}]"
-        milestones[target_idx]["proof_required"] += f" [Inspection requirement: {last_user_msg}]"
-        applied_changes.append(f"Updated milestone specifications and evidence criteria to incorporate your instruction: '{last_user_msg}'")
+    # 12. General user revision directive in last message
+    if last_user_msg and len(last_user_msg.strip()) > 1 and user_turns > 1:
+        clean_msg = last_user_msg.strip()
+        already_handled = any(clean_msg.lower() in c.lower() or (active_color and active_color in c.lower()) for c in applied_changes)
+        if not already_handled:
+            milestones[target_idx]["description"] += f" [{clean_msg}]"
+            milestones[target_idx]["proof_required"] += f" [Inspection requirement: {clean_msg}]"
+            applied_changes.append(f"Updated {target_name} specifications and evidence criteria: '{clean_msg}'")
 
     if applied_changes:
         summary_text = (
@@ -1287,18 +2284,23 @@ def synthesize_draft_chat_fallback(project: models.Project, history: list) -> di
             f"The full ${total_p:,.2f} USD escrow budget is accurately distributed across the milestones below. "
             "You can continue chatting to make further adjustments, or click 'Finalize & Generate Invite Link' below."
         )
-    elif user_turns > 2:
-        summary_text = (
-            f"I have updated the agreement to incorporate: \"{last_user_msg}\". "
-            f"Review the updated milestones below totaling ${total_p:,.2f} USD. "
-            "You can continue chatting to make further adjustments, or click 'Finalize & Generate Invite Link' below."
-        )
     else:
-        summary_text = (
-            f"I have gathered all the necessary project specifications ({last_user_msg}). "
-            f"I have divided your ${total_p:,.2f} USD project into {len(milestones)} logical milestones with strict proof-of-work requirements. "
-            "Review the milestones below. You can continue chatting to refine them, or finalize to generate your seller invitation."
-        )
+        if len(milestones) == 1:
+            summary_text = (
+                f"I have formulated your 1-day project schedule with 1 milestone to complete the project in one day itself (${total_p:,.2f} USD). "
+                "Review the milestone requirement and dispute-proof verification criteria below. If you want to change any proof requirement or adjust the timeline, simply tell me here!"
+            )
+        elif len(milestones) == 2:
+            summary_text = (
+                f"I have formulated your 2-day project schedule with 2 milestones (${total_p:,.2f} USD) based on your delivery timeline. "
+                "Review the intermediate deadlines and verification requirements below. If you want to change any proof requirement or timeline, simply tell me here!"
+            )
+        else:
+            summary_text = (
+                f"I have established the milestone schedule and verification criteria for '{project.title}' (${total_p:,.2f} USD) "
+                f"based on your delivery timeline. Review the {len(milestones)} milestones below. If you want to change any proof requirement, "
+                "deadline, or milestone scope, simply tell me here!"
+            )
 
     return {
         "status": "complete",
@@ -1325,13 +2327,17 @@ def draft_chat(project_id: int, request: DraftChatRequest, db: Session = Depends
     history = list(project.drafting_history or [])
     if request.user_message and request.user_message.strip():
         history.append({"role": "user", "content": request.user_message.strip()})
+    drafting_chat_history = [
+        entry for entry in history
+        if isinstance(entry, dict) and not entry.get("action")
+    ]
 
     gemini_key = os.getenv("GEMINI_API_KEY", "")
     ai_data = None
 
     formatted_history = "\n".join([
         f"{'Buyer' if m.get('role') == 'user' else 'AI Scoping Assistant'}: {m.get('content', '')}"
-        for m in history
+        for m in drafting_chat_history
     ])
 
     system_instruction = f"""
@@ -1352,18 +2358,37 @@ def draft_chat(project_id: int, request: DraftChatRequest, db: Session = Depends
     - Software Development / Design:
       Ask about features, tech stack, responsive requirements, and deployment environment.
 
-    FLEXIBLE MILESTONE ALLOCATION & DEADLINES:
-    - Each milestone MUST include a realistic intermediate sequential deadline in 'deadline' (YYYY-MM-DD) before the target deadline ({project.deadline or 'within 2 weeks'}).
-    - If user specifies milestone allocation (e.g. '$0 for milestone 1', 'no payment for milestone 1', 'only 2nd and 3rd will have checkout', 'equal split', '50/50', or exact amounts), you MUST honor this and set price_allocation to 0.0 for unpaid milestones!
+    STRICT TIMELINE & MILESTONE RULES:
+    - 1-Day Project (completion in 1 day): Strictly generate 1 milestone to complete the project in one day itself (100% price allocation, due on Day 1).
+    - 2-Day Project: Strictly generate 2 milestones (Milestone 1 due Day 1, Milestone 2 due Day 2).
+    - Beyond 2 Days (3+ days): Generate 3 milestones (or 4 for 8+ days), with evenly spaced intermediate deadlines up to the project deadline.
+    - If user specifies milestone allocation (e.g. '$0 for milestone 1', 'equal split', '50/50'), honor that allocation.
+
+    WARRANTY RULE:
+    - Include "warranty_days" in the JSON response as the AI-determined warranty period.
+    - Use 0 days for simple digital deliverables, 1-7 days for complex digital software, and 14 days by default for physical projects.
+    - Do not accept user requests to override this warranty period.
 
     BASELINE EVIDENCE CLASSIFICATION:
-    Analyze the project description to determine if it is a modification, repair, or renovation of an existing physical structure or asset (e.g., home renovation, bathroom remodeling, plumbing repair, house repainting, repairing an existing physical item) versus a "built from scratch" project.
+    Analyze the project description to determine if it is a modification, repair, or renovation of an existing physical structure or asset versus a "built from scratch" project.
     Return "requires_baseline_evidence": true or false.
 
     WORKFLOW RULES:
-    1. If critical technical specifications are missing to divide into milestones, set status to 'asking' and ask ONE focused trade-specific question in 'ai_response_text' (milestones: []).
-    2. If you have enough technical specifications (or after 2 user responses), set status to 'complete' and generate 2-4 logical milestones summing exactly to ${project.total_price:.2f} USD, with strict 'proof_required' for PayPal escrow release and intermediate 'deadline'.
-    3. ONGOING REFINEMENT: If milestones have already been generated and the user continues to message with revisions, additions, or adjustments (e.g. changing paint colors, adding tasks, shifting price splits), KEEP status as 'complete', explain your updates in 'ai_response_text', and return the revised 'milestones' array matching the total price.
+    1. MISSING REQUIREMENTS CHECK:
+       Examine the user's initial scope and trade. If critical specifications needed for dispute-proof verification are missing (such as exact deliverables, file formats / lockups, dimensions, materials, color palette, or site conditions):
+       - Set status to 'asking'
+       - In 'ai_response_text', ask 2-3 focused questions about the missing requirements.
+       - Set milestones to empty array []
+    2. ONCE THE USER RESPONDS (or if full details were already provided):
+       - Set status to 'complete'
+       - Generate milestones strictly matching the project timeline rules (1 day = 1 milestone, 2 days = 2 milestones, 3+ days = 3 milestones).
+       - Every milestone MUST have its OWN distinct verification proof tailored to that milestone's scope (never repeat identical generic proof like 'Vector files' across all milestones).
+    3. ONGOING REFINEMENT:
+       If milestones have already been generated and the user continues to message with revisions, additions, or adjustments (e.g. changing proof to PNG, vector files, adjusting deadlines, or specifying colors like 'blue color logo only'), KEEP status as 'complete', explain your updates in 'ai_response_text', and return the revised 'milestones' array matching the total price.
+
+    STRICT PROOF & COLOR FIDELITY RULES:
+    - Whenever the user specifies visual parameters (such as colors like "blue color logo only", styles like "bold", file formats like "transparent PNG", or layout like "horizontal/vertical lockup"), you MUST explicitly and strictly bind those exact specifications into the milestone's description and 'proof_required'. NEVER replace them with generic or boilerplate statements!
+    - When updating milestone proof in 'ai_response_text', always reference the correct milestone number (e.g. "Milestone 1" if only 1 milestone exists; never cite "Milestone 2" when there is only 1 milestone).
     """
 
     prompt = f"""
@@ -1382,8 +2407,9 @@ def draft_chat(project_id: int, request: DraftChatRequest, db: Session = Depends
     Mandated Response Schema (JSON only):
     {{
       "status": "asking" or "complete",
-      "ai_response_text": "The single clarifying question to ask the user, OR a summary of the finalized agreement.",
+      "ai_response_text": "The clarifying questions to ask the user, OR a summary of the finalized agreement.",
       "requires_baseline_evidence": true or false,
+      "warranty_days": 0,
       "milestones": [
         {{
           "title": "Milestone Name",
@@ -1396,10 +2422,10 @@ def draft_chat(project_id: int, request: DraftChatRequest, db: Session = Depends
     }}
     Rules:
     - If status is 'asking', 'milestones' must be empty array [].
-    - If status is 'complete', 'milestones' must contain 2 to 4 milestone objects whose 'price_allocation' values sum exactly to {project.total_price}. Each milestone MUST have a sequential 'deadline' (YYYY-MM-DD).
+    - If status is 'complete', 'milestones' must contain 1 to 4 milestone objects whose 'price_allocation' values sum exactly to {project.total_price}. Each milestone MUST have a sequential 'deadline' (YYYY-MM-DD). If 1-day project, exactly 1 milestone. If 2-day project, exactly 2 milestones. If 3+ days, 3 milestones.
     """
 
-    if gemini_key:
+    if gemini_key and ai_service.has_network_connection():
         genai.configure(api_key=gemini_key)
         for model_name in get_candidate_models():
             try:
@@ -1425,7 +2451,20 @@ def draft_chat(project_id: int, request: DraftChatRequest, db: Session = Depends
 
     # Fallback synthesizer if Gemini is unavailable, rate-limited, or failed
     if not ai_data:
-        ai_data = synthesize_draft_chat_fallback(project, history)
+        ai_data = synthesize_draft_chat_fallback(project, drafting_chat_history)
+
+    try:
+        warranty_days = int(ai_data.get("warranty_days"))
+        if warranty_days < 0:
+            raise ValueError("warranty_days cannot be negative")
+    except (TypeError, ValueError):
+        warranty_days = ai_service.determine_warranty_days(
+            project.title,
+            project.industry_type,
+            project.description,
+            domain=project.project_domain or None
+        )
+    ai_data["warranty_days"] = warranty_days
 
     # Save requires_baseline_evidence to Project model
     req_baseline = ai_data.get("requires_baseline_evidence")
@@ -1434,16 +2473,17 @@ def draft_chat(project_id: int, request: DraftChatRequest, db: Session = Depends
     project.requires_baseline_evidence = bool(req_baseline)
 
     milestones_list = ai_data.get("milestones", [])
-    user_messages = [m.get("content", "") for m in history if m.get("role") == "user"]
+    user_messages = [m.get("content", "") for m in drafting_chat_history if m.get("role") == "user"]
     combined_user_text = " ".join(user_messages).lower()
 
     if ai_data.get("status") == "complete" and milestones_list:
+        milestones_list = normalize_milestone_schedule(
+            milestones_list,
+            project.deadline,
+            created_at=project.created_at,
+            total_price=float(project.total_price or 0.0)
+        )
         # 1. Guarantee intermediate sequential deadlines from the very start
-        initial_deadlines = calculate_milestone_deadlines(project.deadline, len(milestones_list))
-        for idx, m in enumerate(milestones_list):
-            if not m.get("deadline"):
-                m["deadline"] = initial_deadlines[idx]
-
         # 2. Apply deadline adjustments from chat
         milestones_list, deadlines_adj = apply_negotiated_deadlines(
             milestones_list,
@@ -1480,13 +2520,15 @@ def draft_chat(project_id: int, request: DraftChatRequest, db: Session = Depends
                 milestones=milestones_list,
                 ai_generated_contract=json.dumps(milestones_list, indent=2),
                 evidence_requirements="\n".join([f"• {m.get('title')}: {m.get('proof_required')}" for m in milestones_list]),
-                version=1
+                version=1,
+                warranty_days=warranty_days
             )
             db.add(agreement)
         else:
             project.agreement.milestones = milestones_list
             project.agreement.ai_generated_contract = json.dumps(milestones_list, indent=2)
             project.agreement.evidence_requirements = "\n".join([f"• {m.get('title')}: {m.get('proof_required')}" for m in milestones_list])
+            project.agreement.warranty_days = warranty_days
             flag_modified(project.agreement, "milestones")
 
     p_domain = ai_data.get("project_domain") or project.project_domain or ai_service.determine_project_domain(project.title, project.industry_type, project.description)
@@ -1504,7 +2546,8 @@ def draft_chat(project_id: int, request: DraftChatRequest, db: Session = Depends
         "milestones": milestones_list,
         "requires_baseline_evidence": bool(project.requires_baseline_evidence),
         "project_domain": str(project.project_domain or "physical"),
-        "is_renovation": bool(project.is_renovation)
+        "is_renovation": bool(project.is_renovation),
+        "warranty_days": warranty_days
     }
 
 
@@ -1556,7 +2599,6 @@ def validate_warranty_lock_in(
                 detail=f"Milestone allocations sum to ${ms_sum:.2f}, but total budget is ${budget:.2f}."
             )
         return type_clean, amt, days
-
     if type_clean == "CUSTOM":
         if amt <= 0:
             raise HTTPException(status_code=400, detail="Custom warranty lock-in amount must be greater than $0.00.")
@@ -1575,10 +2617,28 @@ def validate_warranty_lock_in(
 
     return type_clean, amt, days
 
+
+def is_simple_digital_project(project: models.Project) -> bool:
+    domain = project.project_domain or ai_service.determine_project_domain(
+        project.title,
+        project.industry_type,
+        project.description
+    )
+    return (
+        str(domain).lower() == "digital"
+        and ai_service.determine_warranty_days(
+            project.title,
+            project.industry_type,
+            project.description,
+            domain="digital"
+        ) == 0
+    )
+
+
 @app.post("/api/projects/{project_id}/finalize-draft", response_model=FinalizeDraftResponse)
 def finalize_draft(project_id: int, request: FinalizeDraftRequest, db: Session = Depends(get_db)):
     """
-    Step 3: Saves final AI contract & evidence to Agreements, generates UUID invite_token, and marks INVITE_SENT.
+    Saves the final AI contract and evidence requirements before escrow authorization.
     """
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
@@ -1589,26 +2649,28 @@ def finalize_draft(project_id: int, request: FinalizeDraftRequest, db: Session =
 
     milestones_payload = [m.dict() if hasattr(m, 'dict') else dict(m) for m in request.milestones] if request.milestones else (project.agreement.milestones if project.agreement else [])
     if milestones_payload:
-        initial_deadlines = calculate_milestone_deadlines(project.deadline, len(milestones_payload), start_date=date.today())
-        for idx, ms in enumerate(milestones_payload):
-            if not ms.get("deadline") or ms.get("deadline") in ["Per Schedule", "None", "", None]:
-                ms["deadline"] = initial_deadlines[idx]
+        milestones_payload, _ = enrich_milestone_scope_and_proof(milestones_payload, project)
+        milestones_payload = normalize_milestone_schedule(
+            milestones_payload,
+            project.deadline,
+            created_at=project.created_at,
+            total_price=float(project.total_price or 0.0)
+        )
 
-        if not contract_text:
-            contract_lines = [f"Milestone Escrow Agreement for '{project.title}' (${project.total_price:,.2f} USD):\n"]
-            for idx, ms in enumerate(milestones_payload, 1):
-                contract_lines.append(f"Milestone {idx}: {ms.get('title')} (${ms.get('price_allocation', 0):,.2f}) — Target Due Date: {ms.get('deadline')}\n{ms.get('description')}\n")
-            contract_text = "\n".join(contract_lines)
-        if not evidence_text:
-            evidence_lines = ["Strict Visual Evidence Required for Escrow Release:\n"]
-            for idx, ms in enumerate(milestones_payload, 1):
-                evidence_lines.append(f"• Milestone {idx} ({ms.get('title')}) [Due: {ms.get('deadline')}]: {ms.get('proof_required')}")
-            evidence_text = "\n".join(evidence_lines)
+        contract_lines = [f"Milestone Escrow Agreement for '{project.title}' (${project.total_price:,.2f} USD):\n"]
+        for idx, ms in enumerate(milestones_payload, 1):
+            contract_lines.append(f"Milestone {idx}: {ms.get('title')} (${ms.get('price_allocation', 0):,.2f}) — Target Due Date: {ms.get('deadline')}\n{ms.get('description')}\n")
+        contract_text = "\n".join(contract_lines)
+
+        evidence_lines = ["Strict Visual Evidence Required for Escrow Release:\n"]
+        for idx, ms in enumerate(milestones_payload, 1):
+            evidence_lines.append(f"• Milestone {idx} ({ms.get('title')}) [Due: {ms.get('deadline')}]: {ms.get('proof_required')}")
+        evidence_text = "\n".join(evidence_lines)
 
     # If not explicitly supplied, generate fallback using Gemini
     if not contract_text or not evidence_text:
         gemini_key = os.getenv("GEMINI_API_KEY", "")
-        if gemini_key:
+        if gemini_key and ai_service.has_network_connection():
             genai.configure(api_key=gemini_key)
             prompt = f"""Create formal contract terms and strict visual evidence requirements for:
             Title: {project.title}
@@ -1649,14 +2711,27 @@ def finalize_draft(project_id: int, request: FinalizeDraftRequest, db: Session =
             detail=detail_msg
         )
 
-    # Validate and set warranty lock-in
-    lock_in_type, lock_in_amount, lock_in_days = validate_warranty_lock_in(
-        total_budget=float(project.total_price or 0.0),
-        milestones=milestones_payload or [],
-        lock_in_type=request.lock_in_type or "NONE",
-        lock_in_amount=float(request.lock_in_amount or 0.0),
-        lock_in_days=int(request.lock_in_days or 0)
+    ai_warranty_days = int(
+        getattr(agreement, "warranty_days", 0) or 0
+    ) if agreement else ai_service.determine_warranty_days(
+        project.title,
+        project.industry_type,
+        project.description,
+        domain=project.project_domain or None
     )
+
+    # Validate lock-in using the AI-determined warranty period.
+    if is_simple_digital_project(project):
+        ai_warranty_days = 0
+        lock_in_type, lock_in_amount, lock_in_days = "NONE", 0.0, 0
+    else:
+        lock_in_type, lock_in_amount, lock_in_days = validate_warranty_lock_in(
+            total_budget=float(project.total_price or 0.0),
+            milestones=milestones_payload or [],
+            lock_in_type=request.lock_in_type or "NONE",
+            lock_in_amount=float(request.lock_in_amount or 0.0),
+            lock_in_days=ai_warranty_days
+        )
 
     # Create or update Agreement
     agreement = project.agreement
@@ -1669,6 +2744,7 @@ def finalize_draft(project_id: int, request: FinalizeDraftRequest, db: Session =
             lock_in_type=lock_in_type,
             lock_in_amount=lock_in_amount,
             lock_in_days=lock_in_days,
+            warranty_days=ai_warranty_days,
             version=1
         )
         db.add(agreement)
@@ -1678,34 +2754,29 @@ def finalize_draft(project_id: int, request: FinalizeDraftRequest, db: Session =
         agreement.lock_in_type = lock_in_type
         agreement.lock_in_amount = lock_in_amount
         agreement.lock_in_days = lock_in_days
+        agreement.warranty_days = ai_warranty_days
         if milestones_payload:
             agreement.milestones = milestones_payload
             flag_modified(agreement, "milestones")
         agreement.version = (agreement.version or 1)
         
-    # Generate unique invite token
-    invite_token = uuid.uuid4().hex[:12]
-    project.invite_token = invite_token
-    project.status = models.ProjectStatus.INVITE_SENT
+    project.invite_token = None
+    project.status = models.ProjectStatus.DRAFT
 
     db.commit()
     db.refresh(project)
     db.refresh(agreement)
 
-    invite_url = f"http://localhost:4200/invite/{invite_token}"
-
     return {
         "project_id": project.id,
-        "invite_token": invite_token,
-        "invite_url": invite_url,
         "status": project.status.value if hasattr(project.status, "value") else str(project.status),
-            "contractor_rejection_reason": getattr(project, "contractor_rejection_reason", None),
         "agreement": {
             "id": agreement.id,
             "contract_terms": agreement.ai_generated_contract,
             "evidence_requirements": agreement.evidence_requirements,
             "milestones": agreement.milestones or [],
-            "version": agreement.version
+            "version": agreement.version,
+            "warranty_days": agreement.warranty_days
         }
     }
 
@@ -1717,6 +2788,17 @@ def get_invite_details(invite_token: str, db: Session = Depends(get_db)):
     project = db.query(models.Project).filter(models.Project.invite_token == invite_token).first()
     if not project:
         raise HTTPException(status_code=404, detail="Invitation not found or expired")
+    funded_payment = db.query(models.Payment).filter(
+        models.Payment.project_id == project.id,
+        models.Payment.status.in_([
+            models.PaymentStatus.AUTHORIZED,
+            models.PaymentStatus.PARTIALLY_CAPTURED,
+            models.PaymentStatus.REAUTHORIZED,
+            models.PaymentStatus.CAPTURED
+        ])
+    ).first()
+    if not funded_payment:
+        raise HTTPException(status_code=409, detail="Seller invitation is unavailable until PayPal escrow is authorized.")
 
     agreement = project.agreement
     buyer_email = project.buyer.email if project.buyer else project.client_email
@@ -1729,11 +2811,12 @@ def get_invite_details(invite_token: str, db: Session = Depends(get_db)):
     milestones_resp = []
     if agreement and agreement.milestones:
         raw_ms = [dict(m) for m in agreement.milestones]
+        raw_ms, enriched_changed = enrich_milestone_scope_and_proof(raw_ms, project)
         fallback_deadlines = calculate_milestone_deadlines(project.deadline, len(raw_ms), start_date=date.today())
-        changed = False
+        changed = enriched_changed
         for idx, m in enumerate(raw_ms):
             if not m.get("deadline") or m.get("deadline") in ["Per Schedule", "None", "", None]:
-                m["deadline"] = fallback_deadlines[idx]
+                m["deadline"] = fallback_deadlines[idx] if idx < len(fallback_deadlines) else (fallback_deadlines[-1] if fallback_deadlines else date.today().strftime("%Y-%m-%d"))
                 changed = True
         if changed:
             agreement.milestones = raw_ms
@@ -1823,6 +2906,90 @@ def format_scope_change(sc: Optional[models.ScopeChangeRequest]) -> Optional[Dic
         "updated_at": sc.updated_at.isoformat() if sc.updated_at else None,
     }
 
+
+def ensure_scope_change_funded_for_milestone(
+    project: models.Project,
+    milestone_index: Optional[int],
+    db: Session
+) -> None:
+    if milestone_index is None or not project.agreement or not project.agreement.milestones:
+        return
+    milestones = project.agreement.milestones
+    if milestone_index < 0 or milestone_index >= len(milestones):
+        return
+    if not milestones[milestone_index].get("is_addendum"):
+        return
+    pending_scope_change = db.query(models.ScopeChangeRequest).filter(
+        models.ScopeChangeRequest.project_id == project.id,
+        models.ScopeChangeRequest.status == models.ScopeChangeStatus.PENDING_FUNDS.value
+    ).first()
+    if pending_scope_change:
+        raise HTTPException(
+            status_code=409,
+            detail="Supplemental milestones are locked until the buyer authorizes the agreed escrow in PayPal."
+        )
+
+
+def check_contractor_ghosting(project: models.Project, db: Session, timeout_hours: int = 48) -> Tuple[bool, Optional[str]]:
+    """
+    Ghosting Seller Protection Logic:
+    Evaluates whether a contractor is considered 'ghosting' (non-responsive) to allow
+    the buyer to unilaterally execute the PayPal Void API on remaining uncaptured funds.
+    Conditions:
+    1. Contractor has already agreed -> True (unilateral execution unlocked).
+    2. Cancellation was requested and contractor has not responded after timeout_hours (default 48h) -> True.
+    3. Active milestone deadline has passed (past due) with 0 contractor submissions, and cancellation is requested -> True.
+    """
+    if not project.seller_id:
+        return True, "No contractor assigned"
+
+    status = getattr(project, "void_escrow_status", "NONE")
+    req_at = getattr(project, "void_escrow_requested_at", None)
+
+    if status == "SELLER_AGREED":
+        return True, "Contractor agreed to cancellation"
+
+    if status == "PENDING_SELLER_CONSENT" and req_at:
+        elapsed_seconds = (datetime.utcnow() - req_at).total_seconds()
+        if elapsed_seconds >= timeout_hours * 3600:
+            hours_elapsed = int(elapsed_seconds // 3600)
+            return True, f"Contractor unresponsive to cancellation request for {hours_elapsed}h (Exceeds {timeout_hours}h threshold)"
+
+    # Condition 2b: Contractor inactive for > timeout_hours with 0 milestone evidence submissions
+    created_at = getattr(project, "created_at", None)
+    if created_at:
+        elapsed_since_creation = (datetime.utcnow() - created_at).total_seconds()
+        if elapsed_since_creation >= timeout_hours * 3600:
+            ev_count = db.query(models.Evidence).filter(
+                models.Evidence.project_id == project.id,
+                models.Evidence.evidence_type != "before_evidence"
+            ).count()
+            if ev_count == 0:
+                hours_inactive = int(elapsed_since_creation // 3600)
+                return True, f"Contractor inactive for {hours_inactive}h with 0 milestone deliverables submitted (Exceeds {timeout_hours}h timeout)"
+
+    # Condition 3: Milestone overdue with 0 submissions
+    if project.agreement:
+        milestones = project.agreement.milestones or []
+        for idx, m in enumerate(milestones):
+            if (m.get("status") or "").lower() not in ["approved", "completed", "cancelled"]:
+                dl_str = m.get("deadline")
+                if dl_str and dl_str not in ["None", "Per Schedule", ""]:
+                    try:
+                        dl_dt = datetime.strptime(str(dl_str).split("T")[0], "%Y-%m-%d")
+                        if datetime.utcnow() > dl_dt:
+                            ev_count = db.query(models.Evidence).filter(
+                                models.Evidence.project_id == project.id,
+                                models.Evidence.milestone_index == idx
+                            ).count()
+                            if ev_count == 0:
+                                return True, f"Milestone #{idx+1} deadline elapsed with zero contractor submissions"
+                    except Exception:
+                        pass
+                break
+
+    return False, None
+
 @app.get("/api/projects/{project_id}")
 def get_project_by_id(project_id: int, db: Session = Depends(get_db)):
     """
@@ -1843,11 +3010,12 @@ def get_project_by_id(project_id: int, db: Session = Depends(get_db)):
     milestones_resp = []
     if agreement and agreement.milestones:
         raw_ms = [dict(m) for m in agreement.milestones]
+        raw_ms, enriched_changed = enrich_milestone_scope_and_proof(raw_ms, project)
         fallback_deadlines = calculate_milestone_deadlines(project.deadline, len(raw_ms), start_date=date.today())
-        changed = False
+        changed = enriched_changed
         for idx, m in enumerate(raw_ms):
             if not m.get("deadline") or m.get("deadline") in ["Per Schedule", "None", "", None]:
-                m["deadline"] = fallback_deadlines[idx]
+                m["deadline"] = fallback_deadlines[idx] if idx < len(fallback_deadlines) else (fallback_deadlines[-1] if fallback_deadlines else date.today().strftime("%Y-%m-%d"))
                 changed = True
         if changed:
             agreement.milestones = raw_ms
@@ -1903,18 +3071,96 @@ def get_project_by_id(project_id: int, db: Session = Depends(get_db)):
             "currency": payment.currency or "USD",
             "paypal_order_id": payment.paypal_order_id,
             "authorization_id": payment.authorization_id,
-            "approval_url": f"https://www.sandbox.paypal.com/checkoutnow?token={payment.paypal_order_id}" if payment.paypal_order_id else None
+            "approval_url": next(
+                (link["href"] for link in (payment.paypal_payload or {}).get("links", [])
+                 if link.get("rel") in ["approve", "payer-action"]),
+                None
+            )
         }
         if payment.paypal_order_id and payment_status_str.lower() in ["created"]:
-            paypal_approval_url = f"https://www.sandbox.paypal.com/checkoutnow?token={payment.paypal_order_id}"
+            paypal_approval_url = payment_info["approval_url"]
+
+    # Self-healing guard: If project is marked WARRANTY_PERIOD or COMPLETED, but has uncompleted milestones,
+    # reconcile project status to ACTIVE so ongoing milestones remain active.
+    ms_list = (agreement.milestones if agreement else []) or []
+    has_uncompleted = any((m.get("status") or "").lower() not in ["approved", "completed", "cancelled"] for m in ms_list)
+    if has_uncompleted and project.status in [models.ProjectStatus.WARRANTY_PERIOD, models.ProjectStatus.COMPLETED]:
+        project.status = models.ProjectStatus.ACTIVE
+        if agreement:
+            agreement.status = "ACTIVE"
+        db.commit()
+        db.refresh(project)
 
     status_str = project.status.value if hasattr(project.status, "value") else str(project.status or "draft")
+
+    ag_lock_type = getattr(agreement, "lock_in_type", "NONE") or "NONE"
+    ag_lock_amount = float(getattr(agreement, "lock_in_amount", 0.0) or 0.0)
+    ag_lock_days = int(getattr(agreement, "lock_in_days", 0) or 0)
+
+    if agreement and ag_lock_type == "NONE":
+        prev_ag = db.query(models.Agreement).filter(
+            models.Agreement.project_id == project.id,
+            models.Agreement.lock_in_type.in_(["FINAL_MILESTONE", "CUSTOM"])
+        ).order_by(models.Agreement.version.desc()).first()
+        if prev_ag:
+            ag_lock_type = prev_ag.lock_in_type
+            ag_lock_days = prev_ag.lock_in_days or 14
+            if ag_lock_type == "FINAL_MILESTONE":
+                if ms_list:
+                    ag_lock_amount = float(ms_list[-1].get("price_allocation", 0.0) or 0.0)
+                else:
+                    ag_lock_amount = float(prev_ag.lock_in_amount or 0.0)
+            else:
+                ag_lock_amount = float(prev_ag.lock_in_amount or 0.0)
+
+    # When FINAL_MILESTONE is configured, retainage amount dynamically tracks the final milestone's price allocation
+    if agreement and ag_lock_type == "FINAL_MILESTONE" and ms_list:
+        final_alloc = float(ms_list[-1].get("price_allocation", 0.0) or 0.0)
+        if final_alloc > 0:
+            ag_lock_amount = round(final_alloc, 2)
+            if agreement.lock_in_amount != ag_lock_amount:
+                agreement.lock_in_amount = ag_lock_amount
+                db.commit()
+
     has_escrow_lock = (payment is not None) and (status_str.lower() in ["accepted", "active", "in_review"]) and (
         (hasattr(payment.status, "value") and payment.status.value in ["AUTHORIZED", "PARTIALLY_CAPTURED", "CREATED"]) or
         (str(payment.status) in ["AUTHORIZED", "PARTIALLY_CAPTURED", "CREATED", "PaymentStatus.AUTHORIZED", "PaymentStatus.PARTIALLY_CAPTURED", "PaymentStatus.CREATED"])
     )
     can_delete = not has_escrow_lock
     delete_disabled_reason = "Active PayPal escrow funds are held in vault. Complete project milestones or issue refund before deleting." if has_escrow_lock else None
+
+    auth_id = project.paypal_authorization_id or (payment.authorization_id if payment else None)
+    auth_expires_at = project.authorization_expires_at or (payment.authorization_expires_at if payment else None)
+    days_left = None
+    if auth_expires_at:
+        days_left = max(0, (auth_expires_at - datetime.utcnow()).total_seconds() / 86400.0)
+    is_funds_at_risk = (status_str.upper() == "FUNDS_AT_RISK")
+
+    domain_computed = determine_project_domain(project.title, project.industry_type, project.description)
+    effective_domain = domain_computed if domain_computed == "digital" else (project.project_domain or "physical")
+    is_ghosting, ghosting_reason = check_contractor_ghosting(project, db)
+    negotiation_history = [
+        dict(entry) for entry in (project.drafting_history or [])
+        if isinstance(entry, dict) and entry.get("action") in [
+            "negotiation_message",
+            "terms_updated",
+            "agreement_accepted",
+            "rejected_agreement"
+        ]
+    ]
+    if not negotiation_history and agreement:
+        if agreement.latest_seller_message:
+            negotiation_history.append({
+                "role": "seller",
+                "action": "negotiation_message",
+                "content": agreement.latest_seller_message
+            })
+        if agreement.latest_buyer_message:
+            negotiation_history.append({
+                "role": "buyer",
+                "action": "negotiation_message",
+                "content": agreement.latest_buyer_message
+            })
 
     return {
         "project": {
@@ -1927,17 +3173,31 @@ def get_project_by_id(project_id: int, db: Session = Depends(get_db)):
             "status": status_str,
             "contractor_rejection_reason": getattr(project, "contractor_rejection_reason", None),
             "buyer_email": buyer_email,
+            "seller_email": project.seller.email if project.seller else None,
             "invite_token": project.invite_token,
             "created_at": str(project.created_at) if project.created_at else None,
             "is_home_renovation": is_reno,
             "is_renovation": bool(project.is_renovation),
             "requires_baseline_evidence": req_baseline,
-            "project_domain": project.project_domain or determine_project_domain(project.title, project.industry_type, project.description),
+            "project_domain": effective_domain,
             "before_evidence_status": project.before_evidence_status or ("provided" if before_item else "pending"),
             "before_evidence_path": before_item.file_path if before_item else None,
             "before_evidence_hash": before_item.file_hash if before_item else None,
             "can_delete": can_delete,
-            "delete_disabled_reason": delete_disabled_reason
+            "delete_disabled_reason": delete_disabled_reason,
+            "paypal_authorization_id": auth_id,
+            "authorization_expires_at": auth_expires_at.isoformat() if auth_expires_at else None,
+            "days_until_authorization_expiration": round(days_left, 1) if days_left is not None else None,
+            "captured_amount": float(getattr(project, "captured_amount", 0.0) or 0.0),
+            "voided_amount": float(getattr(project, "voided_amount", 0.0) or 0.0),
+            "remaining_escrow_hold": max(0.0, round(float(project.total_price or 0.0) - float(getattr(project, "captured_amount", 0.0) or 0.0), 2)),
+            "is_funds_at_risk": is_funds_at_risk,
+            "escrow_urgent_banner": "Action Required: Escrow authorization expired. Buyer must re-approve payment to continue the project." if is_funds_at_risk else None,
+            "void_escrow_status": getattr(project, "void_escrow_status", "NONE") or "NONE",
+            "void_escrow_reason": getattr(project, "void_escrow_reason", None),
+            "void_escrow_requested_at": project.void_escrow_requested_at.isoformat() if getattr(project, "void_escrow_requested_at", None) else None,
+            "is_ghosting_timeout_elapsed": is_ghosting and getattr(project, "void_escrow_status", "NONE") != "SELLER_AGREED",
+            "ghosting_reason": ghosting_reason if is_ghosting else None
         },
         "agreement": {
             "id": agreement.id if agreement else None,
@@ -1949,14 +3209,16 @@ def get_project_by_id(project_id: int, db: Session = Depends(get_db)):
             "status": agreement.status if agreement else "ACTIVE",
             "milestones": milestones_resp,
             "is_accepted_by_client": agreement.is_accepted_by_client if agreement else 0,
-            "lock_in_type": getattr(agreement, "lock_in_type", "NONE") or "NONE",
-            "lock_in_amount": float(getattr(agreement, "lock_in_amount", 0.0) or 0.0),
-            "lock_in_days": int(getattr(agreement, "lock_in_days", 0) or 0),
+            "lock_in_type": ag_lock_type,
+            "lock_in_amount": ag_lock_amount,
+            "lock_in_days": ag_lock_days,
+            "warranty_days": getattr(agreement, "warranty_days", ag_lock_days) if agreement else 0,
             "warranty_end_date": agreement.warranty_end_date.isoformat() if getattr(agreement, "warranty_end_date", None) else None,
             "dispute_active": bool(getattr(agreement, "dispute_active", False)),
             "warranty_payout_status": getattr(agreement, "warranty_payout_status", "NONE") or "NONE",
             "warranty_payout_batch_id": getattr(agreement, "warranty_payout_batch_id", None)
         },
+        "negotiation_history": negotiation_history,
         "active_scope_change": format_scope_change(active_sc) if active_sc else None,
         "scope_changes": [format_scope_change(sc) for sc in scope_changes],
         "payment": payment_info,
@@ -1971,6 +3233,17 @@ def join_project(invite_token: str, request: SellerJoinRequest, db: Session = De
     project = db.query(models.Project).filter(models.Project.invite_token == invite_token).first()
     if not project:
         raise HTTPException(status_code=404, detail="Invitation not found")
+    funded_payment = db.query(models.Payment).filter(
+        models.Payment.project_id == project.id,
+        models.Payment.status.in_([
+            models.PaymentStatus.AUTHORIZED,
+            models.PaymentStatus.PARTIALLY_CAPTURED,
+            models.PaymentStatus.REAUTHORIZED,
+            models.PaymentStatus.CAPTURED
+        ])
+    ).first()
+    if not funded_payment:
+        raise HTTPException(status_code=409, detail="Seller cannot join until PayPal escrow is authorized.")
 
     # Find or register seller user
     seller = db.query(models.User).filter(models.User.email == request.seller_email).first()
@@ -1989,6 +3262,17 @@ def join_project(invite_token: str, request: SellerJoinRequest, db: Session = De
     project.status = models.ProjectStatus.SELLER_JOINED
     db.commit()
     db.refresh(project)
+
+    create_system_notification(
+        db=db,
+        user_id=project.buyer_id,
+        title="Contractor Joined Escrow Project",
+        message=f"{seller.full_name or 'Contractor'} joined '{project.title}' via invitation link.",
+        type="CONTRACTOR_JOINED",
+        project_id=project.id,
+        action_url=f"/project/{project.id}/negotiate",
+        fallback_role="buyer"
+    )
 
     return {
         "message": "Seller joined project successfully",
@@ -2013,21 +3297,67 @@ def negotiate_project(project_id: int, request: NegotiateRequest, db: Session = 
 
     if request.role.lower() == "seller":
         agreement.latest_seller_message = request.message
+        agreement.latest_buyer_message = None  # Clear previous buyer acceptance/revision
+        # Note: Do NOT increment version when seller merely requests changes.
+        # Version only increments when the buyer formally updates/commits revised terms.
+        project.status = models.ProjectStatus.NEGOTIATING
+        history = list(project.drafting_history or [])
+        history.append({
+            "role": "seller",
+            "action": "negotiation_message",
+            "content": request.message,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        project.drafting_history = history
+        flag_modified(project, "drafting_history")
+        db.commit()
+        db.refresh(project)
+        db.refresh(agreement)
+
+        create_system_notification(
+            db=db,
+            user_id=project.buyer_id,
+            title="Contractor Requested Scope Change",
+            message=f"Seller requested: \"{request.message}\" on '{project.title}'. Please review and update terms.",
+            type="SCOPE_CHANGE_REQUEST",
+            project_id=project.id,
+            action_url=f"/project/{project.id}/negotiate",
+            action_data={"project_id": project.id, "seller_message": request.message},
+            fallback_role="buyer"
+        )
     else:
         agreement.latest_buyer_message = request.message
+        project.status = models.ProjectStatus.NEGOTIATING
+        history = list(project.drafting_history or [])
+        history.append({
+            "role": "buyer",
+            "action": "negotiation_message",
+            "content": request.message,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        project.drafting_history = history
+        flag_modified(project, "drafting_history")
+        db.commit()
+        db.refresh(project)
+        db.refresh(agreement)
 
-    agreement.version = (agreement.version or 1) + 1
-    project.status = models.ProjectStatus.NEGOTIATING
-
-    db.commit()
-    db.refresh(project)
-    db.refresh(agreement)
+        create_system_notification(
+            db=db,
+            user_id=project.seller_id,
+            title="Buyer Sent Negotiation Note",
+            message=f"Buyer replied: \"{request.message}\" on '{project.title}'.",
+            type="NEGOTIATION_MESSAGE",
+            project_id=project.id,
+            action_url=f"/project/{project.id}/negotiate",
+            action_data={"project_id": project.id, "buyer_message": request.message},
+            fallback_role="seller"
+        )
 
     return {
         "message": "Negotiation message recorded",
         "project_id": project.id,
         "status": project.status,
-        "version": agreement.version,
+        "version": agreement.version or 1,
         "latest_seller_message": agreement.latest_seller_message,
         "latest_buyer_message": agreement.latest_buyer_message
     }
@@ -2041,7 +3371,21 @@ def regenerate_agreement(project_id: int, request: RegenerateAgreementRequest, d
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if request.role and request.role.lower() == "seller":
+        raise HTTPException(
+            status_code=403,
+            detail="403 Forbidden: Seller cannot manually edit agreement amount or dates."
+        )
+
     agreement = project.agreement
+    agreement_status = (agreement.status if agreement else "").upper()
+    project_status = str(project.status.value if hasattr(project.status, 'value') else project.status).upper()
+    if agreement_status == "ACCEPTED" or project_status in ["ACCEPTED", "ACTIVE", "COMPLETED", "WARRANTY_PERIOD"] or (agreement and getattr(agreement, "is_accepted_by_client", 0) == 1):
+        raise HTTPException(
+            status_code=403,
+            detail="403 Forbidden: Agreement is locked"
+        )
+
     seller_request = agreement.latest_seller_message if agreement and agreement.latest_seller_message else "No specific changes requested"
     buyer_note = request.buyer_response.strip()
 
@@ -2104,6 +3448,7 @@ def regenerate_agreement(project_id: int, request: RegenerateAgreementRequest, d
 
     # Align project.deadline with the latest milestone delivery date
     if milestones:
+        milestones, _ = enrich_milestone_scope_and_proof(milestones, project)
         valid_deadlines = [m.get("deadline") for m in milestones if m.get("deadline") and m.get("deadline") not in ["Per Schedule", "None", ""]]
         if valid_deadlines:
             project.deadline = max(valid_deadlines)
@@ -2135,34 +3480,37 @@ def update_terms(project_id: int, request: UpdateTermsRequest, db: Session = Dep
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if request.role and request.role.lower() == "seller":
+        raise HTTPException(
+            status_code=403,
+            detail="403 Forbidden: Seller cannot manually edit agreement amount or dates."
+        )
+
     agreement = project.agreement
     if not agreement:
         agreement = models.Agreement(project_id=project.id, version=1)
         db.add(agreement)
 
-    # Enforce state mutability: Once accepted, warranty terms are locked
+    agreement_status = (agreement.status if agreement else "").upper()
+    project_status = str(project.status.value if hasattr(project.status, 'value') else project.status).upper()
     is_locked = (
-        project.status in [models.ProjectStatus.ACCEPTED, models.ProjectStatus.ACTIVE, models.ProjectStatus.COMPLETED, models.ProjectStatus.WARRANTY_PERIOD] or
+        agreement_status == "ACCEPTED" or
+        project_status in ["ACCEPTED", "ACTIVE", "COMPLETED", "WARRANTY_PERIOD"] or
         getattr(agreement, "is_accepted_by_client", 0) == 1
     )
-    if is_locked and (request.lock_in_type is not None or request.lock_in_amount is not None or request.lock_in_days is not None):
-        curr_type = getattr(agreement, "lock_in_type", "NONE")
-        curr_amt = float(getattr(agreement, "lock_in_amount", 0.0) or 0.0)
-        curr_days = int(getattr(agreement, "lock_in_days", 0) or 0)
-        req_type = request.lock_in_type or curr_type
-        req_amt = float(request.lock_in_amount if request.lock_in_amount is not None else curr_amt)
-        req_days = int(request.lock_in_days if request.lock_in_days is not None else curr_days)
-        if req_type != curr_type or abs(req_amt - curr_amt) > 0.01 or req_days != curr_days:
-            raise HTTPException(
-                status_code=400,
-                detail="Agreement terms are already accepted and locked. Warranty lock-in configuration is immutable."
-            )
+    if is_locked:
+        raise HTTPException(
+            status_code=403,
+            detail="403 Forbidden: Agreement is locked"
+        )
 
     agreement.ai_generated_contract = request.contract_terms
     agreement.evidence_requirements = request.evidence_requirements
-    agreement.latest_buyer_message = request.buyer_message
+    agreement.latest_buyer_message = request.buyer_message or "Terms revised per negotiation."
+    agreement.latest_seller_message = None  # Clear seller request now that buyer has addressed it
     if request.milestones:
         ms_list = [m.dict() if hasattr(m, 'dict') else m for m in request.milestones]
+        ms_list, _ = enrich_milestone_scope_and_proof(ms_list, project)
         agreement.milestones = ms_list
         flag_modified(agreement, "milestones")
         valid_deadlines = [m.get("deadline") for m in ms_list if m.get("deadline") and m.get("deadline") not in ["Per Schedule", "None", ""]]
@@ -2171,23 +3519,53 @@ def update_terms(project_id: int, request: UpdateTermsRequest, db: Session = Dep
 
     if not is_locked and request.lock_in_type is not None:
         ms_val = [m.dict() if hasattr(m, 'dict') else m for m in request.milestones] if request.milestones else (agreement.milestones or [])
-        l_type, l_amt, l_days = validate_warranty_lock_in(
-            total_budget=float(project.total_price or 0.0),
-            milestones=ms_val,
-            lock_in_type=request.lock_in_type,
-            lock_in_amount=request.lock_in_amount,
-            lock_in_days=request.lock_in_days
-        )
+        if is_simple_digital_project(project):
+            l_type, l_amt, l_days = "NONE", 0.0, 0
+        else:
+            l_type, l_amt, l_days = validate_warranty_lock_in(
+                total_budget=float(project.total_price or 0.0),
+                milestones=ms_val,
+                lock_in_type=request.lock_in_type,
+                lock_in_amount=request.lock_in_amount,
+                lock_in_days=request.lock_in_days
+            )
         agreement.lock_in_type = l_type
         agreement.lock_in_amount = l_amt
         agreement.lock_in_days = l_days
+    if is_simple_digital_project(project):
+        agreement.lock_in_type = "NONE"
+        agreement.lock_in_amount = 0.0
+        agreement.lock_in_days = 0
+        agreement.warranty_days = 0
 
     agreement.version = (agreement.version or 1) + 1
     project.status = models.ProjectStatus.NEGOTIATING
+    history = list(project.drafting_history or [])
+    history.append({
+        "role": "buyer",
+        "action": "terms_updated",
+        "content": agreement.latest_buyer_message or "Buyer updated the agreement terms.",
+        "version": agreement.version,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    project.drafting_history = history
+    flag_modified(project, "drafting_history")
 
     db.commit()
     db.refresh(project)
     db.refresh(agreement)
+
+    create_system_notification(
+        db=db,
+        user_id=project.seller_id,
+        title=f"Updated Agreement Terms Received (v{agreement.version}.0)",
+        message=f"Buyer revised agreement terms on '{project.title}': \"{agreement.latest_buyer_message}\". Please review and accept.",
+        type="TERMS_UPDATED",
+        project_id=project.id,
+        action_url=f"/project/{project.id}/negotiate",
+        action_data={"project_id": project.id, "version": agreement.version, "buyer_message": agreement.latest_buyer_message},
+        fallback_role="seller"
+    )
 
     return {
         "message": "Terms updated and notification dispatched to seller",
@@ -2211,43 +3589,52 @@ def update_project_milestones(project_id: int, request: UpdateMilestonesRequest,
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    if request.role and request.role.lower() == "seller":
+        raise HTTPException(
+            status_code=403,
+            detail="403 Forbidden: Seller cannot manually edit agreement amount or dates."
+        )
+
     agreement = project.agreement
     if not agreement:
         agreement = models.Agreement(project_id=project.id, version=1)
         db.add(agreement)
 
-    # Enforce state mutability: Once accepted, warranty terms are locked
+    agreement_status = (agreement.status if agreement else "").upper()
+    project_status = str(project.status.value if hasattr(project.status, 'value') else project.status).upper()
     is_locked = (
-        project.status in [models.ProjectStatus.ACCEPTED, models.ProjectStatus.ACTIVE, models.ProjectStatus.COMPLETED, models.ProjectStatus.WARRANTY_PERIOD] or
+        agreement_status == "ACCEPTED" or
+        project_status in ["ACCEPTED", "ACTIVE", "COMPLETED", "WARRANTY_PERIOD"] or
         getattr(agreement, "is_accepted_by_client", 0) == 1
     )
-    if is_locked and (request.lock_in_type is not None or request.lock_in_amount is not None or request.lock_in_days is not None):
-        curr_type = getattr(agreement, "lock_in_type", "NONE")
-        curr_amt = float(getattr(agreement, "lock_in_amount", 0.0) or 0.0)
-        curr_days = int(getattr(agreement, "lock_in_days", 0) or 0)
-        req_type = request.lock_in_type or curr_type
-        req_amt = float(request.lock_in_amount if request.lock_in_amount is not None else curr_amt)
-        req_days = int(request.lock_in_days if request.lock_in_days is not None else curr_days)
-        if req_type != curr_type or abs(req_amt - curr_amt) > 0.01 or req_days != curr_days:
-            raise HTTPException(
-                status_code=400,
-                detail="Agreement terms are already accepted and locked. Warranty lock-in configuration is immutable."
-            )
+    if is_locked:
+        raise HTTPException(
+            status_code=403,
+            detail="403 Forbidden: Agreement is locked"
+        )
 
     agreement.milestones = request.milestones
     flag_modified(agreement, "milestones")
 
     if not is_locked and request.lock_in_type is not None:
-        l_type, l_amt, l_days = validate_warranty_lock_in(
-            total_budget=float(project.total_price or 0.0),
-            milestones=request.milestones,
-            lock_in_type=request.lock_in_type,
-            lock_in_amount=request.lock_in_amount,
-            lock_in_days=request.lock_in_days
-        )
+        if is_simple_digital_project(project):
+            l_type, l_amt, l_days = "NONE", 0.0, 0
+        else:
+            l_type, l_amt, l_days = validate_warranty_lock_in(
+                total_budget=float(project.total_price or 0.0),
+                milestones=request.milestones,
+                lock_in_type=request.lock_in_type,
+                lock_in_amount=request.lock_in_amount,
+                lock_in_days=request.lock_in_days
+            )
         agreement.lock_in_type = l_type
         agreement.lock_in_amount = l_amt
         agreement.lock_in_days = l_days
+    if is_simple_digital_project(project):
+        agreement.lock_in_type = "NONE"
+        agreement.lock_in_amount = 0.0
+        agreement.lock_in_days = 0
+        agreement.warranty_days = 0
 
     # If deadlines were adjusted, sync project.deadline
     valid_deadlines = [
@@ -2260,6 +3647,18 @@ def update_project_milestones(project_id: int, request: UpdateMilestonesRequest,
     db.commit()
     db.refresh(project)
     db.refresh(agreement)
+
+    create_system_notification(
+        db=db,
+        user_id=project.seller_id,
+        title="Buyer Updated Agreement Schedule",
+        message=f"The buyer updated milestone amounts or due dates for '{project.title}'. Please review the agreement.",
+        type="MILESTONES_UPDATED",
+        project_id=project.id,
+        action_url=f"/project/{project.id}/negotiate?role=seller",
+        action_data={"project_id": project.id, "status": project.status},
+        fallback_role="seller"
+    )
 
     return {
         "status": "ok",
@@ -2281,47 +3680,84 @@ async def accept_project(project_id: int, db: Session = Depends(get_db)):
     project.status = models.ProjectStatus.ACCEPTED
     if project.agreement:
         project.agreement.is_accepted_by_client = 1
+        project.agreement.status = "ACCEPTED"
+        if project.agreement.milestones:
+            raw_ms = [dict(m) for m in project.agreement.milestones]
+            enriched_ms, ms_changed = enrich_milestone_scope_and_proof(raw_ms, project)
+            if ms_changed:
+                project.agreement.milestones = enriched_ms
+                flag_modified(project.agreement, "milestones")
 
     # Check if an escrow payment record already exists
     payment = db.query(models.Payment).filter(models.Payment.project_id == project.id).first()
     approval_url = None
 
     if not payment and project.total_price and float(project.total_price) > 0:
-        try:
-            return_url = f"{FRONTEND_URL}/project/{project.id}/fulfillment"
-            cancel_url = f"{FRONTEND_URL}/negotiate/{project.id}"
-            order_data = await paypal_service.create_order_for_authorize(
-                amount=float(project.total_price),
-                currency="USD",
-                project_id=project.id,
-                description=f"ProofLens Initial Project Escrow: {project.title}",
-                return_url=return_url,
-                cancel_url=cancel_url
-            )
-            order_id = order_data.get("id")
-            if order_id:
-                approval_url = next(
-                    (l["href"] for l in order_data.get("links", []) if l.get("rel") in ["approve", "payer-action"]),
-                    f"https://www.sandbox.paypal.com/checkoutnow?token={order_id}"
-                )
-                now_dt = datetime.utcnow()
-                payment = models.Payment(
-                    project_id=project.id,
-                    paypal_order_id=order_id,
-                    amount=float(project.total_price),
-                    currency="USD",
-                    status=models.PaymentStatus.CREATED,
-                    authorization_expires_at=now_dt + timedelta(days=29),
-                    paypal_payload=order_data
-                )
-                db.add(payment)
-        except Exception as ex:
-            print(f"[WARN] Automatic escrow order creation notice: {ex}")
+        captured = float(getattr(project, "captured_amount", 0.0) or 0.0)
+        total = float(project.total_price or 0.0)
+        order_amt = max(0.0, round(total - captured, 2)) if (captured > 0 and total > captured) else total
+
+        return_url = f"{FRONTEND_URL}/project/{project.id}/fulfillment"
+        cancel_url = f"{FRONTEND_URL}/negotiate/{project.id}"
+        order_data = await paypal_service.create_order_for_authorize(
+            amount=float(order_amt),
+            currency="USD",
+            project_id=project.id,
+            description=f"ProofLens Initial Project Escrow: {project.title}",
+            return_url=return_url,
+            cancel_url=cancel_url
+        )
+        order_id = order_data.get("id")
+        approval_url = next(
+            (l["href"] for l in order_data.get("links", []) if l.get("rel") in ["approve", "payer-action"]),
+            None
+        )
+        if not order_id or not approval_url:
+            raise HTTPException(status_code=502, detail="PayPal API Error: Create order response is missing its order ID or approval URL.")
+        now_dt = datetime.utcnow()
+        payment = models.Payment(
+            project_id=project.id,
+            paypal_order_id=order_id,
+            amount=float(project.total_price),
+            currency="USD",
+            status=models.PaymentStatus.CREATED,
+            authorization_expires_at=now_dt + timedelta(days=29),
+            paypal_payload=order_data
+        )
+        db.add(payment)
     elif payment and payment.paypal_order_id:
-        approval_url = f"https://www.sandbox.paypal.com/checkoutnow?token={payment.paypal_order_id}"
+        approval_url = next(
+            (link["href"] for link in (payment.paypal_payload or {}).get("links", [])
+             if link.get("rel") in ["approve", "payer-action"]),
+            None
+        )
+        if not approval_url:
+            raise HTTPException(status_code=502, detail="PayPal API Error: Stored order response is missing its approval URL.")
+
+    history = list(project.drafting_history or [])
+    history.append({
+        "role": "seller",
+        "action": "agreement_accepted",
+        "content": "Seller accepted the agreement terms.",
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    project.drafting_history = history
+    flag_modified(project, "drafting_history")
 
     db.commit()
     db.refresh(project)
+
+    create_system_notification(
+        db=db,
+        user_id=project.buyer_id,
+        title="Contractor Accepted Agreement Terms",
+        message=f"The contractor accepted the agreement terms for '{project.title}'. Project is ready for PayPal Escrow funding.",
+        type="AGREEMENT_ACCEPTED",
+        project_id=project.id,
+        action_url=f"/project/{project.id}/negotiate",
+        action_data={"project_id": project.id, "status": "accepted"},
+        fallback_role="buyer"
+    )
 
     return {
         "message": "Agreement accepted",
@@ -2379,6 +3815,18 @@ def reject_project_agreement(
 
     db.commit()
     db.refresh(project)
+
+    create_system_notification(
+        db=db,
+        user_id=project.buyer_id,
+        title="Agreement Rejected by Seller",
+        message=f"The seller rejected the agreement for '{project.title}': {reason_text}",
+        type="AGREEMENT_REJECTED",
+        project_id=project.id,
+        action_url=f"/project/{project.id}/negotiate?role=buyer",
+        action_data={"project_id": project.id, "reason": reason_text, "status": "rejected"},
+        fallback_role="buyer"
+    )
 
     return {
         "message": "Agreement rejected successfully.",
@@ -2458,6 +3906,12 @@ async def init_scope_change(
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    requester_email = (request.user_email or (project.buyer.email if project.buyer else project.client_email) or "").lower()
+    if not requester_email or requester_email not in {
+        (project.buyer.email if project.buyer else "").lower(),
+        (project.client_email or "").lower()
+    }:
+        raise HTTPException(status_code=403, detail="Only the project buyer can request a scope change.")
 
     agreement = project.agreement
     current_ms = [dict(m) for m in (agreement.milestones or [])] if agreement and agreement.milestones else []
@@ -2474,11 +3928,10 @@ async def init_scope_change(
 
     req_user_id = request.requested_by_id
     sender_name = "Buyer"
-    if request.user_email:
-        u = db.query(models.User).filter(models.User.email == request.user_email).first()
-        if u:
-            req_user_id = u.id
-            sender_name = u.full_name or u.email
+    u = db.query(models.User).filter(func.lower(models.User.email) == requester_email).first()
+    if u:
+        req_user_id = u.id
+        sender_name = u.full_name or u.email
 
     proposed_cost = float(ai_data.get("proposed_extra_cost", 0.0) or 0.0)
     proposed_days = int(ai_data.get("proposed_extra_days", 0) or 0)
@@ -2491,9 +3944,24 @@ async def init_scope_change(
     proposed_ms = ai_data.get("proposed_milestones", [])
     if proposed_cost == 0:
         proposed_ms = [m for m in proposed_ms if float(m.get("price_allocation", 0)) > 0]
+    elif proposed_ms and len(proposed_ms) > 0:
+        proposed_ms[0]["price_allocation"] = proposed_cost
     for ms in proposed_ms:
         ms["is_addendum"] = True
         ms["status"] = "pending"
+
+    addendum_text = ai_data.get("addendum_contract", "")
+    if proposed_cost is not None and proposed_days is not None and addendum_text:
+        addendum_text = re.sub(
+            r'The total escrow budget is increased by \$[\d,]+(?:\.\d{2})? USD',
+            f'The total escrow budget is increased by ${proposed_cost:,.2f} USD',
+            addendum_text
+        )
+        addendum_text = re.sub(
+            r'An additional \d+ calendar days? (?:is|are) appended',
+            f'An additional {proposed_days} calendar day{"s are" if proposed_days != 1 else " is"} appended',
+            addendum_text
+        )
 
     scope_change = models.ScopeChangeRequest(
         project_id=project.id,
@@ -2502,7 +3970,7 @@ async def init_scope_change(
         proposed_extra_cost=proposed_cost,
         proposed_extra_days=proposed_days,
         status=models.ScopeChangeStatus.NEGOTIATING.value,
-        addendum_contract=ai_data.get("addendum_contract", ""),
+        addendum_contract=addendum_text,
         proposed_milestones=proposed_ms,
         chat_history=[
             {
@@ -2516,8 +3984,21 @@ async def init_scope_change(
         ]
     )
     db.add(scope_change)
+    project.status = models.ProjectStatus.NEGOTIATING
     db.commit()
     db.refresh(scope_change)
+
+    create_system_notification(
+        db=db,
+        user_id=project.seller_id,
+        title="Buyer Requested a Scope Change",
+        message=f"The buyer proposed a scope revision for '{project.title}': {request.description}. Review the AI-drafted addendum and negotiate or accept it.",
+        type="SCOPE_CHANGE_REQUEST",
+        project_id=project.id,
+        action_url=f"/project/{project.id}/fulfillment?role=seller&scope_change=1",
+        action_data={"project_id": project.id, "scope_change_id": scope_change.id},
+        fallback_role="seller"
+    )
 
     return {
         "message": "Scope change request initialized and Addendum drafted by gemini-4-argon",
@@ -2553,6 +4034,23 @@ def negotiate_scope_change(
     if not scope_change:
         raise HTTPException(status_code=404, detail="Active scope change request not found")
 
+    sender_email = (request.sender_email or "").lower()
+    buyer_emails = {
+        (project.buyer.email if project.buyer else "").lower(),
+        (project.client_email or "").lower()
+    }
+    seller_email = (project.seller.email if project.seller else "").lower()
+    if sender_email in buyer_emails and sender_email:
+        sender_role = "buyer"
+        recipient_id = project.seller_id
+        recipient_role = "seller"
+    elif sender_email and sender_email == seller_email:
+        sender_role = "seller"
+        recipient_id = project.buyer_id
+        recipient_role = "buyer"
+    else:
+        raise HTTPException(status_code=403, detail="Only the project buyer or seller can negotiate this scope change.")
+
     if request.proposed_extra_cost is not None and request.proposed_extra_cost >= 0:
         scope_change.proposed_extra_cost = float(request.proposed_extra_cost)
         if scope_change.proposed_milestones:
@@ -2565,16 +4063,21 @@ def negotiate_scope_change(
     if request.proposed_extra_days is not None and request.proposed_extra_days >= 0:
         scope_change.proposed_extra_days = int(request.proposed_extra_days)
 
-    sender_role = request.sender_role
-    if not sender_role and request.sender_email:
-        if project.seller and request.sender_email == project.seller.email:
-            sender_role = "seller"
-        else:
-            sender_role = "buyer"
-    if not sender_role:
-        sender_role = "contractor"
+    if scope_change.addendum_contract:
+        c_text = scope_change.addendum_contract
+        c_text = re.sub(
+            r'The total escrow budget is increased by \$[\d,]+(?:\.\d{2})? USD',
+            f'The total escrow budget is increased by ${float(scope_change.proposed_extra_cost or 0):,.2f} USD',
+            c_text
+        )
+        c_text = re.sub(
+            r'An additional \d+ calendar days? (?:is|are) appended',
+            f'An additional {int(scope_change.proposed_extra_days or 0)} calendar day{"s are" if scope_change.proposed_extra_days != 1 else " is"} appended',
+            c_text
+        )
+        scope_change.addendum_contract = c_text
 
-    sender_display = request.sender_email or ("Contractor" if sender_role == "seller" else "Buyer")
+    sender_display = request.sender_email
 
     chat = list(scope_change.chat_history or [])
     chat.append({
@@ -2589,6 +4092,18 @@ def negotiate_scope_change(
     flag_modified(scope_change, "chat_history")
     db.commit()
     db.refresh(scope_change)
+
+    create_system_notification(
+        db=db,
+        user_id=recipient_id,
+        title="Scope Change Counter-Offer Received",
+        message=f"The {sender_role} sent a counter-offer for '{project.title}': {request.message or 'Updated scope change terms are available for review.'}",
+        type="SCOPE_CHANGE_COUNTER_OFFER",
+        project_id=project.id,
+        action_url=f"/project/{project.id}/fulfillment?role={recipient_role}&scope_change=1",
+        action_data={"project_id": project.id, "scope_change_id": scope_change.id},
+        fallback_role=recipient_role
+    )
 
     return {
         "message": "Scope revision counter-offer recorded",
@@ -2628,6 +4143,13 @@ async def accept_scope_change(
     if not scope_change:
         raise HTTPException(status_code=404, detail="Active scope change request not found")
 
+    seller_email = (project.seller.email if project.seller else "").lower()
+    accepter_email = (request.user_email or "").lower()
+    if not seller_email or accepter_email != seller_email:
+        raise HTTPException(status_code=403, detail="Only the assigned seller can accept this scope revision.")
+    if scope_change.status != models.ScopeChangeStatus.NEGOTIATING.value:
+        raise HTTPException(status_code=409, detail="This scope revision is no longer awaiting seller acceptance.")
+
     old_agreement = project.agreement
     old_version = 1
     existing_milestones = []
@@ -2645,7 +4167,7 @@ async def accept_scope_change(
     fallback_deadlines = calculate_milestone_deadlines(project.deadline, len(existing_milestones), start_date=date.today())
     for idx, m in enumerate(existing_milestones):
         if not m.get("deadline") or m.get("deadline") in ["Per Schedule", "None", "", None]:
-            m["deadline"] = fallback_deadlines[idx]
+            m["deadline"] = fallback_deadlines[idx] if idx < len(fallback_deadlines) else (fallback_deadlines[-1] if fallback_deadlines else date.today().strftime("%Y-%m-%d"))
 
     # 2. Shift all future uncompleted milestone deadlines forward by proposed_extra_days
     if extra_days > 0:
@@ -2711,6 +4233,40 @@ async def accept_scope_change(
     old_evidence_req = old_agreement.evidence_requirements if (old_agreement and old_agreement.evidence_requirements) else "Visual proof of completed deliverables."
     updated_evidence_req = old_evidence_req + f"\n\n[Addendum v{new_version} Scope & Timeline Revisions (+{extra_days} Days)]:\n" + (scope_change.description or "")
 
+    # Inherit & adapt warranty retainage settings from old agreement
+    old_lock_type = getattr(old_agreement, "lock_in_type", "NONE") or "NONE"
+    old_lock_amount = float(getattr(old_agreement, "lock_in_amount", 0.0) or 0.0)
+    old_lock_days = int(getattr(old_agreement, "lock_in_days", 14) or 14)
+
+    if old_lock_type == "NONE":
+        earlier_ag = db.query(models.Agreement).filter(
+            models.Agreement.project_id == project.id,
+            models.Agreement.lock_in_type.in_(["FINAL_MILESTONE", "CUSTOM"])
+        ).order_by(models.Agreement.version.desc()).first()
+        if earlier_ag:
+            old_lock_type = earlier_ag.lock_in_type
+            old_lock_amount = float(earlier_ag.lock_in_amount or 0.0)
+            old_lock_days = int(earlier_ag.lock_in_days or 14)
+
+    new_lock_type = old_lock_type
+    new_lock_days = old_lock_days if old_lock_days > 0 else 14
+    if old_lock_type == "FINAL_MILESTONE":
+        # Designated retainage dynamically updates to the newly appended final milestone amount
+        last_m_alloc = float(combined_milestones[-1].get("price_allocation", 0.0))
+        if last_m_alloc <= 0 and project.total_price:
+            last_m_alloc = float(project.total_price) / max(1, len(combined_milestones))
+        new_lock_amount = round(last_m_alloc, 2)
+    elif old_lock_type == "CUSTOM":
+        # Custom retainage remains fixed to its custom amount
+        new_lock_amount = old_lock_amount
+    else:
+        new_lock_type = "NONE"
+        new_lock_amount = 0.0
+        new_lock_days = 0
+
+    # Reset project status to ACTIVE since new deliverables/milestones are pending execution
+    project.status = models.ProjectStatus.ACTIVE
+
     # Save Addendum as new ACTIVE Agreement (Version N+1)
     new_agreement = models.Agreement(
         project_id=project.id,
@@ -2719,7 +4275,10 @@ async def accept_scope_change(
         is_accepted_by_client=1,
         ai_generated_contract=updated_contract_text,
         evidence_requirements=updated_evidence_req,
-        milestones=combined_milestones
+        milestones=combined_milestones,
+        lock_in_type=new_lock_type,
+        lock_in_amount=new_lock_amount,
+        lock_in_days=new_lock_days
     )
     db.add(new_agreement)
     db.commit()
@@ -2738,12 +4297,13 @@ async def accept_scope_change(
         )
         order_id = order_resp.get("id")
         approve_link = next((l["href"] for l in order_resp.get("links", []) if l.get("rel") in ["approve", "payer-action"]), None)
-        if not approve_link:
-            approve_link = f"https://www.sandbox.paypal.com/checkoutnow?token={order_id}"
+        if not order_id or not approve_link:
+            raise HTTPException(status_code=502, detail="PayPal API Error: Create order response is missing its order ID or approval URL.")
 
         scope_change.paypal_order_id = order_id
         scope_change.paypal_approval_url = approve_link
         scope_change.status = models.ScopeChangeStatus.PENDING_FUNDS.value
+        project.status = models.ProjectStatus.NEGOTIATING
 
         payment = models.Payment(
             project_id=project.id,
@@ -2756,6 +4316,18 @@ async def accept_scope_change(
         db.add(payment)
         db.commit()
         db.refresh(scope_change)
+
+        create_system_notification(
+            db=db,
+            user_id=project.buyer_id,
+            title="Seller Accepted Scope Revision",
+            message=f"The seller accepted the scope revision for '{project.title}'. Authorize the additional ${extra_cost:,.2f} USD in PayPal before the added work begins.",
+            type="SCOPE_CHANGE_ACCEPTED",
+            project_id=project.id,
+            action_url=f"/project/{project.id}/fulfillment?role=buyer&scope_change=1",
+            action_data={"project_id": project.id, "scope_change_id": scope_change.id, "status": "PENDING_FUNDS"},
+            fallback_role="buyer"
+        )
 
         return {
             "status": "PENDING_FUNDS",
@@ -2773,8 +4345,46 @@ async def accept_scope_change(
         }
     else:
         scope_change.status = models.ScopeChangeStatus.ACCEPTED.value
+        project.status = models.ProjectStatus.ACTIVE
+
+        # Auto-resolve any active dispute via Scope Change
+        try:
+            active_disp = db.query(models.DisputeRecord).filter(
+                models.DisputeRecord.project_id == project.id,
+                models.DisputeRecord.status.in_([
+                    models.DisputeStatus.INTERNAL_NEGOTIATION,
+                    models.DisputeStatus.ESCALATED_PROGRAMMATIC
+                ])
+            ).order_by(models.DisputeRecord.id.desc()).first()
+            if active_disp:
+                active_disp.status = models.DisputeStatus.RESOLVED
+                active_disp.resolution_type = "SCOPE_CHANGE"
+                active_disp.resolution_notes = f"Formally resolved via accepted contract addendum '{scope_change.description}'."
+                disp_msg = models.DisputeChatHistory(
+                    dispute_id=active_disp.id,
+                    sender_role="system",
+                    sender_name="ProofLens Resolution Protocol",
+                    message=f"Dispute closed: Parties executed and accepted contract addendum '{scope_change.description}'.",
+                    proposal_type="scope_change_accepted"
+                )
+                db.add(disp_msg)
+                project.status = models.ProjectStatus.ACTIVE
+        except Exception as e:
+            print(f"Dispute scope change auto-resolution notice: {e}")
+
         db.commit()
         db.refresh(scope_change)
+        create_system_notification(
+            db=db,
+            user_id=project.buyer_id,
+            title="Seller Accepted Scope Revision",
+            message=f"The seller accepted the scope revision for '{project.title}'. The updated agreement and milestones are active.",
+            type="SCOPE_CHANGE_ACCEPTED",
+            project_id=project.id,
+            action_url=f"/project/{project.id}/fulfillment?role=buyer&scope_change=1",
+            action_data={"project_id": project.id, "scope_change_id": scope_change.id, "status": "ACCEPTED"},
+            fallback_role="buyer"
+        )
 
         return {
             "status": "ACCEPTED",
@@ -2810,30 +4420,79 @@ async def authorize_scope_funds(
     ).first()
     if not scope_change:
         raise HTTPException(status_code=404, detail="Scope change not found")
+    buyer_email = (project.buyer.email if project.buyer else project.client_email or "").lower()
+    if not buyer_email or (request.user_email or "").lower() not in {
+        buyer_email,
+        (project.client_email or "").lower()
+    }:
+        raise HTTPException(status_code=403, detail="Only the project buyer can authorize supplemental escrow.")
+    if scope_change.status != models.ScopeChangeStatus.PENDING_FUNDS.value:
+        raise HTTPException(status_code=409, detail="This scope revision is not awaiting escrow authorization.")
 
     order_id = request.paypal_order_id or scope_change.paypal_order_id
-    if order_id:
-        auth_resp = await paypal_service.authorize_order(order_id)
-        payment = db.query(models.Payment).filter(models.Payment.paypal_order_id == order_id).first()
-        if payment:
-            auth_id = None
-            try:
-                authorizations = auth_resp.get("purchase_units", [{}])[0].get("payments", {}).get("authorizations", [])
-                if authorizations:
-                    auth_id = authorizations[0].get("id")
-            except Exception:
-                pass
-            if not auth_id:
-                auth_id = auth_resp.get("id") or f"AUTH-{uuid.uuid4().hex[:12].upper()}"
-            payment.status = models.PaymentStatus.AUTHORIZED
-            payment.authorization_id = auth_id
-            payment.authorized_at = datetime.utcnow()
-            payment.authorization_expires_at = datetime.utcnow() + timedelta(days=29)
-            payment.paypal_payload = auth_resp
+    if not order_id:
+        raise HTTPException(status_code=400, detail="No PayPal order is attached to this scope revision.")
+    auth_resp = await paypal_service.authorize_order(order_id)
+    payment = db.query(models.Payment).filter(models.Payment.paypal_order_id == order_id).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Supplemental escrow payment record not found.")
+    auth_id = None
+    try:
+        authorizations = auth_resp.get("purchase_units", [{}])[0].get("payments", {}).get("authorizations", [])
+        if authorizations:
+            auth_id = authorizations[0].get("id")
+    except Exception:
+        pass
+    if not auth_id:
+        raise HTTPException(status_code=502, detail="PayPal API Error: Authorization response did not contain an authorization ID.")
+    payment.status = models.PaymentStatus.AUTHORIZED
+    payment.authorization_id = auth_id
+    payment.authorized_at = datetime.utcnow()
+    payment.authorization_expires_at = datetime.utcnow() + timedelta(days=29)
+    payment.paypal_payload = auth_resp
 
     scope_change.status = models.ScopeChangeStatus.ACCEPTED.value
+    project.status = models.ProjectStatus.ACTIVE
+
+    # Auto-resolve any active dispute via Scope Change
+    try:
+        active_disp = db.query(models.DisputeRecord).filter(
+            models.DisputeRecord.project_id == project.id,
+            models.DisputeRecord.status.in_([
+                models.DisputeStatus.INTERNAL_NEGOTIATION,
+                models.DisputeStatus.ESCALATED_PROGRAMMATIC
+            ])
+        ).order_by(models.DisputeRecord.id.desc()).first()
+        if active_disp:
+            active_disp.status = models.DisputeStatus.RESOLVED
+            active_disp.resolution_type = "SCOPE_CHANGE"
+            active_disp.resolution_notes = f"Formally resolved via accepted contract addendum '{scope_change.description}'."
+            disp_msg = models.DisputeChatHistory(
+                dispute_id=active_disp.id,
+                sender_role="system",
+                sender_name="ProofLens Resolution Protocol",
+                message=f"Dispute closed: Parties executed and funded contract addendum '{scope_change.description}' for +${scope_change.proposed_extra_cost:.2f} USD.",
+                proposal_type="scope_change_accepted"
+            )
+            db.add(disp_msg)
+            project.status = models.ProjectStatus.ACTIVE
+    except Exception as e:
+        print(f"Dispute scope change auto-resolution notice: {e}")
+
     db.commit()
     db.refresh(scope_change)
+
+    create_system_notification(
+        db=db,
+        user_id=project.seller_id,
+        title="Supplemental Scope Escrow Authorized",
+        message=f"The buyer authorized the additional escrow for '{project.title}'. The accepted scope revision is funded and its milestones can proceed.",
+        type="SCOPE_CHANGE_FUNDS_AUTHORIZED",
+        project_id=project.id,
+        action_url=f"/project/{project.id}/fulfillment?role=seller",
+        action_data={"project_id": project.id, "scope_change_id": scope_change.id, "status": "ACCEPTED"},
+        fallback_role="seller"
+    )
 
     return {
         "status": "ACCEPTED",
@@ -2957,7 +4616,7 @@ def get_project_alerts(project_id: int, db: Session = Depends(get_db)):
     try:
         deadline_date = datetime.strptime(deadline_str[:10], "%Y-%m-%d")
         deadline_dt = deadline_date.replace(hour=23, minute=59, second=59)
-        now_dt = datetime.utcnow()
+        now_dt = datetime.now()
         time_diff = deadline_dt - now_dt
         hours_remaining = round(time_diff.total_seconds() / 3600.0, 1)
 
@@ -2998,7 +4657,7 @@ def get_contractor_active_alerts(db: Session = Depends(get_db)):
             models.ProjectStatus.ACCEPTED,
             models.ProjectStatus.IN_REVIEW
         ])
-    ).all()
+    ).order_by(models.Project.id.desc()).all()
 
     seen_project_ids = set()
     seen_fingerprints = set()
@@ -3126,22 +4785,40 @@ def inspect_image_for_spoofing(image_path: str, proof_criteria: str = "", projec
     flags = []
     is_spoofed = False
 
-    if moire_score > 9.0 or rainbow_ratio > 0.20:
-        flags.append("Moiré wavy distortion pattern detected (rainbow screen interference)")
-        is_spoofed = True
-
-    if bezel_ratio > 0.28 and center_brightness > 65:
-        flags.append("Visible screen bezel / phone display frame detected")
-        is_spoofed = True
-
-    # Metric 4: Scope Criteria Mismatch
     combined_scope = f"{proof_criteria} {project_title}".lower()
-    is_carpentry = any(k in combined_scope for k in ["timber", "wood", "joinery", "table", "mortise", "lumber", "scale"])
-    if is_carpentry:
-        if is_spoofed:
-            flags.append("Scope Mismatch: Photographed screen does not verify physical timber boards, joinery, or scale check")
-        elif wood_ratio < 0.15:
-            flags.append("Scope Mismatch: Image does not exhibit physical wood grain or timber characteristics")
+    is_digital = any(k in combined_scope for k in [
+        "logo", "design", "graphic", "branding", "software", "digital",
+        "vector", "app", "web", "mockup", "presentation", "ui", "ux",
+        "figma", "psd", "illustrator", "typography", "artwork"
+    ])
+
+    if is_digital:
+        # Domain: Digital Assets & Deliverables
+        # Clean digital assets naturally contain full RGB spectrum colors (blues, purples, reds, branding palette).
+        # Chromatic dispersion (rainbow_ratio) must NOT be treated as display screen interference on clean vector/graphic files.
+        # Only flag if there is clear physical display re-photographing (high moire with phone/display bezel margins).
+        if moire_score > 12.0 and bezel_ratio > 0.20:
+            flags.append("Moiré wavy distortion pattern detected (rainbow screen interference)")
+            is_spoofed = True
+        if bezel_ratio > 0.28 and center_brightness > 65:
+            flags.append("Visible screen bezel / phone display frame detected")
+            is_spoofed = True
+    else:
+        # Domain: Physical Workmanship & On-Site Verification (Carpentry, Renovation, Construction)
+        if moire_score > 9.0 or rainbow_ratio > 0.20:
+            flags.append("Moiré wavy distortion pattern detected (rainbow screen interference)")
+            is_spoofed = True
+
+        if bezel_ratio > 0.28 and center_brightness > 65:
+            flags.append("Visible screen bezel / phone display frame detected")
+            is_spoofed = True
+
+        is_carpentry = any(k in combined_scope for k in ["timber", "wood", "joinery", "table", "mortise", "lumber"])
+        if is_carpentry:
+            if is_spoofed:
+                flags.append("Scope Mismatch: Photographed screen does not verify physical timber boards, joinery, or scale check")
+            elif wood_ratio < 0.15:
+                flags.append("Scope Mismatch: Image does not exhibit physical wood grain or timber characteristics")
 
     confidence = 15 if is_spoofed else 95
     return {
@@ -3244,12 +4921,162 @@ def inspect_digital_deliverable_for_ai_watermark(
         "watermark_type": watermark_type
     }
 
+def calculate_gps_distance_meters(loc1_str: Optional[str], loc2_str: Optional[str]) -> Optional[float]:
+    """
+    Calculates great-circle distance in meters between two 'lat,lng' coordinate strings using the Haversine formula.
+    Returns None if either coordinate is invalid or missing.
+    """
+    if not loc1_str or not loc2_str:
+        return None
+    try:
+        parts1 = [float(x.strip()) for x in str(loc1_str).split(",")]
+        parts2 = [float(x.strip()) for x in str(loc2_str).split(",")]
+        if len(parts1) != 2 or len(parts2) != 2:
+            return None
+        lat1, lon1 = parts1[0], parts1[1]
+        lat2, lon2 = parts2[0], parts2[1]
+
+        R = 6371000.0  # Earth's radius in meters
+        phi1 = math.radians(lat1)
+        phi2 = math.radians(lat2)
+        delta_phi = math.radians(lat2 - lat1)
+        delta_lambda = math.radians(lon2 - lon1)
+
+        a = math.sin(delta_phi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * (math.sin(delta_lambda / 2.0) ** 2)
+        c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+        return R * c
+    except Exception as e:
+        print(f"Error calculating GPS distance between {loc1_str} and {loc2_str}: {e}")
+        return None
+
+def verify_physical_evidence_location(
+    project: models.Project,
+    seller_location: Optional[str],
+    before_evidence_item: Optional[models.Evidence] = None,
+    allowable_radius_meters: float = 250.0
+) -> Dict[str, Any]:
+    """
+    Verifies contractor's live capture GPS against the buyer's baseline site location
+    for physical and physical renovation projects.
+    """
+    proj_title = str(getattr(project, "title", "") or "")
+    proj_ind = str(getattr(project, "industry_type", "") or "")
+    proj_desc = str(getattr(project, "description", "") or "")
+
+    raw_domain = getattr(project, "project_domain", None)
+    if isinstance(raw_domain, str) and raw_domain.strip():
+        p_domain = raw_domain.strip().lower()
+    else:
+        p_domain = determine_project_domain(proj_title, proj_ind, proj_desc)
+
+    if p_domain == "digital":
+        return {
+            "status": "exempt_digital",
+            "flags": [],
+            "note": "• Geolocation Audit: Digital deliverable (GPS site tracking exempt).",
+            "is_mismatch": False
+        }
+
+    # Authoritative buyer site location from before-evidence or project site_location
+    buyer_site_loc = None
+    if before_evidence_item and before_evidence_item.location and isinstance(before_evidence_item.location, str):
+        buyer_site_loc = before_evidence_item.location.strip()
+    else:
+        raw_site = getattr(project, "site_location", None)
+        if isinstance(raw_site, str) and raw_site.strip():
+            buyer_site_loc = raw_site.strip()
+
+    raw_renov = getattr(project, "is_renovation", False)
+    is_renov = raw_renov if isinstance(raw_renov, bool) else False
+
+    raw_req_base = getattr(project, "requires_baseline_evidence", False)
+    req_base = raw_req_base if isinstance(raw_req_base, bool) else False
+
+    is_physical_renovation = bool(
+        is_renov or
+        req_base or
+        is_home_renovation_project(proj_title, proj_ind, proj_desc) or
+        (buyer_site_loc is not None and (is_renov or req_base or is_home_renovation_project(proj_title, proj_ind, proj_desc)))
+    )
+
+    if not buyer_site_loc:
+        if seller_location:
+            return {
+                "status": "logged_no_baseline",
+                "flags": [],
+                "note": f"• Hardware Geolocation: Live GPS recorded at {seller_location} (No buyer baseline site GPS on record).",
+                "is_mismatch": False,
+                "contractor_location": seller_location
+            }
+        return {
+            "status": "no_baseline_no_seller_gps",
+            "flags": [],
+            "note": "",
+            "is_mismatch": False
+        }
+
+    # We have an authoritative buyer baseline site location
+    if not seller_location or not str(seller_location).strip():
+        if is_physical_renovation:
+            flag = "GPS Location Missing: Physical renovation projects require live hardware camera geolocation tracking matching buyer baseline site."
+            return {
+                "status": "missing_contractor_gps",
+                "flags": [flag],
+                "note": "• Geographic Provenance Audit: FAILED - Live camera hardware GPS coordinates missing for physical site deliverable.",
+                "is_mismatch": True,
+                "buyer_baseline_location": buyer_site_loc
+            }
+        return {
+            "status": "missing_optional",
+            "flags": [],
+            "note": "",
+            "is_mismatch": False
+        }
+
+    # Both locations present: Calculate distance
+    dist = calculate_gps_distance_meters(seller_location, buyer_site_loc)
+    if dist is None:
+        return {
+            "status": "unparseable_coordinates",
+            "flags": [],
+            "note": f"• Hardware Geolocation: Unable to parse GPS coordinates '{seller_location}'.",
+            "is_mismatch": False
+        }
+
+    dist_int = int(round(dist))
+    dist_display = f"{dist_int}m" if dist < 1000 else f"{dist / 1000.0:.2f}km"
+
+    if dist > allowable_radius_meters:
+        flag = f"Geographic Proximity Mismatch: Contractor capture location ({seller_location}) is {dist_display} away from buyer baseline site ({buyer_site_loc}). Allowable radius: {int(allowable_radius_meters)}m."
+        return {
+            "status": "mismatch",
+            "flags": [flag],
+            "note": f"• Geographic Provenance Audit: FAILED (OFF-SITE CAPTURE DETECTED - {dist_display} from buyer baseline site). Deliverable was not captured at the registered job site.",
+            "is_mismatch": True,
+            "distance_meters": dist_int,
+            "allowable_radius_meters": allowable_radius_meters,
+            "contractor_location": seller_location,
+            "buyer_baseline_location": buyer_site_loc
+        }
+
+    return {
+        "status": "verified",
+        "flags": [],
+        "note": f"• Geographic Provenance: VERIFIED - On-site live capture ({dist_int}m from buyer baseline site GPS: {buyer_site_loc}, within {int(allowable_radius_meters)}m tolerance).",
+        "is_mismatch": False,
+        "distance_meters": dist_int,
+        "allowable_radius_meters": allowable_radius_meters,
+        "contractor_location": seller_location,
+        "buyer_baseline_location": buyer_site_loc
+    }
+
 def synthesize_ai_evidence_fallback(
     project: models.Project,
     milestone: dict,
     milestone_index: Optional[int],
     before_evidence_item: Optional[models.Evidence] = None,
-    milestone_file_path: Optional[str] = None
+    milestone_file_path: Optional[str] = None,
+    seller_location: Optional[str] = None
 ) -> dict:
     title = (project.title or "").lower()
     ind = (project.industry_type or "").lower()
@@ -3257,6 +5084,12 @@ def synthesize_ai_evidence_fallback(
     ms_title = milestone.get("title", f"Milestone {(milestone_index or 0) + 1}")
     ms_proof = milestone.get("proof_required", "Completed work visual inspection.")
     p_domain = getattr(project, "project_domain", None) or determine_project_domain(project.title, project.industry_type, project.description)
+
+    # Geographic Proximity Verification against Buyer Baseline Site
+    geo_check = verify_physical_evidence_location(project, seller_location, before_evidence_item)
+    geo_flags = geo_check.get("flags", [])
+    geo_mismatch = geo_check.get("is_mismatch", False)
+    geo_note = geo_check.get("note", "")
 
     # Universal Anti-Spoofing & Screen Reproduction Inspection: Runs on EVERY submitted deliverable
     local_cv = inspect_image_for_spoofing(milestone_file_path, ms_proof, project.title) if milestone_file_path else {"flags": [], "is_spoofed": False, "confidence": 95}
@@ -3268,13 +5101,13 @@ def synthesize_ai_evidence_fallback(
     has_wm = digital_cv.get("has_ai_watermark", False)
     digital_flags = list(digital_cv.get("flags", []))
 
-    # Combine all fraud indicators
-    combined_flags = list(dict.fromkeys(local_flags + digital_flags))
+    # Combine all fraud indicators including geographic mismatch
+    combined_flags = list(dict.fromkeys(local_flags + digital_flags + geo_flags))
 
-    # STRICT SECURITY GATE: If EITHER spoofing (photographed screen/phone, Moiré) OR AI watermark detected, LOCK ESCROW
-    if is_spoofed or has_wm or len(combined_flags) > 0:
+    # STRICT SECURITY GATE: If EITHER spoofing, AI watermark, OR geographic mismatch detected, LOCK ESCROW
+    if is_spoofed or has_wm or geo_mismatch or len(combined_flags) > 0:
         status_val = "possible_mismatch"
-        confidence = min(local_cv.get("confidence", 15), digital_cv.get("confidence", 15))
+        confidence = min(local_cv.get("confidence", 15), digital_cv.get("confidence", 15), 15 if geo_mismatch else 95)
 
         if is_spoofed and has_wm:
             notes_header = "⚠️ HUMAN REVIEW REQUIRED (SPOOFING & AI WATERMARK DETECTED)"
@@ -3291,15 +5124,22 @@ def synthesize_ai_evidence_fallback(
                 "not photographs of mobile/computer screens."
             )
             rec = "HOLD ESCROW RELEASE. Payout locked until contractor provides authentic direct proof or original assets. Do not photograph a phone, monitor, or screen display."
-        else:
+        elif has_wm:
             notes_header = "⚠️ HUMAN REVIEW REQUIRED (AI WATERMARK DETECTED)"
             analysis = (
                 f"Deliverable contains synthetic generative AI watermarks or parameters ({digital_cv.get('watermark_type', 'AI Generated')}). "
                 "Milestone criteria require authentic craftsmanship."
             )
             rec = "HOLD ESCROW RELEASE. Payout locked until contractor provides original authentic design/source files without AI watermarks."
+        else:
+            notes_header = "⚠️ HUMAN REVIEW REQUIRED (GEOGRAPHIC PROXIMITY MISMATCH DETECTED)"
+            analysis = (
+                f"Contractor capture location does not match buyer baseline site coordinates. {', '.join(geo_flags)} "
+                "Deliverables for physical projects must be captured directly at the registered job site."
+            )
+            rec = "HOLD ESCROW RELEASE. Payout locked until contractor captures proof directly at the registered site location."
 
-        audit_tag = "Anti-Spoofing Audit: FAILED" if is_spoofed else "AI Watermark Audit: FAILED"
+        audit_tag = "Anti-Spoofing Audit: FAILED" if is_spoofed else ("AI Watermark Audit: FAILED" if has_wm else "Geographic Provenance Audit: FAILED")
         notes = (
             f"{notes_header}\n"
             f"• {audit_tag}\n"
@@ -3308,6 +5148,9 @@ def synthesize_ai_evidence_fallback(
             f"• Scope Compliance: FAILED. Evidence does not verify agreed criteria ('{ms_proof}').\n"
             f"• Escrow Recommendation: {rec}"
         )
+        if geo_note and geo_note not in notes:
+            notes = f"{notes}\n{geo_note}"
+
         return {
             "status": status_val,
             "confidence_score": confidence,
@@ -3320,7 +5163,8 @@ def synthesize_ai_evidence_fallback(
                 "fraud_flags": combined_flags,
                 "scope_compliance": f"FAILED: Does not satisfy '{ms_proof}'. {analysis}",
                 "notes": analysis,
-                "recommendation": rec
+                "recommendation": rec,
+                "geographic_provenance": geo_check
             }
         }
 
@@ -3338,13 +5182,17 @@ def synthesize_ai_evidence_fallback(
         fraud_flags = []
         status = "verified"
         notes = (
-            f"• AI Verification: VERIFIED ({confidence}% Match)\n"
+            f"• AI Cross-Verification: VERIFIED ({confidence}% Match)\n"
+            f"• Contract Milestone Scope: {ms_title}\n"
+            f"• Mandatory Agreement Proof Gate: {ms_proof}\n"
             f"• Anti-Spoofing Audit: PASSED (Clean direct asset / no screen reproduction or Moiré interference)\n"
             f"• AI Watermark Audit: PASSED (No SynthID, DALL-E, Midjourney, or generative watermarks detected)\n"
-            f"• Scope Compliance: {scope_comp}\n"
-            f"• Before vs After Analysis: {before_comp}\n"
+            f"• Agreement Criteria Cross-Reference: {scope_comp}\n"
+            f"• Baseline Comparison: {before_comp}\n"
             f"• Escrow Recommendation: {rec}"
         )
+        if geo_note and geo_note not in notes:
+            notes = f"{notes}\n{geo_note}"
         return {
             "status": status,
             "confidence_score": confidence,
@@ -3358,7 +5206,8 @@ def synthesize_ai_evidence_fallback(
                 "scope_compliance": scope_comp,
                 "before_comparison": before_comp,
                 "notes": "Digital deliverable verified clean. No screen reproduction, AI watermarks, or synthetic distortion detected.",
-                "recommendation": rec
+                "recommendation": rec,
+                "geographic_provenance": geo_check
             }
         }
 
@@ -3425,6 +5274,8 @@ def synthesize_ai_evidence_fallback(
         f"• Before vs After Analysis: {before_comp}\n"
         f"• Escrow Recommendation: {rec}"
     )
+    if geo_note and geo_note not in notes:
+        notes = f"{notes}\n{geo_note}"
     
     details = {
         "matches_requirement": True,
@@ -3434,7 +5285,8 @@ def synthesize_ai_evidence_fallback(
         "scope_compliance": scope_comp,
         "before_comparison": before_comp,
         "notes": "Visual capture appears genuine and directly taken on site. No screen reflections or Moiré patterns detected.",
-        "recommendation": rec
+        "recommendation": rec,
+        "geographic_provenance": geo_check
     }
     
     return {
@@ -3445,12 +5297,43 @@ def synthesize_ai_evidence_fallback(
         "comparison_details": details
     }
 
+@app.get("/api/projects/{project_id}/challenge-token")
+def get_challenge_token(project_id: int, db: Session = Depends(get_db)):
+    """
+    Phase 2: Dynamic Physical Challenge Response
+    Returns a random, time-sensitive feasible action (e.g. 'Hold up 3 fingers', 'Write X7B on paper')
+    to defend against spoofing and screen re-photographing during live camera captures.
+    """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    template = random.choice(PHYSICAL_CHALLENGE_TEMPLATES)
+    code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=3))
+    action = template["action"]
+    instruction = template["instruction"].replace("{code}", code)
+    token = f"CHAL-{uuid.uuid4().hex[:10].upper()}"
+
+    challenge_data = {
+        "project_id": project_id,
+        "token": token,
+        "code": code,
+        "action": action,
+        "instruction": instruction,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=20)).isoformat()
+    }
+    ACTIVE_CHALLENGES[project_id] = challenge_data
+    return challenge_data
+
 def run_ai_evidence_comparison(
     project: models.Project,
     milestone: dict,
     milestone_index: Optional[int],
     milestone_file_path: str,
-    before_evidence_item: Optional[models.Evidence] = None
+    before_evidence_item: Optional[models.Evidence] = None,
+    challenge_info: Optional[Dict[str, Any]] = None,
+    seller_location: Optional[str] = None
 ) -> dict:
     """
     Multimodal AI verification comparing the seller's captured live frame
@@ -3458,6 +5341,8 @@ def run_ai_evidence_comparison(
     1. Anti-spoofing fraud indicators (Moiré patterns, screen bezels, phone reflections, virtual camera artifacts).
     2. Agreement scope & milestone specific proof_required criteria.
     3. Buyer's before-evidence (if provided).
+    4. Dynamic physical challenge token / gesture verification in the same frame.
+    5. Geographic proximity tracking against buyer baseline GPS site for physical/renovation projects.
     Returns structured verification results, confidence score, fraud_flags, and status.
     """
     gemini_key = os.getenv("GEMINI_API_KEY", "")
@@ -3465,6 +5350,12 @@ def run_ai_evidence_comparison(
     milestone_desc = milestone.get("description", "")
     milestone_proof = milestone.get("proof_required", "Visual inspection of completed deliverables.")
     p_domain = getattr(project, "project_domain", None) or determine_project_domain(project.title, project.industry_type, project.description)
+
+    # Geographic Proximity Audit against Buyer Baseline Site
+    geo_check = verify_physical_evidence_location(project, seller_location, before_evidence_item)
+    geo_flags = geo_check.get("flags", [])
+    geo_mismatch = geo_check.get("is_mismatch", False)
+    geo_note = geo_check.get("note", "")
     
     # Read milestone evidence bytes
     milestone_img_bytes = None
@@ -3486,21 +5377,22 @@ def run_ai_evidence_comparison(
             except Exception as e:
                 print(f"Error reading before image: {e}")
 
-    # Dedicated local inspection before API call: ALWAYS run anti-spoofing and AI watermark audit
+    # Dedicated local inspection before API call: ALWAYS run anti-spoofing, AI watermark, and geographic audit
     local_cv = inspect_image_for_spoofing(milestone_file_path, milestone_proof, project.title) if milestone_file_path else {"flags": [], "is_spoofed": False, "confidence": 95}
     digital_cv = inspect_digital_deliverable_for_ai_watermark(milestone_file_path, milestone_proof, project.title) if milestone_file_path else {"flags": [], "has_ai_watermark": False, "confidence": 96}
 
-    if local_cv.get("is_spoofed") or digital_cv.get("has_ai_watermark") or local_cv.get("flags") or digital_cv.get("flags"):
+    if local_cv.get("is_spoofed") or digital_cv.get("has_ai_watermark") or geo_mismatch or local_cv.get("flags") or digital_cv.get("flags") or geo_flags:
         return synthesize_ai_evidence_fallback(
             project,
             milestone,
             milestone_index,
             before_evidence_item,
-            milestone_file_path=milestone_file_path
+            milestone_file_path=milestone_file_path,
+            seller_location=seller_location
         )
 
     # Attempt Gemini Multimodal Vision with Domain-Tailored Prompt
-    if gemini_key and milestone_img_bytes:
+    if gemini_key and milestone_img_bytes and ai_service.has_network_connection():
         try:
             genai.configure(api_key=gemini_key)
             if p_domain == "digital":
@@ -3513,7 +5405,7 @@ def run_ai_evidence_comparison(
                 - Deliverable Specification: {milestone_desc}
                 - Strict Verification Criteria: {milestone_proof}
 
-                MANDATORY ANTI-SPOOFING & AI WATERMARK AUDIT:
+                MANDATORY FILE FORMAT & ANTI-SPOOFING AUDIT:
                 1. Inspect specifically for screen re-photographing and spoofing:
                    - Moiré patterns (wavy rainbow interference or pixel grids indicating photographing another screen or monitor).
                    - Visible phone/monitor bezels, reflections of a smartphone, holding fingers, or camera glare.
@@ -3521,13 +5413,19 @@ def run_ai_evidence_comparison(
                      * Add 'Moiré wavy distortion pattern detected (rainbow screen interference)' or 'Visible screen bezel / phone display frame detected' to fraud_flags.
                      * Set matches_requirement to false.
                      * Set confidence_score to <= 20.
-                2. Inspect the deliverable for AI watermarks (Google SynthID markers, OpenAI DALL-E corner color blocks, Midjourney watermarks, Adobe Firefly credentials, or generative AI badges).
-                3. Check for synthetic AI generation artifacts (nonsensical text, unnatural warped geometry, plastic blur, impossible lighting).
-                4. If an AI watermark or synthetic AI generation is detected:
+                2. Cross-reference the uploaded deliverable directly against the Agreement's Milestone Scope and Mandatory Proof Criteria:
+                   - Contract Milestone Scope: '{milestone_title}' — '{milestone_desc}'
+                   - Contract Mandatory Proof Requirement: '{milestone_proof}'
+                   - Evaluate whether the deliverable authentically fulfills the specific milestone scope and satisfies the proof criteria defined in the agreement.
+                   - Verify that the submitted file format and content appropriately match the agreed requirement (e.g. concept deck, prototype mockups, design preview, document, or production archive).
+                   - If the deliverable fails the agreement's mandatory proof criteria '{milestone_proof}', set matches_requirement to false and confidence_score to <= 25.
+                3. Inspect deliverable for AI watermarks (Google SynthID markers, OpenAI DALL-E corner color blocks, Midjourney watermarks, Adobe Firefly credentials, or generative AI badges).
+                4. Check for synthetic AI generation artifacts (nonsensical text, unnatural warped geometry, plastic blur, impossible lighting).
+                5. If an AI watermark or synthetic AI generation is detected:
                    * Add 'AI Watermark detected: [Details]' to fraud_flags.
                    * Set matches_requirement to false.
                    * Set confidence_score to <= 20.
-                5. If clean authentic digital work meeting '{milestone_proof}' without screen reproduction or AI watermarks:
+                6. If clean authentic digital work meeting '{milestone_proof}' without screen reproduction or AI watermarks:
                    * fraud_flags: []
                    * matches_requirement: true
                    * confidence_score: 95+
@@ -3544,6 +5442,23 @@ def run_ai_evidence_comparison(
                 }}
                 """
             else:
+                chal_sec = ""
+                if challenge_info:
+                    chal_sec = f"""
+                MANDATORY DYNAMIC PHYSICAL CHALLENGE AUDIT:
+                A dynamic anti-spoofing challenge was generated for this live capture:
+                - Required Action / Token: "{challenge_info.get('instruction') or challenge_info.get('action')}"
+                
+                You are a multimodal LLM that MUST verify BOTH:
+                1. The completed physical job / deliverable meeting '{milestone_proof}'.
+                2. The physical presence of the required challenge gesture, held up fingers, or handwritten code ('{challenge_info.get('code', '')}') in the SAME frame.
+                
+                If the physical challenge action is NOT visible in the capture:
+                * Add "Dynamic Physical Challenge Missing: Required anti-spoofing challenge action not verified in frame" to fraud_flags.
+                * Set matches_requirement to false.
+                * Set confidence_score to <= 20.
+                """
+
                 prompt = f"""
                 Analyze this evidence image for a project milestone. 
                 Do not assume the image is genuine. Look specifically for signs of spoofing:
@@ -3551,6 +5466,7 @@ def run_ai_evidence_comparison(
                 2. Visible screen bezels, reflections of a phone, or pixel grids.
                 3. AI generation artifacts (impossible geometry, floating objects, mismatched lighting).
                 4. Does the scene match the expected milestone requirement?
+                {chal_sec}
 
                 Project Context:
                 - Project: {project.title} ({project.industry_type})
@@ -3567,7 +5483,7 @@ def run_ai_evidence_comparison(
                 {{
                   "matches_requirement": boolean,
                   "confidence_score": 1 to 100,
-                  "fraud_flags": ["list any detected spoofing signs (e.g. 'Moire pattern detected', 'Visible screen bezel'), or empty array [] if clean"],
+                  "fraud_flags": ["list any detected spoofing signs (e.g. 'Moire pattern detected', 'Visible screen bezel', or challenge flags), or empty array [] if clean"],
                   "notes": "Brief explanation of findings. State if the image appears to be a photograph of a screen.",
                   "scope_compliance": "Concise summary of how the evidence satisfies or fails the required criteria",
                   "before_comparison": "Detailed visual comparison between before-state and milestone submission",
@@ -3585,7 +5501,7 @@ def run_ai_evidence_comparison(
                 try:
                     # Primary: gemini-4-argon; Fallback: gemini-3.8-flash
                     model = genai.GenerativeModel(model_name=m, generation_config={"response_mime_type": "application/json"})
-                    resp = model.generate_content(contents, request_options={"timeout": 6.0})
+                    resp = model.generate_content(contents, request_options={"timeout": 30.0})
                     cleaned = resp.text.strip()
                     if cleaned.startswith("```json"):
                         cleaned = cleaned[7:]
@@ -3595,9 +5511,9 @@ def run_ai_evidence_comparison(
                         cleaned = cleaned[:-3]
                     parsed = json.loads(cleaned.strip())
                     if parsed and "confidence_score" in parsed:
-                        extra_flags = list(dict.fromkeys(local_cv.get("flags", []) + digital_cv.get("flags", [])))
+                        extra_flags = list(dict.fromkeys(local_cv.get("flags", []) + digital_cv.get("flags", []) + geo_flags))
                         fraud_flags = list(dict.fromkeys((parsed.get("fraud_flags") or []) + extra_flags))
-                        has_violation = (len(fraud_flags) > 0) or (local_cv.get("is_spoofed", False)) or (digital_cv.get("has_ai_watermark", False))
+                        has_violation = (len(fraud_flags) > 0) or (local_cv.get("is_spoofed", False)) or (digital_cv.get("has_ai_watermark", False)) or geo_mismatch
 
                         if has_violation:
                             status_val = "possible_mismatch"
@@ -3613,10 +5529,14 @@ def run_ai_evidence_comparison(
                                 notes_header = "⚠️ HUMAN REVIEW REQUIRED (SPOOFING & SCREEN RE-PHOTOGRAPH DETECTED)"
                                 analysis_txt = parsed.get("notes", "Digital display re-photograph or Moiré interference pattern detected.")
                                 rec_txt = "HOLD ESCROW RELEASE. Payout locked until contractor captures genuine proof without photographing a phone or monitor screen."
-                            else:
+                            elif has_ai_wm:
                                 notes_header = "⚠️ HUMAN REVIEW REQUIRED (AI WATERMARK DETECTED)"
                                 analysis_txt = parsed.get("notes", "Generative AI watermark or synthetic artifacts detected.")
                                 rec_txt = "HOLD ESCROW RELEASE. Payout locked until contractor provides authentic original assets without AI watermarks."
+                            else:
+                                notes_header = "⚠️ HUMAN REVIEW REQUIRED (GEOGRAPHIC PROXIMITY MISMATCH DETECTED)"
+                                analysis_txt = f"Contractor capture location does not match buyer baseline site. {', '.join(geo_flags)}"
+                                rec_txt = "HOLD ESCROW RELEASE. Payout locked until contractor captures proof directly at the registered physical job site."
 
                             notes = (
                                 f"{notes_header}\n"
@@ -3646,6 +5566,10 @@ def run_ai_evidence_comparison(
                                 f"• Escrow Recommendation: {parsed.get('recommendation')}"
                             )
 
+                        if geo_note and geo_note not in notes:
+                            notes = f"{notes}\n{geo_note}"
+                        parsed["geographic_provenance"] = geo_check
+
                         return {
                             "status": status_val,
                             "confidence_score": conf_score,
@@ -3665,7 +5589,8 @@ def run_ai_evidence_comparison(
         milestone,
         milestone_index,
         before_evidence_item,
-        milestone_file_path=milestone_file_path
+        milestone_file_path=milestone_file_path,
+        seller_location=seller_location
     )
 
 @app.post("/api/projects/{project_id}/evidence-batch")
@@ -3677,6 +5602,7 @@ async def upload_evidence_batch(
     milestone_index: Optional[int] = Form(None),
     location: Optional[str] = Form(None),
     asset_url: Optional[str] = Form(None),
+    challenge_token: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     """
@@ -3686,6 +5612,12 @@ async def upload_evidence_batch(
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
+
+    if project.status in [models.ProjectStatus.DISPUTED, models.ProjectStatus.FUNDS_AT_RISK]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Milestone fulfillment is disabled while project is in {project.status.value.upper()} status."
+        )
 
     p_domain = project.project_domain or determine_project_domain(project.title, project.industry_type, project.description)
     if p_domain != "digital" and capture_method != models.CaptureMethod.LIVE_CAMERA.value:
@@ -3697,6 +5629,9 @@ async def upload_evidence_batch(
     if not files or len(files) == 0:
         raise HTTPException(status_code=400, detail="No evidence files received.")
 
+    if evidence_type == "milestone_evidence":
+        ensure_scope_change_funded_for_milestone(project, milestone_index, db)
+
     uploader_id = project.seller_id or project.buyer_id or 1
     milestones = project.agreement.milestones if project.agreement and project.agreement.milestones else []
     if milestone_index is not None and 0 <= milestone_index < len(milestones):
@@ -3707,6 +5642,15 @@ async def upload_evidence_batch(
             "description": project.description,
             "proof_required": project.agreement.evidence_requirements if project.agreement else "Visual inspection photos."
         }
+
+    # Strict File & Format Mapping: Cross-reference before deep analysis
+    target_proof = target_milestone.get("proof_required", "Visual inspection photos.")
+    for file in files:
+        validate_file_format_against_proof_requirement(file.filename, target_proof)
+
+    challenge_info = ACTIVE_CHALLENGES.get(project_id)
+    if not challenge_info and challenge_token:
+        challenge_info = {"token": challenge_token, "action": "Live physical gesture", "instruction": "Verify physical gesture in frame"}
 
     before_evidence_item = db.query(models.Evidence).filter(
         models.Evidence.project_id == project_id,
@@ -3727,6 +5671,11 @@ async def upload_evidence_batch(
             models.Evidence.file_hash == file_hash
         ).first()
         if existing:
+            if evidence_type != "before_evidence":
+                raise HTTPException(
+                    status_code=400,
+                    detail="400 Bad Request: Duplicate evidence detected"
+                )
             saved_items.append(existing)
             continue
 
@@ -3737,6 +5686,8 @@ async def upload_evidence_batch(
 
         if evidence_type == "before_evidence":
             project.before_evidence_status = "provided"
+            if location:
+                project.site_location = location
             status = models.EvidenceStatus.VERIFIED
             confidence = 100
             loc_str = f" • Location: {location}" if location else ""
@@ -3746,12 +5697,21 @@ async def upload_evidence_batch(
                 f"• Scope Compliance: Pre-work site condition documented by buyer prior to contractor work.\n"
                 f"• Recommendation: Baseline locked. Seller can proceed with milestone fulfillment."
             )
-            comp_details = {"is_baseline": True, "notes": "Baseline registered successfully."}
+            comp_details = {"is_baseline": True, "notes": "Baseline registered successfully.", "site_location": location}
             flags = []
         else:
-            ai_res = run_ai_evidence_comparison(project, target_milestone, milestone_index, file_path, before_evidence_item)
+            ai_res = run_ai_evidence_comparison(
+                project,
+                target_milestone,
+                milestone_index,
+                file_path,
+                before_evidence_item,
+                challenge_info=challenge_info,
+                seller_location=location
+            )
             status_val = ai_res.get("status", "verified")
-            if status_val == "possible_mismatch":
+            flags = ai_res.get("fraud_flags", [])
+            if status_val == "possible_mismatch" or (flags and len(flags) > 0):
                 status = models.EvidenceStatus.POSSIBLE_MISMATCH
                 any_fraud = True
             elif status_val == "unclear_evidence":
@@ -3761,10 +5721,7 @@ async def upload_evidence_batch(
 
             confidence = ai_res.get("confidence_score", 95)
             notes = ai_res.get("analysis_notes")
-            if location:
-                notes = f"{notes}\n• GPS Location Verified: {location}"
             comp_details = ai_res.get("comparison_details")
-            flags = ai_res.get("fraud_flags", [])
             if flags:
                 all_fraud_flags.extend(flags)
 
@@ -3789,10 +5746,39 @@ async def upload_evidence_batch(
         db.add(ev)
         saved_items.append(ev)
 
+    # Transition milestone state to awaiting_buyer_review & clear old rejection notes
+    if evidence_type == "milestone_evidence" and milestone_index is not None and project.agreement and project.agreement.milestones:
+        m_idx = int(milestone_index)
+        if m_idx < len(project.agreement.milestones):
+            project.agreement.milestones[m_idx]["status"] = "awaiting_buyer_review"
+            if "rejection_reason" in project.agreement.milestones[m_idx]:
+                project.agreement.milestones[m_idx]["previous_rejection_reason"] = project.agreement.milestones[m_idx].get("rejection_reason")
+                project.agreement.milestones[m_idx]["rejection_reason"] = None
+            flag_modified(project.agreement, "milestones")
+
     db.commit()
     for ev in saved_items:
         db.refresh(ev)
     db.refresh(project)
+
+    if evidence_type == "milestone_evidence":
+        milestone_title = (
+            project.agreement.milestones[int(milestone_index)].get("title", f"Milestone {int(milestone_index) + 1}")
+            if project.agreement and project.agreement.milestones and milestone_index is not None
+            and int(milestone_index) < len(project.agreement.milestones)
+            else f"Milestone {int(milestone_index) + 1}" if milestone_index is not None else "Milestone"
+        )
+        create_system_notification(
+            db=db,
+            user_id=project.buyer_id,
+            title="Seller Submitted Milestone Evidence",
+            message=f"The seller submitted evidence for '{milestone_title}' on '{project.title}'. Please review it.",
+            type="EVIDENCE_SUBMITTED",
+            project_id=project.id,
+            action_url=f"/project/{project.id}/fulfillment?role=buyer",
+            action_data={"project_id": project.id, "milestone_index": milestone_index},
+            fallback_role="buyer"
+        )
 
     overall_status = "possible_mismatch" if any_fraud else "verified"
 
@@ -3821,23 +5807,137 @@ async def upload_evidence_batch(
 @app.post("/api/projects/{project_id}/evidence")
 async def upload_evidence(
     project_id: int,
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
     capture_method: str = Form(...),
     evidence_type: str = Form("milestone_evidence"),
     milestone_index: Optional[int] = Form(None),
     location: Optional[str] = Form(None),
     asset_url: Optional[str] = Form(None),
+    challenge_token: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     """
     Handles single evidence upload (live camera for physical projects, file dropzone for digital assets),
     calculates SHA-256 cryptographic hash, and runs AI verification against contract scope.
+    Supports URL-only digital baseline submissions (e.g. Figma/Drive link for redesign projects).
     """
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
 
+    if project.status in [models.ProjectStatus.DISPUTED, models.ProjectStatus.FUNDS_AT_RISK]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Milestone fulfillment is disabled while project is in {project.status.value.upper()} status."
+        )
+
+    if evidence_type == "milestone_evidence":
+        ensure_scope_change_funded_for_milestone(project, milestone_index, db)
+
     p_domain = project.project_domain or determine_project_domain(project.title, project.industry_type, project.description)
+
+    # 1.1. URL-Only Baseline Submission Check (e.g. Digital Renovation Baseline)
+    if file is None:
+        if asset_url and asset_url.strip():
+            url_clean = asset_url.strip()
+            uploader_id = project.seller_id or project.buyer_id or 1
+            project.before_evidence_status = "provided"
+            file_hash = hashlib.sha256(url_clean.encode("utf-8")).hexdigest()
+
+            # Check duplicate
+            existing_evidence = db.query(models.Evidence).filter(
+                models.Evidence.project_id == project_id,
+                models.Evidence.file_hash == file_hash
+            ).first()
+            if existing_evidence:
+                return {
+                    "message": "Digital baseline URL reference already registered.",
+                    "evidence_id": existing_evidence.id,
+                    "capture_method": existing_evidence.capture_method,
+                    "evidence_type": existing_evidence.evidence_type,
+                    "status": existing_evidence.status.value if hasattr(existing_evidence.status, "value") else str(existing_evidence.status),
+                    "file_hash": existing_evidence.file_hash,
+                    "file_path": existing_evidence.file_path or url_clean,
+                    "server_receipt_timestamp": existing_evidence.server_receipt_timestamp.isoformat() if existing_evidence.server_receipt_timestamp else None,
+                    "ai_confidence_score": existing_evidence.ai_confidence_score,
+                    "fraud_flags": existing_evidence.fraud_flags or [],
+                    "ai_analysis_notes": existing_evidence.ai_analysis_notes,
+                    "ai_comparison_details": existing_evidence.ai_comparison_details
+                }
+
+            new_evidence = models.Evidence(
+                project_id=project_id,
+                uploader_id=uploader_id,
+                capture_method=models.CaptureMethod.FILE_UPLOAD,
+                evidence_type=evidence_type,
+                milestone_index=milestone_index,
+                location=location,
+                asset_url=url_clean,
+                file_path=None,
+                file_hash=file_hash,
+                original_filename=f"URL: {url_clean[:60]}",
+                mime_type="text/uri-list",
+                file_size=len(url_clean.encode("utf-8")),
+                status=models.EvidenceStatus.VERIFIED,
+                ai_confidence_score=100,
+                ai_analysis_notes=(
+                    f"• Digital Baseline Reference URL Registered (100% Valid)\n"
+                    f"• Scope Compliance: Pre-redesign asset reference link ({url_clean}) registered by buyer.\n"
+                    f"• Verification: Digital reference URL locked into escrow ledger for creative fulfillment."
+                ),
+                ai_comparison_details={
+                    "is_baseline": True,
+                    "status": "verified",
+                    "confidence_score": 100,
+                    "domain": "digital",
+                    "asset_url": url_clean,
+                    "notes": "Authoritative digital baseline asset URL registered before redesign commencement."
+                },
+                fraud_flags=[]
+            )
+            db.add(new_evidence)
+            db.commit()
+            db.refresh(new_evidence)
+            db.refresh(project)
+
+            if evidence_type == "milestone_evidence":
+                milestone_title = (
+                    project.agreement.milestones[milestone_index].get("title", f"Milestone {milestone_index + 1}")
+                    if project.agreement and project.agreement.milestones and milestone_index is not None
+                    and milestone_index < len(project.agreement.milestones)
+                    else f"Milestone {milestone_index + 1}" if milestone_index is not None else "Milestone"
+                )
+                create_system_notification(
+                    db=db,
+                    user_id=project.buyer_id,
+                    title="Seller Submitted Milestone Evidence",
+                    message=f"The seller submitted evidence for '{milestone_title}' on '{project.title}'. Please review it.",
+                    type="EVIDENCE_SUBMITTED",
+                    project_id=project.id,
+                    action_url=f"/project/{project.id}/fulfillment?role=buyer",
+                    action_data={"project_id": project.id, "milestone_index": milestone_index},
+                    fallback_role="buyer"
+                )
+
+            return {
+                "message": "Baseline URL reference successfully stored and verified.",
+                "evidence_id": new_evidence.id,
+                "capture_method": new_evidence.capture_method,
+                "evidence_type": new_evidence.evidence_type,
+                "status": new_evidence.status.value if hasattr(new_evidence.status, "value") else str(new_evidence.status),
+                "file_hash": new_evidence.file_hash,
+                "file_path": new_evidence.file_path or url_clean,
+                "server_receipt_timestamp": new_evidence.server_receipt_timestamp.isoformat() if new_evidence.server_receipt_timestamp else None,
+                "ai_confidence_score": new_evidence.ai_confidence_score,
+                "fraud_flags": [],
+                "ai_analysis_notes": new_evidence.ai_analysis_notes,
+                "ai_comparison_details": new_evidence.ai_comparison_details
+            }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Either an evidence file or an asset URL must be provided."
+            )
 
     # 1. Validate Capture Method (Strict Live Camera Requirement for Physical Projects)
     if p_domain != "digital" and capture_method != models.CaptureMethod.LIVE_CAMERA.value:
@@ -3845,6 +5945,26 @@ async def upload_evidence(
             status_code=400,
             detail="File upload is strictly disabled for physical projects. Only direct live camera captures are permitted to guarantee proof authenticity."
         )
+
+    # 1.2. Strict File & Format Mapping: Reject format mismatch before deep analysis
+    target_proof = project.agreement.evidence_requirements if project.agreement else "Visual inspection proof"
+    if evidence_type == "milestone_evidence" and milestone_index is not None and project.agreement and project.agreement.milestones:
+        m_idx = int(milestone_index)
+        if m_idx < len(project.agreement.milestones):
+            target_proof = project.agreement.milestones[m_idx].get("proof_required", target_proof)
+    validate_file_format_against_proof_requirement(file.filename, target_proof)
+
+    # 1.3. Read and Hash the File & Cryptographic Double-Dip Check
+    file_content = await file.read()
+    file_hash = hashlib.sha256(file_content).hexdigest()
+
+    existing_evidence = db.query(models.Evidence).filter(
+        models.Evidence.project_id == project_id,
+        models.Evidence.file_hash == file_hash
+    ).first()
+    
+    if existing_evidence:
+        raise HTTPException(status_code=400, detail="400 Bad Request: Duplicate evidence detected")
 
     # 1.5. Sequential Milestone Enforcement
     if evidence_type == "milestone_evidence" and milestone_index is not None:
@@ -3858,19 +5978,6 @@ async def upload_evidence(
                         status_code=400,
                         detail=f"Sequential milestone restriction: Milestone {m_idx + 1} cannot receive evidence until Milestone {m_idx} is strictly marked as APPROVED by the buyer."
                     )
-
-    # 2. Read and Hash the File
-    file_content = await file.read()
-    file_hash = hashlib.sha256(file_content).hexdigest()
-
-    # 3. Duplicate Detection
-    existing_evidence = db.query(models.Evidence).filter(
-        models.Evidence.project_id == project_id,
-        models.Evidence.file_hash == file_hash
-    ).first()
-    
-    if existing_evidence:
-        raise HTTPException(status_code=409, detail="This exact file has already been submitted for this project.")
 
     # 4. Save to Disk
     safe_filename = f"{uuid.uuid4()}_{file.filename}"
@@ -3906,6 +6013,8 @@ async def upload_evidence(
                 "notes": "Authoritative digital baseline asset registered before redesign commencement."
             }
         else:
+            if location:
+                project.site_location = location
             ai_analysis_notes = (
                 f"• Baseline Before-Evidence Registered (100% Valid){loc_str}\n"
                 f"• Scope Compliance: Pre-work site condition documented by buyer via live camera.\n"
@@ -3917,7 +6026,8 @@ async def upload_evidence(
                 "status": "verified",
                 "confidence_score": 100,
                 "domain": "physical",
-                "notes": "Authoritative site baseline captured before work commencement."
+                "notes": "Authoritative site baseline captured before work commencement.",
+                "site_location": location
             }
     else:
         # Seller Milestone Evidence Capture
@@ -3938,7 +6048,19 @@ async def upload_evidence(
             models.Evidence.evidence_type == "before_evidence"
         ).order_by(models.Evidence.id.desc()).first()
 
-        ai_res = run_ai_evidence_comparison(project, target_milestone, milestone_index, file_path, before_evidence_item)
+        challenge_info = ACTIVE_CHALLENGES.get(project_id)
+        if not challenge_info and challenge_token:
+            challenge_info = {"token": challenge_token, "action": "Live physical gesture", "instruction": "Verify physical gesture in frame"}
+
+        ai_res = run_ai_evidence_comparison(
+            project,
+            target_milestone,
+            milestone_index,
+            file_path,
+            before_evidence_item,
+            challenge_info=challenge_info,
+            seller_location=location
+        )
         
         status_val = ai_res.get("status", "verified")
         flags = ai_res.get("fraud_flags", [])
@@ -3951,8 +6073,6 @@ async def upload_evidence(
             
         ai_confidence_score = ai_res.get("confidence_score", 95)
         ai_analysis_notes = ai_res.get("analysis_notes")
-        if location:
-            ai_analysis_notes = f"{ai_analysis_notes}\n• GPS Location Verified: {location}"
         ai_comparison_details = ai_res.get("comparison_details")
 
     new_evidence = models.Evidence(
@@ -4017,8 +6137,6 @@ def declare_before_exemption(project_id: int, db: Session = Depends(get_db)):
     Strictly forbidden for home renovation.
     """
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found.")
     
     if project.requires_baseline_evidence or is_home_renovation_project(project.title, project.industry_type, project.description):
         raise HTTPException(
@@ -4052,9 +6170,18 @@ def reconcile_evidence_record_if_flagged(e: models.Evidence, project: models.Pro
     if not resolved_path:
         return
 
-    milestone_proof = project.agreement.evidence_requirements if project.agreement else "Visual inspection proof"
-    spoof_res = inspect_image_for_spoofing(resolved_path, milestone_proof, project.title)
-    wm_res = inspect_digital_deliverable_for_ai_watermark(resolved_path, milestone_proof, project.title)
+    m_proof = "Visual inspection proof"
+    if project.agreement and project.agreement.milestones:
+        ms_data = project.agreement.milestones
+        if isinstance(ms_data, str):
+            try:
+                ms_data = json.loads(ms_data)
+            except Exception:
+                ms_data = []
+        if isinstance(ms_data, list) and e.milestone_index is not None and e.milestone_index < len(ms_data):
+            m_proof = ms_data[e.milestone_index].get("proof_required", m_proof)
+    spoof_res = inspect_image_for_spoofing(resolved_path, m_proof, project.title)
+    wm_res = inspect_digital_deliverable_for_ai_watermark(resolved_path, m_proof, project.title)
 
     is_spoofed = spoof_res.get("is_spoofed", False)
     has_wm = wm_res.get("has_ai_watermark", False)
@@ -4130,6 +6257,32 @@ def startup_integrity_audit():
         loop = asyncio.get_event_loop()
         if loop.is_running():
             asyncio.create_task(warranty_payout_scheduler_loop())
+
+        async def escrow_reauthorization_scheduler_loop():
+            # Initial run after startup
+            await asyncio.sleep(5)
+            while True:
+                try:
+                    await auto_reauthorize_expiring_escrow()
+                except Exception as ex:
+                    pass
+                # Check periodically (daily cadence)
+                await asyncio.sleep(43200)
+
+        if loop.is_running():
+            asyncio.create_task(escrow_reauthorization_scheduler_loop())
+
+        async def dispute_auto_escalation_scheduler_loop():
+            await asyncio.sleep(10)
+            while True:
+                try:
+                    await auto_escalate_matured_tier1_disputes(max_days=20)
+                except Exception as ex:
+                    pass
+                await asyncio.sleep(3600)
+
+        if loop.is_running():
+            asyncio.create_task(dispute_auto_escalation_scheduler_loop())
     except Exception as ex:
         pass
 
@@ -4139,8 +6292,6 @@ def get_project_evidence(project_id: int, db: Session = Depends(get_db)):
     Returns list of all submitted evidence items for a project with server authoritative timestamps, hashes, and AI verification details.
     """
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found.")
 
     items = db.query(models.Evidence).filter(models.Evidence.project_id == project_id).order_by(models.Evidence.id.desc()).all()
     for e in items:
@@ -4180,6 +6331,7 @@ async def submit_milestone_evidence(
     capture_method: str = Form("live_camera"),
     location: Optional[str] = Form(None),
     asset_url: Optional[str] = Form(None),
+    challenge_token: Optional[str] = Form(None),
     db: Session = Depends(get_db)
 ):
     """
@@ -4211,6 +6363,12 @@ async def submit_milestone_evidence(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
 
+    if project.status in [models.ProjectStatus.DISPUTED, models.ProjectStatus.FUNDS_AT_RISK]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Milestone fulfillment is disabled while project is in {project.status.value.upper()} status."
+        )
+
     agreement = project.agreement
     if not agreement or not agreement.milestones:
         raise HTTPException(status_code=400, detail="Project has no milestones defined.")
@@ -4218,6 +6376,30 @@ async def submit_milestone_evidence(
     milestones = [dict(m) for m in (agreement.milestones or [])]
     if m_idx >= len(milestones):
         raise HTTPException(status_code=400, detail=f"Invalid milestone index {m_idx}.")
+
+    target_ms = milestones[m_idx]
+    ensure_scope_change_funded_for_milestone(project, m_idx, db)
+
+    challenge_info = ACTIVE_CHALLENGES.get(p_id) if capture_method == "live_camera" else None
+    if challenge_token and not challenge_info:
+        raise HTTPException(status_code=400, detail="Physical challenge expired.")
+    if challenge_info:
+        expires_at_value = challenge_info.get("expires_at")
+        try:
+            expires_at = datetime.fromisoformat(str(expires_at_value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Physical challenge expired.")
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) > expires_at:
+            ACTIVE_CHALLENGES.pop(p_id, None)
+            raise HTTPException(status_code=400, detail="Physical challenge expired.")
+        if challenge_token != challenge_info.get("token"):
+            raise HTTPException(status_code=400, detail="Physical challenge token is invalid or expired.")
+
+    # Strict File & Format Mapping: Reject format mismatch before deep analysis
+    if file:
+        validate_file_format_against_proof_requirement(file.filename, target_ms.get("proof_required"))
 
     # Sequential milestone restriction: Milestone N requires Milestone N-1 to be APPROVED
     if m_idx > 0:
@@ -4243,6 +6425,18 @@ async def submit_milestone_evidence(
         file_content = await file.read()
         file_size = len(file_content)
         file_hash = hashlib.sha256(file_content).hexdigest()
+
+        # Phase 1: Cryptographic "Double-Dip" Prevention
+        existing_dup = db.query(models.Evidence).filter(
+            models.Evidence.project_id == p_id,
+            models.Evidence.file_hash == file_hash
+        ).first()
+        if existing_dup:
+            raise HTTPException(
+                status_code=400,
+                detail="400 Bad Request: Duplicate evidence detected"
+            )
+
         safe_filename = f"{uuid.uuid4()}_{file.filename}"
         file_path = f"/uploads/{safe_filename}"
         disk_path = os.path.join(UPLOAD_DIR, safe_filename)
@@ -4251,25 +6445,47 @@ async def submit_milestone_evidence(
         mime_type = file.content_type or "image/jpeg"
 
         # AI verification
-        target_ms = milestones[m_idx]
         before_ev = db.query(models.Evidence).filter(
             models.Evidence.project_id == p_id,
             models.Evidence.evidence_type == "before_evidence"
         ).order_by(models.Evidence.id.desc()).first()
-        ai_res = run_ai_evidence_comparison(project, target_ms, m_idx, disk_path, before_ev)
+        ai_res = run_ai_evidence_comparison(
+            project,
+            target_ms,
+            m_idx,
+            disk_path,
+            before_ev,
+            challenge_info=challenge_info,
+            seller_location=location
+        )
         flags = ai_res.get("fraud_flags", [])
         confidence = ai_res.get("confidence_score", 95)
         analysis_notes = ai_res.get("analysis_notes", "")
         comp_details = ai_res.get("comparison_details", {})
     elif asset_url:
         file_hash = hashlib.sha256(asset_url.encode("utf-8")).hexdigest()
+        existing_dup = db.query(models.Evidence).filter(
+            models.Evidence.project_id == p_id,
+            models.Evidence.file_hash == file_hash
+        ).first()
+        if existing_dup:
+            raise HTTPException(
+                status_code=400,
+                detail="400 Bad Request: Duplicate evidence detected"
+            )
         analysis_notes = f"Digital deliverable asset link registered: {asset_url}"
         comp_details = {"asset_url": asset_url, "domain": "digital", "status": "submitted"}
         confidence = 100
     else:
         raise HTTPException(status_code=400, detail="Either a proof file or asset_url must be provided.")
 
-    ev_status = models.EvidenceStatus.POSSIBLE_MISMATCH if flags else models.EvidenceStatus.VERIFIED
+    status_val = ai_res.get("status", "verified") if file else "verified"
+    if status_val == "possible_mismatch" or (flags and len(flags) > 0):
+        ev_status = models.EvidenceStatus.POSSIBLE_MISMATCH
+    elif status_val == "unclear_evidence":
+        ev_status = models.EvidenceStatus.UNCLEAR_EVIDENCE
+    else:
+        ev_status = models.EvidenceStatus.VERIFIED
 
     new_ev = models.Evidence(
         project_id=p_id,
@@ -4302,6 +6518,18 @@ async def submit_milestone_evidence(
     db.commit()
     db.refresh(new_ev)
     db.refresh(agreement)
+
+    create_system_notification(
+        db=db,
+        user_id=project.buyer_id,
+        title="Seller Submitted Milestone Evidence",
+        message=f"The seller submitted evidence for '{target_ms.get('title', f'Milestone {m_idx + 1}')}' on '{project.title}'. Please review it.",
+        type="EVIDENCE_SUBMITTED",
+        project_id=project.id,
+        action_url=f"/project/{project.id}/fulfillment?role=buyer",
+        action_data={"project_id": project.id, "milestone_index": m_idx},
+        fallback_role="buyer"
+    )
 
     return {
         "message": f"Evidence submitted for Milestone {m_idx + 1}. Awaiting Buyer Review.",
@@ -4355,6 +6583,12 @@ async def approve_milestone(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
 
+    if project.status in [models.ProjectStatus.DISPUTED, models.ProjectStatus.FUNDS_AT_RISK]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Milestone fulfillment is disabled while project is in {project.status.value.upper()} status."
+        )
+
     agreement = project.agreement
     if not agreement or not agreement.milestones:
         raise HTTPException(status_code=400, detail="Project has no milestones.")
@@ -4362,6 +6596,29 @@ async def approve_milestone(
     milestones = [dict(m) for m in (agreement.milestones or [])]
     if m_idx >= len(milestones):
         raise HTTPException(status_code=400, detail=f"Invalid milestone index {m_idx}.")
+    ensure_scope_change_funded_for_milestone(project, m_idx, db)
+
+    # Calculate milestone price allocation
+    alloc = float(milestones[m_idx].get("price_allocation", 0.0))
+    if alloc <= 0 and project.total_price:
+        alloc = float(project.total_price) / max(1, len(milestones))
+    amount_released = round(alloc, 2)
+
+    # Phase 2 Validation: Verify milestone.amount <= (project.total_price - project.captured_amount)
+    # If it exceeds the remaining authorized hold, block the API call and throw a 500 error to prevent a PayPal rejection.
+    current_captured = float(getattr(project, "captured_amount", 0.0) or 0.0)
+    total_project_price = float(project.total_price or 0.0)
+    remaining_hold = round(total_project_price - current_captured, 2)
+
+    if is_simple_digital_project(project) and m_idx == len(milestones) - 1 and remaining_hold > 0:
+        amount_released = remaining_hold
+        milestones[m_idx]["price_allocation"] = amount_released
+
+    if amount_released > remaining_hold:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Milestone amount (${amount_released:.2f}) exceeds remaining authorized escrow hold (${remaining_hold:.2f}) for Project #{p_id}. Capture blocked to prevent PayPal rejection."
+        )
 
     # 1. Mark Milestone as approved
     milestones[m_idx]["status"] = "approved"
@@ -4378,25 +6635,75 @@ async def approve_milestone(
     if m_idx + 1 < len(milestones):
         milestones[m_idx + 1]["status"] = "pending"
         next_active = m_idx + 1
+        project.status = models.ProjectStatus.ACTIVE
+        if agreement:
+            agreement.status = "ACTIVE"
     else:
         # Final milestone approved! Check for Warranty Lock-In (Retainage)
-        has_warranty = (
-            agreement and
-            getattr(agreement, "lock_in_type", "NONE") in ["FINAL_MILESTONE", "CUSTOM"] and
-            (agreement.lock_in_days or 0) > 0 and
-            (agreement.lock_in_amount or 0) > 0
-        )
+        curr_lock_type = getattr(agreement, "lock_in_type", "NONE") or "NONE"
+        if is_simple_digital_project(project):
+            agreement.lock_in_type = "NONE"
+            agreement.lock_in_amount = 0.0
+            agreement.lock_in_days = 0
+            agreement.warranty_days = 0
+            curr_lock_type = "NONE"
+        elif curr_lock_type == "NONE":
+            # Check if an earlier agreement had retainage configured
+            prev_ag = db.query(models.Agreement).filter(
+                models.Agreement.project_id == p_id,
+                models.Agreement.lock_in_type.in_(["FINAL_MILESTONE", "CUSTOM"])
+            ).order_by(models.Agreement.version.desc()).first()
+            if prev_ag:
+                agreement.lock_in_type = prev_ag.lock_in_type
+                agreement.lock_in_days = prev_ag.lock_in_days or 14
+                curr_lock_type = prev_ag.lock_in_type
+                if curr_lock_type == "CUSTOM":
+                    agreement.lock_in_amount = float(prev_ag.lock_in_amount or 0.0)
+
+        if agreement and curr_lock_type == "FINAL_MILESTONE":
+            # If the last milestone was set as retainage held, change retainage to the milestone added in the last amount
+            final_m_alloc = float(milestones[-1].get("price_allocation", 0.0))
+            if final_m_alloc <= 0 and project.total_price:
+                final_m_alloc = float(project.total_price) / max(1, len(milestones))
+            agreement.lock_in_amount = round(final_m_alloc, 2)
+            if not agreement.lock_in_days or agreement.lock_in_days <= 0:
+                agreement.lock_in_days = 14
+        # If curr_lock_type == "CUSTOM", retainage amount is untouched (kept at custom value)
+
+        curr_warranty_days = getattr(agreement, "warranty_days", None)
+        if curr_warranty_days is None or (curr_warranty_days == 0 and (agreement.lock_in_days or 0) > 0 and getattr(agreement, "lock_in_type", "NONE") != "NONE"):
+            curr_warranty_days = int(agreement.lock_in_days or 0)
+        else:
+            curr_warranty_days = int(curr_warranty_days)
+
+        if curr_warranty_days == 0 or getattr(agreement, "lock_in_type", "NONE") == "NONE" or float(agreement.lock_in_amount or 0.0) == 0:
+            has_warranty = False
+        else:
+            has_warranty = (
+                agreement and
+                getattr(agreement, "lock_in_type", "NONE") in ["FINAL_MILESTONE", "CUSTOM"] and
+                curr_warranty_days > 0 and
+                (agreement.lock_in_amount or 0) > 0
+            )
+
         if has_warranty:
-            warranty_days = int(agreement.lock_in_days)
-            release_date = datetime.utcnow() + timedelta(days=warranty_days)
+            warranty_days = curr_warranty_days
+            agreement.warranty_days = warranty_days
+            agreement.lock_in_days = warranty_days
+            release_date = datetime.now(timezone.utc) + timedelta(days=warranty_days)
             agreement.warranty_end_date = release_date
             agreement.status = "WARRANTY_PERIOD"
             agreement.warranty_payout_status = "PENDING"
             project.status = models.ProjectStatus.WARRANTY_PERIOD
         else:
-            project.status = models.ProjectStatus.COMPLETED
+            project.status = models.ProjectStatus.ACTIVE
             if agreement:
-                agreement.status = "COMPLETED"
+                agreement.status = "ACTIVE"
+                agreement.lock_in_type = "NONE"
+                agreement.lock_in_amount = 0.0
+                agreement.warranty_days = 0
+                agreement.lock_in_days = 0
+                agreement.warranty_end_date = None
 
     agreement.milestones = milestones
     flag_modified(agreement, "milestones")
@@ -4404,28 +6711,74 @@ async def approve_milestone(
     db.refresh(project)
     db.refresh(agreement)
 
-    # Calculate milestone price allocation
-    alloc = float(milestones[m_idx].get("price_allocation", 0.0))
-    if alloc <= 0 and project.total_price:
-        alloc = float(project.total_price) / max(1, len(milestones))
-    amount_released = round(alloc, 2)
-
-    # 4. Trigger PayPal Milestone Escrow Release (Auth & Capture Step 2)
+    # 4. Trigger PayPal Milestone Escrow Release (Auth & Multi-Capture Step 2)
     payment = db.query(models.Payment).filter(
         models.Payment.project_id == p_id,
-        models.Payment.status.in_([models.PaymentStatus.AUTHORIZED, models.PaymentStatus.PARTIALLY_CAPTURED])
+        models.Payment.status.in_([
+            models.PaymentStatus.AUTHORIZED,
+            models.PaymentStatus.PARTIALLY_CAPTURED,
+            models.PaymentStatus.REAUTHORIZED
+        ])
     ).first()
 
     capture_id = None
     currency_code = (payment.currency if payment else "USD") or "USD"
+    is_final = (next_active is None) or (m_idx == len(milestones) - 1)
+
+    # Defer Final Capture: If final milestone AND warranty_days > 0, do NOT capture yet!
+    # Funds remain authorized on hold until warranty timer expires or buyer triggers early release.
+    defer_final_capture = is_final and bool(agreement and (agreement.warranty_days or 0) > 0)
+    if defer_final_capture:
+        milestones[m_idx]["is_paid"] = False
+        milestones[m_idx]["retainage_held"] = True
+        milestones[m_idx]["retainage_amount"] = amount_released
+        agreement.milestones = milestones
+        flag_modified(agreement, "milestones")
+        db.commit()
+        db.refresh(project)
+        db.refresh(agreement)
+
+        seller_user_id = project.seller_id or (project.seller.id if project.seller else None)
+        if seller_user_id:
+            m_title = milestones[m_idx].get("title", f"Milestone #{m_idx+1}")
+            create_system_notification(
+                db=db,
+                user_id=seller_user_id,
+                project_id=p_id,
+                title="Final Milestone Approved (Warranty Hold Active)",
+                message=f"Final milestone '{m_title}' was approved. Escrow hold (${amount_released:.2f} {currency_code}) is secured in PayPal and will be captured upon conclusion of the {agreement.warranty_days}-day warranty period.",
+                type="WARRANTY_PENDING",
+                action_url=f"/project/{p_id}/fulfillment",
+                action_data={"project_id": p_id, "milestone_index": m_idx, "amount": amount_released}
+            )
+
+        return {
+            "message": f"Final Milestone {m_idx + 1} approved successfully. Funds (${amount_released:.2f} {currency_code}) held on authorization hold during {agreement.warranty_days}-day warranty period.",
+            "project_id": p_id,
+            "milestone_index": m_idx,
+            "status": "approved",
+            "next_active_milestone_index": None,
+            "project_status": project.status.value if hasattr(project.status, 'value') else str(project.status),
+            "milestones": milestones,
+            "escrow_released": 0.0,
+            "captured_amount": getattr(project, "captured_amount", 0.0) or 0.0,
+            "remaining_escrow_hold": max(0.0, round((project.total_price or 0.0) - (getattr(project, "captured_amount", 0.0) or 0.0), 2)),
+            "is_final_capture": False,
+            "final_capture": False,
+            "warranty_days": agreement.warranty_days,
+            "warranty_end_date": agreement.warranty_end_date.isoformat() if agreement.warranty_end_date else None,
+            "capture_id": None,
+            "invoice": None
+        }
 
     if payment and payment.authorization_id:
         try:
-            is_final = (next_active is None)
-            cap_res = await paypal_service.capture_authorization(
+            # Phase 1: final_capture = False for intermediate, True for final milestone
+            cap_res = await paypal_service.capture_payment(
                 authorization_id=payment.authorization_id,
                 amount=amount_released if amount_released > 0 else None,
                 currency=currency_code,
+                final_capture=is_final,
                 is_final_capture=is_final,
                 note_to_payer=f"ProofLens Milestone #{m_idx+1} Verified Release: {milestones[m_idx].get('title', 'Deliverable')}"
             )
@@ -4436,6 +6789,9 @@ async def approve_milestone(
             agreement.milestones = milestones
             flag_modified(agreement, "milestones")
 
+            # Phase 2: Add milestone's price to project.captured_amount
+            project.captured_amount = round(current_captured + amount_released, 2)
+
             if is_final:
                 payment.status = models.PaymentStatus.CAPTURED
                 payment.capture_id = capture_id
@@ -4445,8 +6801,12 @@ async def approve_milestone(
             db.commit()
             db.refresh(project)
             db.refresh(agreement)
-        except Exception as ex:
-            print(f"[WARN] Milestone escrow capture notice: {ex}")
+        except HTTPException:
+            raise
+        except Exception:
+            raise
+    else:
+        raise HTTPException(status_code=400, detail="No active PayPal authorization found for milestone capture.")
 
     # 5. Automatically Generate and Finalize PayPal Invoicing v2 Invoice
     invoice_data = None
@@ -4460,7 +6820,7 @@ async def approve_milestone(
         models.Evidence.project_id == p_id,
         models.Evidence.milestone_index == m_idx
     ).first()
-    ev_hash = recent_ev.cryptographic_hash if recent_ev else None
+    ev_hash = getattr(recent_ev, "file_hash", getattr(recent_ev, "cryptographic_hash", None)) if recent_ev else None
 
     try:
         invoice_data = await paypal_service.create_and_finalize_milestone_invoice(
@@ -4529,6 +6889,30 @@ async def approve_milestone(
         except Exception as inv_db_err:
             print(f"[WARN] Invoice DB save notice: {inv_db_err}")
 
+    if reconcile_project_completion(project):
+        db.commit()
+        db.refresh(project)
+
+    # Notify contractor that milestone funds have been credited to their account
+    seller_user_id = project.seller_id
+    if not seller_user_id and project.seller:
+        seller_user_id = project.seller.id
+    if not seller_user_id and getattr(project, "client_email", None):
+        pass
+    if seller_user_id:
+        m_title = milestones[m_idx].get("title", f"Milestone #{m_idx+1}")
+        credit_msg = f"${amount_released:.2f} {currency_code} has been credited to your PayPal account for approving Milestone #{m_idx+1} ('{m_title}')."
+        create_system_notification(
+            db=db,
+            user_id=seller_user_id,
+            project_id=p_id,
+            title="Milestone Funds Credited to Account",
+            message=credit_msg,
+            type="FUNDS_CREDITED",
+            action_url=f"/project/{p_id}/fulfillment",
+            action_data={"project_id": p_id, "milestone_index": m_idx, "amount": amount_released}
+        )
+
     return {
         "message": f"Milestone {m_idx + 1} approved successfully.",
         "project_id": p_id,
@@ -4538,6 +6922,10 @@ async def approve_milestone(
         "project_status": project.status.value if hasattr(project.status, 'value') else str(project.status),
         "milestones": milestones,
         "escrow_released": amount_released,
+        "captured_amount": getattr(project, "captured_amount", 0.0),
+        "remaining_escrow_hold": max(0.0, round((project.total_price or 0.0) - (getattr(project, "captured_amount", 0.0) or 0.0), 2)),
+        "is_final_capture": is_final,
+        "final_capture": is_final,
         "paypal_capture_id": capture_id,
         "invoice": milestones[m_idx].get("invoice")
     }
@@ -4818,8 +7206,6 @@ async def generate_milestone_invoice_on_demand(
     Explicitly triggers generation of a PayPal Invoicing v2 invoice for an approved milestone.
     """
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found.")
 
     agreement = project.agreement
     if not agreement or not agreement.milestones or milestone_index >= len(agreement.milestones):
@@ -4934,6 +7320,12 @@ def reject_milestone(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
 
+    if project.status in [models.ProjectStatus.DISPUTED, models.ProjectStatus.FUNDS_AT_RISK]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Milestone fulfillment is disabled while project is in {project.status.value.upper()} status."
+        )
+
     agreement = project.agreement
     if not agreement or not agreement.milestones:
         raise HTTPException(status_code=400, detail="Project has no milestones.")
@@ -4973,6 +7365,18 @@ def reject_milestone(
     db.refresh(project)
     db.refresh(agreement)
 
+    if project.seller_id:
+        create_system_notification(
+            db=db,
+            user_id=project.seller_id,
+            title="Buyer Requested Evidence Resubmission",
+            message=f"The buyer requested new evidence for '{milestones[m_idx].get('title', f'Milestone {m_idx + 1}')}' on '{project.title}': {reason_text}",
+            type="EVIDENCE_RESUBMISSION_REQUESTED",
+            project_id=project.id,
+            action_url=f"/project/{project.id}/fulfillment?role=seller",
+            action_data={"project_id": project.id, "milestone_index": m_idx, "reason": reason_text}
+        )
+
     return {
         "message": f"Milestone {m_idx + 1} evidence rejected. Contractor notified to resubmit.",
         "project_id": p_id,
@@ -4989,9 +7393,14 @@ def get_project_milestones(project_id: int, db: Session = Depends(get_db)):
     """
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found.")
+        raise HTTPException(status_code=404, detail="Project not found")
 
-    milestones = project.agreement.milestones if project.agreement and project.agreement.milestones else []
+    raw_ms = project.agreement.milestones if project.agreement and project.agreement.milestones else []
+    milestones, changed = enrich_milestone_scope_and_proof([dict(m) for m in raw_ms], project)
+    if changed and project.agreement:
+        project.agreement.milestones = milestones
+        flag_modified(project.agreement, "milestones")
+        db.commit()
     
     # Active milestone is the first milestone whose status is NOT 'approved'
     active_idx = 0
@@ -5017,7 +7426,7 @@ def get_paypal_oauth_config(redirect_uri: Optional[str] = None):
     """
     Returns PayPal OAuth parameters and official sandbox authorize URL for localhost and live use.
     """
-    configured_redirect = redirect_uri or os.getenv("PAYPAL_REDIRECT_URI", "http://localhost:4200")
+    configured_redirect = redirect_uri or os.getenv("PAYPAL_REDIRECT_URI", "https://prooflens-auth.loca.lt")
     client_id = PAYPAL_CLIENT_ID or ""
     scope = "openid profile email"
     oauth_url = f"https://www.sandbox.paypal.com/connect?flowEntry=static&client_id={client_id}&response_type=code&scope={scope}&redirect_uri={configured_redirect}"
@@ -5055,7 +7464,7 @@ async def paypal_oauth_login(request: PayPalLoginRequest, db: Session = Depends(
         if "&" in auth_code:
             auth_code = auth_code.split("&")[0]
 
-        redirect_uri = request.redirect_uri or os.getenv("PAYPAL_REDIRECT_URI", "http://localhost:4200")
+        redirect_uri = request.redirect_uri or os.getenv("PAYPAL_REDIRECT_URI", "https://prooflens-auth.loca.lt")
         token_url = "https://api-m.sandbox.paypal.com/v1/oauth2/token"
 
         async with httpx.AsyncClient() as client:
@@ -5191,12 +7600,43 @@ def register(request: RegisterRequest, db: Session = Depends(get_db)):
 
 @app.post("/api/auth/login", response_model=UserResponse)
 def login(request: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(models.User).filter(models.User.email == request.email).first()
-    if not user or user.password_hash != request.password:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
+    clean_email = request.email.strip().lower()
+    user = db.query(models.User).filter(func.lower(models.User.email) == clean_email).first()
+
+    # Seamless On-Demand Provisioning: Any email (e.g. @gmail.com or custom domain)
+    # is automatically registered on first login if it doesn't already exist.
+    if not user:
+        assigned_role = (request.role or "").lower()
+        if assigned_role not in ["buyer", "seller"]:
+            if any(k in clean_email for k in ["seller", "contractor", "vendor"]):
+                assigned_role = "seller"
+            else:
+                assigned_role = "buyer"
+
+        prefix = clean_email.split("@")[0].replace(".", " ").replace("-", " ").replace("_", " ").title()
+        user = models.User(
+            email=clean_email,
+            password_hash=request.password,
+            full_name=request.full_name or prefix or "ProofLens User",
+            role_type=assigned_role,
         )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user
+
+    # Seamless Prototype Login: If password was changed or provided, update it to prevent lockout
+    if user.password_hash != request.password and user.password_hash != "OAUTH_MANAGED":
+        if request.password:
+            user.password_hash = request.password
+            db.commit()
+            db.refresh(user)
+
+    if request.role and request.role in ["buyer", "seller"] and user.role_type != request.role:
+        user.role_type = request.role
+        db.commit()
+        db.refresh(user)
+
     return user
 
 # ==============================================================================
@@ -5232,16 +7672,23 @@ async def authorize_payment(request: AuthorizePaymentRequest, db: Session = Depe
         )
 
     # 2. Determine Authorization Escrow Amount
+    captured = float(getattr(project, "captured_amount", 0.0) or 0.0)
+    total = float(project.total_price or 0.0)
+    remaining_delta = max(0.0, round(total - captured, 2))
+
     if request.amount is not None and request.amount > 0:
         auth_amount = round(request.amount, 2)
+    elif captured > 0 and remaining_delta > 0:
+        # V1 agreement amount already authorized & paid/captured; only authorize the supplemental delta
+        auth_amount = remaining_delta
     elif request.milestone_index is not None and project.agreement and project.agreement.milestones:
         ms = project.agreement.milestones
         if 0 <= request.milestone_index < len(ms):
             auth_amount = round(float(ms[request.milestone_index].get("price_allocation", 0.0)), 2)
         else:
-            auth_amount = round(float(project.total_price or 0.0), 2)
+            auth_amount = remaining_delta if (captured > 0 and remaining_delta > 0) else round(total, 2)
     else:
-        auth_amount = round(float(project.total_price or 0.0), 2)
+        auth_amount = remaining_delta if (captured > 0 and remaining_delta > 0) else round(total, 2)
 
     # 3. Call PayPal Orders API (intent: AUTHORIZE)
     order_data = await paypal_service.create_order_for_authorize(
@@ -5256,55 +7703,33 @@ async def authorize_payment(request: AuthorizePaymentRequest, db: Session = Depe
     order_id = order_data.get("id")
 
     approval_url = next((l["href"] for l in order_data.get("links", []) if l.get("rel") in ["approve", "payer-action"]), None)
-    if not approval_url:
-        approval_url = f"https://www.sandbox.paypal.com/checkoutnow?token={order_id}"
+    if not order_id or not approval_url:
+        raise HTTPException(status_code=502, detail="PayPal API Error: Create order response is missing its order ID or approval URL.")
 
-    auth_data = await paypal_service.authorize_order(order_id)
-    auth_id = None
-    try:
-        authorizations = auth_data.get("purchase_units", [{}])[0].get("payments", {}).get("authorizations", [])
-        if authorizations:
-            auth_id = authorizations[0].get("id")
-    except Exception:
-        pass
-
-    now_dt = datetime.utcnow()
-    expires_dt = now_dt + timedelta(days=29)
-    payment_status = models.PaymentStatus.AUTHORIZED if auth_id else models.PaymentStatus.CREATED
-
-    # 4. Save Payment Record
+    # Save the order while it awaits buyer approval in PayPal.
     payment = models.Payment(
         project_id=project.id,
         milestone_index=request.milestone_index,
         paypal_order_id=order_id,
-        authorization_id=auth_id,
         amount=auth_amount,
         currency=request.currency,
-        status=payment_status,
-        authorized_at=now_dt if auth_id else None,
-        authorization_expires_at=expires_dt if auth_id else None,
-        paypal_payload=auth_data if auth_id else order_data
+        status=models.PaymentStatus.CREATED,
+        paypal_payload=order_data
     )
     db.add(payment)
-
-    # Transition project status to ACTIVE if accepted/joined and authorized
-    if auth_id and project.status in [models.ProjectStatus.ACCEPTED, models.ProjectStatus.SELLER_JOINED]:
-        project.status = models.ProjectStatus.ACTIVE
 
     db.commit()
     db.refresh(payment)
 
     return {
-        "message": f"Escrow authorization of ${auth_amount:,.2f} {request.currency} locked successfully on 29-day PayPal hold.",
+        "message": f"PayPal approval is required to authorize ${auth_amount:,.2f} {request.currency} for escrow.",
         "payment_id": payment.id,
         "project_id": project.id,
         "paypal_order_id": order_id,
-        "authorization_id": auth_id,
+        "authorization_id": None,
         "amount": auth_amount,
         "currency": request.currency,
-        "status": payment.status,
-        "authorized_at": now_dt.isoformat() + "Z",
-        "authorization_expires_at": expires_dt.isoformat() + "Z",
+        "status": payment.status.value if hasattr(payment.status, "value") else str(payment.status),
         "approval_url": approval_url,
         "before_evidence_verified": True
     }
@@ -5327,26 +7752,59 @@ async def confirm_escrow_authorization(
     if not payment:
         raise HTTPException(status_code=404, detail="Payment record not found for this order ID")
 
-    auth_data = await paypal_service.authorize_order(target_order_id)
-    auth_id = None
-    try:
-        authorizations = auth_data.get("purchase_units", [{}])[0].get("payments", {}).get("authorizations", [])
-        if authorizations:
-            auth_id = authorizations[0].get("id")
-    except Exception:
-        pass
-    if not auth_id:
-        auth_id = auth_data.get("id") or f"AUTH-{target_order_id}"
+    already_authorized = payment.status == models.PaymentStatus.AUTHORIZED and bool(payment.authorization_id)
+    if already_authorized:
+        auth_id = payment.authorization_id
+        auth_data = payment.paypal_payload or {}
+    else:
+        auth_data = await paypal_service.authorize_order(target_order_id)
+        auth_id = None
+        try:
+            authorizations = auth_data.get("purchase_units", [{}])[0].get("payments", {}).get("authorizations", [])
+            if authorizations:
+                auth_id = authorizations[0].get("id")
+        except Exception:
+            pass
+        if not auth_id:
+            raise HTTPException(status_code=502, detail="PayPal API Error: Authorization response did not contain an authorization ID.")
 
-    now_dt = datetime.utcnow()
+    now_dt = payment.authorized_at if already_authorized and payment.authorized_at else datetime.utcnow()
     payment.authorization_id = auth_id
+    payment.paypal_authorization_id = auth_id
     payment.status = models.PaymentStatus.AUTHORIZED
     payment.authorized_at = now_dt
     payment.authorization_expires_at = now_dt + timedelta(days=29)
     payment.paypal_payload = auth_data
 
-    if payment.project and payment.project.status in [models.ProjectStatus.ACCEPTED, models.ProjectStatus.SELLER_JOINED]:
-        payment.project.status = models.ProjectStatus.ACTIVE
+    if payment.project:
+        payment.project.paypal_authorization_id = auth_id
+        payment.project.authorization_expires_at = payment.authorization_expires_at
+        if payment.project.status == models.ProjectStatus.DRAFT and not payment.project.seller_id:
+            invite_token = uuid.uuid4().hex
+            payment.project.invite_token = invite_token
+            payment.project.status = models.ProjectStatus.INVITE_SENT
+            seller_invite_link = f"{FRONTEND_URL}/invite/{invite_token}"
+        elif payment.project.status == models.ProjectStatus.INVITE_SENT and payment.project.invite_token:
+            seller_invite_link = f"{FRONTEND_URL}/invite/{payment.project.invite_token}"
+        elif payment.project.status in [models.ProjectStatus.ACCEPTED, models.ProjectStatus.SELLER_JOINED, models.ProjectStatus.FUNDS_AT_RISK]:
+            payment.project.status = models.ProjectStatus.ACTIVE
+            seller_invite_link = None
+        else:
+            seller_invite_link = None
+    else:
+        seller_invite_link = None
+
+    # If this authorization was for a supplemental scope revision, transition scope change to ACCEPTED
+    sc = db.query(models.ScopeChangeRequest).filter(
+        models.ScopeChangeRequest.paypal_order_id == target_order_id
+    ).first()
+    if not sc and payment.project_id:
+        sc = db.query(models.ScopeChangeRequest).filter(
+            models.ScopeChangeRequest.project_id == payment.project_id,
+            models.ScopeChangeRequest.status == models.ScopeChangeStatus.PENDING_FUNDS.value
+        ).order_by(models.ScopeChangeRequest.id.desc()).first()
+    if sc:
+        sc.status = models.ScopeChangeStatus.ACCEPTED.value
 
     db.commit()
     db.refresh(payment)
@@ -5361,7 +7819,8 @@ async def confirm_escrow_authorization(
         "currency": payment.currency,
         "status": payment.status,
         "authorized_at": now_dt.isoformat() + "Z",
-        "authorization_expires_at": payment.authorization_expires_at.isoformat() + "Z"
+        "authorization_expires_at": payment.authorization_expires_at.isoformat() + "Z",
+        "seller_invite_link": seller_invite_link
     }
 
 @app.post("/api/payments/{order_id}/capture")
@@ -5409,10 +7868,12 @@ async def capture_payment(
                 payment.project.agreement.milestones = ms_list
                 flag_modified(payment.project.agreement, "milestones")
 
-        # Check if project should transition to COMPLETED
-        if is_final and payment.project:
-            payment.project.status = models.ProjectStatus.COMPLETED
+        if payment.project and capture_amount:
+            curr_cap = float(getattr(payment.project, "captured_amount", 0.0) or 0.0)
+            payment.project.captured_amount = round(curr_cap + float(capture_amount), 2)
 
+        if payment.project:
+            reconcile_project_completion(payment.project)
         db.commit()
         db.refresh(payment)
 
@@ -5427,83 +7888,394 @@ async def capture_payment(
         "captured_at": now_dt.isoformat() + "Z"
     }
 
-@app.post("/api/payments/{order_id}/reauthorize")
+@app.websocket("/ws/projects/{project_id}")
+async def project_escrow_websocket_endpoint(websocket: WebSocket, project_id: int):
+    """
+    WebSocket channel for real-time Escrow & Reauthorization notifications.
+    Alerts Buyer & Seller immediately if authorization expires or project is flagged FUNDS_AT_RISK.
+    """
+    await escrow_notifier.connect(project_id, websocket)
+    try:
+        # Check initial state on connect
+        with SessionLocal() as db:
+            proj = db.query(models.Project).filter(models.Project.id == project_id).first()
+            if proj:
+                st = proj.status.value if hasattr(proj.status, "value") else str(proj.status)
+                if st == "FUNDS_AT_RISK":
+                    await websocket.send_json({
+                        "event": "FUNDS_AT_RISK",
+                        "status": "FUNDS_AT_RISK",
+                        "project_id": project_id,
+                        "message": "Action Required: Escrow authorization expired. Buyer must re-approve payment to continue the project.",
+                        "authorization_expires_at": proj.authorization_expires_at.isoformat() if proj.authorization_expires_at else None
+                    })
+        while True:
+            text_data = await websocket.receive_text()
+            if text_data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        escrow_notifier.disconnect(project_id, websocket)
+    except Exception:
+        escrow_notifier.disconnect(project_id, websocket)
+
+@app.get("/api/projects/{project_id}/escrow-status")
+def get_project_escrow_status(project_id: int, db: Session = Depends(get_db)):
+    """
+    Retrieves the authoritative PayPal escrow authorization hold details,
+    expiration countdown, and whether the project is flagged FUNDS_AT_RISK.
+    """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    payment = db.query(models.Payment).filter(
+        models.Payment.project_id == project_id,
+        models.Payment.status.in_([models.PaymentStatus.AUTHORIZED, models.PaymentStatus.REAUTHORIZED, models.PaymentStatus.PARTIALLY_CAPTURED])
+    ).order_by(models.Payment.id.desc()).first()
+
+    auth_id = project.paypal_authorization_id or (payment.authorization_id if payment else None)
+    expires_at = project.authorization_expires_at or (payment.authorization_expires_at if payment else None)
+
+    st = project.status.value if hasattr(project.status, "value") else str(project.status)
+    is_funds_at_risk = (st.upper() == "FUNDS_AT_RISK")
+    days_left = None
+    if expires_at:
+        days_left = max(0, (expires_at - datetime.utcnow()).total_seconds() / 86400.0)
+
+    return {
+        "project_id": project.id,
+        "status": st,
+        "is_funds_at_risk": is_funds_at_risk,
+        "paypal_authorization_id": auth_id,
+        "authorization_expires_at": expires_at.isoformat() if expires_at else None,
+        "days_until_expiration": round(days_left, 1) if days_left is not None else None,
+        "can_reauthorize": (days_left is not None and days_left <= 5.0) or is_funds_at_risk,
+        "urgent_banner": "Action Required: Escrow authorization expired. Buyer must re-approve payment to continue the project." if is_funds_at_risk else None,
+        "captured_amount": float(getattr(project, "captured_amount", 0.0) or 0.0),
+        "total_price": float(project.total_price or 0.0),
+        "remaining_escrow_hold": max(0.0, round(float(project.total_price or 0.0) - float(getattr(project, "captured_amount", 0.0) or 0.0), 2))
+    }
+
+@app.post("/api/projects/{project_id}/re-approve-escrow")
+async def reapprove_escrow_hold(project_id: int, db: Session = Depends(get_db)):
+    """
+    Called when a project is in FUNDS_AT_RISK and Buyer initiates a fresh PayPal authorization hold to continue the project.
+    Creates a new PayPal checkout order for authorization of the remaining uncaptured balance and returns approval URL.
+    """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    payment = db.query(models.Payment).filter(models.Payment.project_id == project_id).order_by(models.Payment.id.desc()).first()
+    
+    # Phase 3: Calculate remaining uncaptured balance (total_price - captured_amount)
+    captured = float(getattr(project, "captured_amount", 0.0) or 0.0)
+    total = float(project.total_price or 0.0)
+    remaining_hold = round(total - captured, 2)
+    deposit_amount = remaining_hold if remaining_hold > 0.0 else (payment.amount if payment else total)
+
+    order_resp = await paypal_service.create_order_for_authorize(
+        amount=deposit_amount,
+        currency="USD",
+        project_id=project.id,
+        description=f"ProofLens Escrow Re-Authorization for Project #{project.id} ({project.title})",
+        return_url=f"http://localhost:4200/project/{project.id}/fulfillment?escrow_reauthorized=1",
+        cancel_url=f"http://localhost:4200/project/{project.id}/fulfillment?escrow_canceled=1"
+    )
+    order_id = order_resp.get("id")
+    approve_link = next((l["href"] for l in order_resp.get("links", []) if l.get("rel") in ["approve", "payer-action"]), None)
+    if not order_id or not approve_link:
+        raise HTTPException(status_code=502, detail="PayPal API Error: Create order response is missing its order ID or approval URL.")
+
+    new_payment = models.Payment(
+        project_id=project.id,
+        paypal_order_id=order_id,
+        amount=deposit_amount,
+        currency="USD",
+        status=models.PaymentStatus.CREATED,
+        paypal_payload=order_resp
+    )
+    db.add(new_payment)
+    db.commit()
+
+    return {
+        "status": "APPROVAL_REQUIRED",
+        "message": "Fresh PayPal checkout order created for escrow re-approval.",
+        "paypal_approval_url": approve_link,
+        "paypal_order_id": order_id,
+        "amount": deposit_amount
+    }
+
+@app.post("/api/payments/{project_id}/reauthorize")
 async def reauthorize_payment_endpoint(
-    order_id: str,
+    project_id: Union[int, str],
     request: Optional[ReauthorizePaymentRequest] = None,
+    force: bool = False,
+    simulate_failure: bool = False,
     db: Session = Depends(get_db)
 ):
     """
-    Phase 2: PayPal's authorize holds expire after 29 days.
-    Triggers a reauthorization for long-running custom projects before the hold drops.
+    Phase 3: PayPal 29-Day Escrow Hold Reauthorization.
+    Checks if current date is within 5 days of authorization_expires_at date.
+    If so (or if force=True), calls PayPal /v2/payments/authorizations/{id}/reauthorize.
+    Updates DB with new authorization ID and fresh 29-day expiration date.
+    If reauthorization fails (card expired, bank block), sets project.status = FUNDS_AT_RISK and broadcasts WebSocket alert.
     """
-    payment = db.query(models.Payment).filter(
-        (models.Payment.paypal_order_id == order_id) |
-        (models.Payment.authorization_id == order_id)
-    ).first()
+    proj = None
+    try:
+        pid = int(project_id)
+        proj = db.query(models.Project).filter(models.Project.id == pid).first()
+    except (ValueError, TypeError):
+        pass
 
-    auth_id = payment.authorization_id if payment and payment.authorization_id else order_id
-    reauth_amount = request.amount if (request and request.amount is not None) else (payment.amount if payment else None)
+    payment = None
+    if proj:
+        payment = db.query(models.Payment).filter(
+            models.Payment.project_id == proj.id,
+            models.Payment.status.in_([models.PaymentStatus.AUTHORIZED, models.PaymentStatus.REAUTHORIZED, models.PaymentStatus.PARTIALLY_CAPTURED])
+        ).order_by(models.Payment.id.desc()).first()
+    else:
+        payment = db.query(models.Payment).filter(
+            (models.Payment.paypal_order_id == str(project_id)) |
+            (models.Payment.authorization_id == str(project_id))
+        ).first()
+        if payment and payment.project_id:
+            proj = db.query(models.Project).filter(models.Project.id == payment.project_id).first()
 
-    reauth_res = await paypal_service.reauthorize_payment(
-        authorization_id=auth_id,
-        amount=reauth_amount,
-        currency=request.currency if request else "USD"
-    )
+    if not proj and not payment:
+        raise HTTPException(status_code=404, detail=f"Project or Payment #{project_id} not found.")
 
+    auth_id = (proj.paypal_authorization_id if proj else None) or (payment.authorization_id if payment else None)
+    if not auth_id:
+        raise HTTPException(status_code=400, detail="No active PayPal authorization found on this project to reauthorize.")
+
+    auth_expires_at = (proj.authorization_expires_at if proj else None) or (payment.authorization_expires_at if payment else None)
     now_dt = datetime.utcnow()
-    new_expires_dt = now_dt + timedelta(days=29)
 
-    if payment:
-        payment.status = models.PaymentStatus.REAUTHORIZED
-        payment.last_reauthorized_at = now_dt
-        payment.authorization_expires_at = new_expires_dt
+    req_force = force or (request.force if request else False)
+    req_sim_fail = simulate_failure or (request.simulate_failure if request else False)
+
+    # Phase 3: Reauthorize the remaining uncaptured balance (total_price - captured_amount), not the original full price
+    req_amount = request.amount if (request and request.amount is not None) else None
+    if req_amount is None:
+        if proj:
+            captured = float(getattr(proj, "captured_amount", 0.0) or 0.0)
+            total = float(proj.total_price or 0.0)
+            remaining_balance = round(total - captured, 2)
+            req_amount = remaining_balance if remaining_balance > 0.0 else total
+        elif payment:
+            req_amount = payment.amount
+    req_currency = request.currency if request else "USD"
+
+    # Check 5-day expiration window constraint
+    if auth_expires_at and not req_force:
+        days_remaining = (auth_expires_at - now_dt).total_seconds() / 86400.0
+        if days_remaining > 5.0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Reauthorization not required yet. Current authorization is valid for {round(days_remaining, 1)} days (expires {auth_expires_at.strftime('%Y-%m-%d %H:%M:%S UTC')}). Reauthorization is permitted within 5 days of expiration. Use force=true to override."
+            )
+
+    try:
+        reauth_res = await paypal_service.reauthorize_payment(
+            authorization_id=auth_id,
+            amount=req_amount,
+            currency=req_currency,
+            simulate_failure=req_sim_fail
+        )
+
+        new_auth_id = reauth_res.get("id") or auth_id
+        new_expires_dt = reauth_res.get("expiration_date") or (now_dt + timedelta(days=29))
+
+        if proj:
+            proj.paypal_authorization_id = new_auth_id
+            proj.authorization_expires_at = new_expires_dt
+            # Restore to ACTIVE if previously flagged FUNDS_AT_RISK
+            if proj.status == models.ProjectStatus.FUNDS_AT_RISK:
+                proj.status = models.ProjectStatus.ACTIVE
+
+        if payment:
+            payment.authorization_id = new_auth_id
+            payment.paypal_authorization_id = new_auth_id
+            payment.status = models.PaymentStatus.REAUTHORIZED
+            payment.last_reauthorized_at = now_dt
+            payment.authorization_expires_at = new_expires_dt
+
         db.commit()
-        db.refresh(payment)
+        if proj:
+            db.refresh(proj)
+        if payment:
+            db.refresh(payment)
 
-    return {
-        "message": "Authorization successfully reauthorized. 29-day escrow hold refreshed.",
-        "order_id": order_id,
-        "authorization_id": auth_id,
-        "reauthorized_id": reauth_res.get("id"),
-        "reauthorized_at": now_dt.isoformat() + "Z",
-        "new_expiration_time": new_expires_dt.isoformat() + "Z",
-        "days_extended": 29
-    }
+        # Broadcast WebSocket notification
+        if proj:
+            await escrow_notifier.broadcast_to_project(proj.id, {
+                "event": "ESCROW_REAUTHORIZED",
+                "status": proj.status.value if hasattr(proj.status, "value") else str(proj.status),
+                "message": f"Escrow authorization successfully renewed for 29 days (Auth ID: {new_auth_id}).",
+                "authorization_id": new_auth_id,
+                "authorization_expires_at": new_expires_dt.isoformat() + "Z"
+            })
+
+        return {
+            "status": "success",
+            "message": "Authorization successfully reauthorized. 29-day escrow hold refreshed.",
+            "project_id": proj.id if proj else None,
+            "previous_authorization_id": auth_id,
+            "new_authorization_id": new_auth_id,
+            "authorization_expires_at": new_expires_dt.isoformat() + "Z",
+            "project_status": (proj.status.value if hasattr(proj.status, "value") else str(proj.status)) if proj else "reauthorized",
+            "days_extended": 29,
+            "reauthorized_amount": req_amount
+        }
+
+    except Exception as ex:
+        # Reauthorization failed! Flag project status as FUNDS_AT_RISK
+        if proj:
+            proj.status = models.ProjectStatus.FUNDS_AT_RISK
+            db.commit()
+            db.refresh(proj)
+
+            await escrow_notifier.broadcast_to_project(proj.id, {
+                "event": "FUNDS_AT_RISK",
+                "status": "FUNDS_AT_RISK",
+                "project_id": proj.id,
+                "message": "Action Required: Escrow authorization expired. Buyer must re-approve payment to continue the project.",
+                "error": str(ex)
+            })
+
+        return JSONResponse(
+            status_code=402,
+            content={
+                "status": "FUNDS_AT_RISK",
+                "project_id": proj.id if proj else None,
+                "project_status": "FUNDS_AT_RISK",
+                "message": "Action Required: Escrow authorization expired. Buyer must re-approve payment to continue the project.",
+                "error": f"PayPal Reauthorization Failed: {str(ex)}"
+            }
+        )
+
+async def auto_reauthorize_expiring_escrow(db: Optional[Session] = None) -> List[Dict[str, Any]]:
+    """
+    Automated Daily Escrow Reauthorization Maintenance:
+    Queries ACTIVE and WARRANTY_PERIOD projects where authorization_expires_at is less than 3 days away.
+    Automatically reauthorizes the hold with PayPal to prevent escrow from dropping.
+    If reauthorization fails, flags project status as FUNDS_AT_RISK and alerts parties.
+    """
+    close_db = False
+    if db is None:
+        db = SessionLocal()
+        close_db = True
+
+    results = []
+    try:
+        now_dt = datetime.utcnow()
+        threshold = now_dt + timedelta(days=3)
+
+        projects = db.query(models.Project).filter(
+            models.Project.status.in_([
+                models.ProjectStatus.ACTIVE,
+                models.ProjectStatus.WARRANTY_PERIOD
+            ]),
+            models.Project.authorization_expires_at != None,
+            models.Project.authorization_expires_at <= threshold
+        ).all()
+
+        for proj in projects:
+            auth_id = proj.paypal_authorization_id
+            payment = db.query(models.Payment).filter(
+                models.Payment.project_id == proj.id,
+                models.Payment.status.in_([models.PaymentStatus.AUTHORIZED, models.PaymentStatus.REAUTHORIZED, models.PaymentStatus.PARTIALLY_CAPTURED])
+            ).order_by(models.Payment.id.desc()).first()
+
+            if not auth_id and payment:
+                auth_id = payment.authorization_id
+
+            if not auth_id:
+                continue
+
+            # Phase 3: Reauthorize the remaining uncaptured balance (total_price - captured_amount), not the original $300
+            captured = float(getattr(proj, "captured_amount", 0.0) or 0.0)
+            total = float(proj.total_price or 0.0)
+            remaining_balance = round(total - captured, 2)
+
+            if remaining_balance <= 0.0:
+                # All escrow funds already captured; no remaining hold needs reauthorization
+                continue
+
+            reauth_amt = remaining_balance
+            curr = (payment.currency if payment else "USD") or "USD"
+
+            try:
+                res = await paypal_service.reauthorize_payment(
+                    authorization_id=auth_id,
+                    amount=reauth_amt,
+                    currency=curr
+                )
+                new_auth_id = res.get("id") or auth_id
+                new_expires_dt = res.get("expiration_date") or (now_dt + timedelta(days=29))
+
+                proj.paypal_authorization_id = new_auth_id
+                proj.authorization_expires_at = new_expires_dt
+                if payment:
+                    payment.authorization_id = new_auth_id
+                    payment.paypal_authorization_id = new_auth_id
+                    payment.status = models.PaymentStatus.REAUTHORIZED
+                    payment.last_reauthorized_at = now_dt
+                    payment.authorization_expires_at = new_expires_dt
+
+                db.commit()
+                results.append({
+                    "project_id": proj.id,
+                    "status": "REAUTHORIZED",
+                    "new_authorization_id": new_auth_id,
+                    "reauthorized_amount": reauth_amt,
+                    "new_expiration_time": new_expires_dt.isoformat() + "Z"
+                })
+
+                await escrow_notifier.broadcast_to_project(proj.id, {
+                    "event": "ESCROW_REAUTHORIZED",
+                    "status": "active",
+                    "message": f"Escrow authorization renewed for 29 days (Auth ID: {new_auth_id}).",
+                    "authorization_expires_at": new_expires_dt.isoformat() + "Z"
+                })
+
+            except Exception as ex:
+                proj.status = models.ProjectStatus.FUNDS_AT_RISK
+                db.commit()
+                results.append({
+                    "project_id": proj.id,
+                    "status": "FUNDS_AT_RISK",
+                    "error": str(ex)
+                })
+
+                await escrow_notifier.broadcast_to_project(proj.id, {
+                    "event": "FUNDS_AT_RISK",
+                    "status": "FUNDS_AT_RISK",
+                    "project_id": proj.id,
+                    "message": "Action Required: Escrow authorization expired. Buyer must re-approve payment to continue the project.",
+                    "error": str(ex)
+                })
+    except Exception as e:
+        print(f"[AUTO_REAUTHORIZE_MAINTENANCE] Error: {e}")
+    finally:
+        if close_db:
+            db.close()
+
+    return results
 
 @app.post("/api/payments/reauthorize-expiring")
-async def reauthorize_expiring_payments(db: Session = Depends(get_db)):
+@app.post("/api/payments/auto-reauthorize-cron")
+async def trigger_reauthorize_expiring_payments(db: Session = Depends(get_db)):
     """
-    Background automated maintenance task:
-    Scans for authorizations nearing the 29-day expiration threshold (within 5 days) and triggers reauthorizations.
+    Automated or manual cron trigger:
+    Scans for ACTIVE projects with authorizations nearing expiration (< 3 days) and reauthorizes holds.
     """
-    threshold_date = datetime.utcnow() + timedelta(days=5)
-    expiring = db.query(models.Payment).filter(
-        models.Payment.status.in_([models.PaymentStatus.AUTHORIZED, models.PaymentStatus.REAUTHORIZED]),
-        models.Payment.authorization_expires_at <= threshold_date
-    ).all()
-
-    renewed_items = []
-    for p in expiring:
-        try:
-            res = await paypal_service.reauthorize_payment(p.authorization_id, amount=p.amount)
-            p.status = models.PaymentStatus.REAUTHORIZED
-            p.last_reauthorized_at = datetime.utcnow()
-            p.authorization_expires_at = datetime.utcnow() + timedelta(days=29)
-            renewed_items.append({
-                "payment_id": p.id,
-                "project_id": p.project_id,
-                "authorization_id": p.authorization_id,
-                "new_expiration_time": p.authorization_expires_at.isoformat() + "Z"
-            })
-        except Exception as e:
-            print(f"Auto-reauthorize failed for payment {p.id}: {e}")
-
-    db.commit()
+    renewed = await auto_reauthorize_expiring_escrow(db)
     return {
-        "message": f"Processed expiring payments scan. Renewed {len(renewed_items)} authorization holds.",
-        "renewed_count": len(renewed_items),
-        "renewed_authorizations": renewed_items
+        "status": "success",
+        "processed_count": len(renewed),
+        "results": renewed
     }
 
 @app.get("/api/payments/project/{project_id}")
@@ -5624,7 +8396,7 @@ def classify_dispute_with_ai(
     }}
     """
 
-    if gemini_key:
+    if gemini_key and ai_service.has_network_connection():
         try:
             genai.configure(api_key=gemini_key)
             for model_name in get_candidate_models():
@@ -5761,19 +8533,262 @@ def format_paypal_dispute_notes(dossier: dict) -> str:
     ]
     return "\n".join(lines)[:1990]
 
+
+def require_webhook_paypal_dispute_id(dispute: models.DisputeRecord) -> str:
+    paypal_dispute_id = dispute.dispute_id
+    if not paypal_dispute_id:
+        raise HTTPException(
+            status_code=409,
+            detail="A PayPal dispute ID from the CUSTOMER.DISPUTE.CREATED webhook is required before escalation."
+        )
+
+    legacy_local_id = re.fullmatch(
+        rf"PP-D-{dispute.project_id}-[A-F0-9]{{6}}",
+        paypal_dispute_id,
+        flags=re.IGNORECASE
+    )
+    if legacy_local_id:
+        raise HTTPException(
+            status_code=409,
+            detail="The stored dispute ID is a local placeholder. Wait for PayPal's CUSTOMER.DISPUTE.CREATED webhook before escalation."
+        )
+    return paypal_dispute_id
+
+
+@app.post("/api/disputes/{project_id}/open")
 @app.post("/api/disputes/{project_id}/file")
-async def file_dispute(
+async def open_or_file_dispute(
     project_id: int,
-    request: FileDisputeRequest,
+    request: OpenDisputeRequest,
     db: Session = Depends(get_db)
 ):
     """
-    Phase 3: File a dispute, build the case record from agreement & evidence,
-    run Gemini AI classification with strict validity flags, and push Evidence Dossier to PayPal Disputes API.
+    Phase 1 & 2: Open an internal dispute workspace (Tier 1: INTERNAL_NEGOTIATION).
+    Locks the standard milestone fulfillment timeline and initializes the dispute audit ledger.
     """
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
+
+    # Check if there is already an active dispute in progress
+    existing_dispute = db.query(models.DisputeRecord).filter(
+        models.DisputeRecord.project_id == project_id,
+        models.DisputeRecord.status.in_([
+            models.DisputeStatus.INTERNAL_NEGOTIATION,
+            models.DisputeStatus.ESCALATED_PROGRAMMATIC,
+            models.DisputeStatus.ESCALATED_HUMAN
+        ])
+    ).first()
+
+    if existing_dispute:
+        return {
+            "message": "An active dispute is already in progress for this project.",
+            "dispute_id": existing_dispute.id,
+            "paypal_dispute_id": existing_dispute.dispute_id,
+            "status": existing_dispute.status.value if hasattr(existing_dispute.status, "value") else str(existing_dispute.status),
+            "tier": 1 if existing_dispute.status == models.DisputeStatus.INTERNAL_NEGOTIATION else (2 if existing_dispute.status == models.DisputeStatus.ESCALATED_PROGRAMMATIC else 3)
+        }
+
+    # Create dispute record at Tier 1 (INTERNAL_NEGOTIATION)
+    dispute_record = models.DisputeRecord(
+        project_id=project.id,
+        dispute_id=None,
+        reason=request.reason,
+        disputed_by=request.disputed_by,
+        milestone_index=request.milestone_index,
+        status=models.DisputeStatus.INTERNAL_NEGOTIATION,
+        validity_flag=models.DisputeValidityFlag.REQUIRES_EXPERT_REVIEW
+    )
+    db.add(dispute_record)
+    db.flush()
+
+    # Lock the project timeline
+    project.status = models.ProjectStatus.DISPUTED
+
+    # Seed dispute chat history
+    initiator_label = "Buyer" if request.disputed_by.lower() == "buyer" else "Contractor"
+    initial_claim_msg = models.DisputeChatHistory(
+        dispute_id=dispute_record.id,
+        sender_role=request.disputed_by,
+        sender_name=initiator_label,
+        message=f"Dispute Opened: \"{request.reason}\"",
+        proposal_type="dispute_opened"
+    )
+    db.add(initial_claim_msg)
+
+    mediator_welcome = models.DisputeChatHistory(
+        dispute_id=dispute_record.id,
+        sender_role="ai",
+        sender_name="ProofLens AI Legal Assistant (gemini-4-argon)",
+        message=(
+            "Internal Dispute Resolution Workspace activated. Standard milestone fulfillment has been paused. "
+            "Both parties may exchange comments, request clearer evidence, or propose adjustments below. "
+            "If project terms require formal revision, click [Resolve via Scope Change]. "
+            "If mutual consensus cannot be reached, either party may escalate to PayPal."
+        ),
+        proposal_type="system_guidance"
+    )
+    db.add(mediator_welcome)
+
+    db.commit()
+    db.refresh(dispute_record)
+
+    return {
+        "message": "Dispute initiated successfully. Case entered Tier 1: Internal Negotiation.",
+        "dispute_id": dispute_record.id,
+        "paypal_dispute_id": None,
+        "status": dispute_record.status.value if hasattr(dispute_record.status, "value") else str(dispute_record.status),
+        "tier": 1,
+        "project_status": project.status.value if hasattr(project.status, "value") else str(project.status)
+    }
+
+@app.get("/api/disputes/{project_id}/active")
+def get_active_dispute(project_id: int, db: Session = Depends(get_db)):
+    """
+    GET /api/disputes/{project_id}/active
+    Returns the current active dispute, its escalation tier, and all internal chat messages.
+    """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+
+    dispute = db.query(models.DisputeRecord).filter(
+        models.DisputeRecord.project_id == project_id
+    ).order_by(models.DisputeRecord.id.desc()).first()
+
+    if not dispute:
+        return {"active": False, "dispute": None, "chat_history": []}
+
+    is_active = dispute.status in [
+        models.DisputeStatus.INTERNAL_NEGOTIATION,
+        models.DisputeStatus.ESCALATED_PROGRAMMATIC,
+        models.DisputeStatus.ESCALATED_HUMAN
+    ]
+
+    # Map tier number
+    tier_num = 1
+    if dispute.status == models.DisputeStatus.ESCALATED_PROGRAMMATIC:
+        tier_num = 2
+    elif dispute.status == models.DisputeStatus.ESCALATED_HUMAN:
+        tier_num = 3
+    elif dispute.status == models.DisputeStatus.RESOLVED:
+        tier_num = 4
+
+    # Fetch chat messages
+    messages = db.query(models.DisputeChatHistory).filter(
+        models.DisputeChatHistory.dispute_id == dispute.id
+    ).order_by(models.DisputeChatHistory.created_at.asc()).all()
+
+    chat_payload = [
+        {
+            "id": m.id,
+            "sender_role": m.sender_role,
+            "sender_name": m.sender_name,
+            "message": m.message,
+            "proposal_type": m.proposal_type,
+            "meta_payload": m.meta_payload,
+            "created_at": m.created_at.isoformat() if m.created_at else None
+        }
+        for m in messages
+    ]
+
+    return {
+        "active": is_active,
+        "tier": tier_num,
+        "dispute": {
+            "id": dispute.id,
+            "project_id": dispute.project_id,
+            "dispute_id": dispute.dispute_id,
+            "reason": dispute.reason,
+            "disputed_by": dispute.disputed_by,
+            "milestone_index": dispute.milestone_index,
+            "status": dispute.status.value if hasattr(dispute.status, "value") else str(dispute.status),
+            "resolution_type": dispute.resolution_type,
+            "resolution_notes": dispute.resolution_notes,
+            "dispute_classification": dispute.dispute_classification,
+            "validity_flag": dispute.validity_flag.value if hasattr(dispute.validity_flag, "value") else str(dispute.validity_flag),
+            "ai_confidence_score": dispute.ai_confidence_score,
+            "ai_analysis": dispute.ai_analysis,
+            "has_dossier": bool(dispute.compiled_dossier),
+            "pushed_to_paypal": dispute.pushed_to_paypal,
+            "paypal_claim_id": dispute.paypal_claim_id,
+            "escalated_to_human_at": dispute.escalated_to_human_at.isoformat() if dispute.escalated_to_human_at else None,
+            "created_at": dispute.created_at.isoformat() if dispute.created_at else None
+        },
+        "project": {
+            "id": project.id,
+            "title": project.title,
+            "status": project.status.value if hasattr(project.status, "value") else str(project.status),
+            "total_price": project.total_price
+        },
+        "chat_history": chat_payload
+    }
+
+@app.post("/api/disputes/{project_id}/messages")
+def send_dispute_message(
+    project_id: int,
+    request: DisputeMessageRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    POST /api/disputes/{project_id}/messages
+    Submits a new chat message, remedy proposal, or proof request in the internal dispute room.
+    """
+    dispute = db.query(models.DisputeRecord).filter(
+        models.DisputeRecord.project_id == project_id
+    ).order_by(models.DisputeRecord.id.desc()).first()
+
+    if not dispute:
+        raise HTTPException(status_code=404, detail="No active dispute found for this project.")
+
+    role_clean = request.sender_role.lower()
+    sender_name = request.sender_name or ("Buyer" if role_clean == "buyer" else "Contractor")
+
+    chat_msg = models.DisputeChatHistory(
+        dispute_id=dispute.id,
+        sender_role=role_clean,
+        sender_name=sender_name,
+        message=request.message,
+        proposal_type=request.proposal_type or "message",
+        meta_payload=request.meta_payload
+    )
+    db.add(chat_msg)
+    db.commit()
+    db.refresh(chat_msg)
+
+    return {
+        "message": "Message sent.",
+        "chat_item": {
+            "id": chat_msg.id,
+            "sender_role": chat_msg.sender_role,
+            "sender_name": chat_msg.sender_name,
+            "message": chat_msg.message,
+            "proposal_type": chat_msg.proposal_type,
+            "created_at": chat_msg.created_at.isoformat() if chat_msg.created_at else None
+        }
+    }
+
+@app.post("/api/disputes/{project_id}/escalate")
+async def escalate_dispute_programmatic(
+    project_id: int,
+    request: EscalateDisputeRequest = EscalateDisputeRequest(),
+    db: Session = Depends(get_db)
+):
+    """
+    Phase 3: Programmatic Dossier Escalation (Tier 2).
+    Compiles the authoritative ProofLens Evidence Dossier from the agreement, baseline evidence,
+    and milestone submission hashes, and submits it to the PayPal Disputes API (provide-evidence).
+    """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    dispute = db.query(models.DisputeRecord).filter(
+        models.DisputeRecord.project_id == project_id
+    ).order_by(models.DisputeRecord.id.desc()).first()
+
+    if not dispute:
+        raise HTTPException(status_code=404, detail="No active dispute record found for this project.")
+
+    paypal_dispute_id = require_webhook_paypal_dispute_id(dispute)
 
     agreement = project.agreement
 
@@ -5788,73 +8803,213 @@ async def file_dispute(
         models.Evidence.evidence_type == "milestone_evidence"
     ).order_by(models.Evidence.id.asc()).all()
 
-    # 2. AI Dispute Classification with Strict Validity Flags
+    # 2. Run AI dispute classification with strict validity flags
     ai_classification = classify_dispute_with_ai(
         project=project,
         agreement=agreement,
         before_items=before_items,
         milestone_items=milestone_items,
-        dispute_reason=request.reason,
-        disputed_by=request.disputed_by
+        dispute_reason=dispute.reason,
+        disputed_by=dispute.disputed_by
     )
 
-    # 3. Compile Evidence Dossier
+    # 3. Compile authoritative Evidence Dossier
     dossier = compile_evidence_dossier(
         project=project,
         agreement=agreement,
         before_items=before_items,
         milestone_items=milestone_items,
-        dispute_reason=request.reason,
-        disputed_by=request.disputed_by,
+        dispute_reason=dispute.reason,
+        disputed_by=dispute.disputed_by,
         ai_classification=ai_classification
     )
 
-    # 4. Push to PayPal Disputes API if dispute_id provided
-    paypal_res = None
-    pushed = False
-    if request.dispute_id:
-        notes_text = format_paypal_dispute_notes(dossier)
-        urls = [f"{FRONTEND_URL}{m.file_path}" for m in milestone_items if m.file_path]
-        paypal_res = await paypal_service.provide_dispute_evidence(
-            dispute_id=request.dispute_id,
-            evidence_type="PROOF_OF_FULFILLMENT",
-            notes=notes_text,
-            file_urls=urls
+    # 4. Save Dossier Record
+    try:
+        dossier_record = models.Dossier(
+            dispute_id=dispute.id,
+            project_id=project.id,
+            dossier_id=dossier["dossier_id"],
+            summary=dossier.get("executive_summary"),
+            ai_classification=dossier.get("ai_dispute_classification"),
+            validity_flag=dossier.get("ai_validity_flag"),
+            confidence_score=dossier.get("ai_confidence_score"),
+            dossier_data=dossier,
+            pushed_to_paypal=True
         )
-        pushed = True
+        db.add(dossier_record)
+    except Exception as e:
+        print(f"Dossier record creation notice: {e}")
 
-    # 5. Persist Dispute Record
-    dispute_record = models.DisputeRecord(
-        project_id=project.id,
-        dispute_id=request.dispute_id,
-        reason=request.reason,
-        disputed_by=request.disputed_by,
-        milestone_index=request.milestone_index,
-        dispute_classification=ai_classification.get("dispute_classification"),
-        validity_flag=ai_classification.get("validity_flag"),
-        ai_confidence_score=ai_classification.get("confidence_score"),
-        ai_analysis=ai_classification.get("discrepancy_analysis"),
-        compiled_dossier=dossier,
-        pushed_to_paypal=pushed,
-        paypal_submission_response=paypal_res
+    # 5. Programmatic Push to PayPal Disputes API
+    notes_text = format_paypal_dispute_notes(dossier)
+    urls = [f"{FRONTEND_URL}{m.file_path}" for m in milestone_items if m.file_path]
+
+    paypal_res = await paypal_service.provide_dispute_evidence(
+        dispute_id=paypal_dispute_id,
+        evidence_type="PROOF_OF_FULFILLMENT",
+        notes=notes_text,
+        file_urls=urls
     )
-    db.add(dispute_record)
 
-    # Update project status to DISPUTED
+    # 6. Update dispute state to Tier 2: ESCALATED_PROGRAMMATIC
+    dispute.dispute_id = paypal_dispute_id
+    dispute.status = models.DisputeStatus.ESCALATED_PROGRAMMATIC
+    dispute.dispute_classification = ai_classification.get("dispute_classification")
+    dispute.validity_flag = ai_classification.get("validity_flag")
+    dispute.ai_confidence_score = ai_classification.get("confidence_score")
+    dispute.ai_analysis = ai_classification.get("discrepancy_analysis")
+    dispute.compiled_dossier = dossier
+    dispute.pushed_to_paypal = True
+    dispute.paypal_submission_response = paypal_res
     project.status = models.ProjectStatus.DISPUTED
+
+    # Log audit entry to chat history
+    system_log = models.DisputeChatHistory(
+        dispute_id=dispute.id,
+        sender_role="system",
+        sender_name="PayPal Disputes Sync",
+        message=(
+            f"Case Escalated to Tier 2 (Programmatic Escalation). "
+            f"Authoritative Evidence Dossier ({dossier['dossier_id']}) compiled with {len(milestone_items)} verified milestone proof(s) "
+            f"and cryptographic SHA-256 hashes, submitted to PayPal Disputes API for case {paypal_dispute_id}."
+        ),
+        proposal_type="escalation_programmatic"
+    )
+    db.add(system_log)
+
     db.commit()
-    db.refresh(dispute_record)
+    db.refresh(dispute)
 
     return {
-        "message": "Dispute filed and ProofLens Evidence Dossier compiled successfully.",
-        "dispute_id": dispute_record.id,
-        "paypal_dispute_id": request.dispute_id,
+        "message": "Dispute escalated to Tier 2: Programmatic PayPal Evidence Submission.",
+        "dispute_id": dispute.id,
+        "paypal_dispute_id": paypal_dispute_id,
+        "status": dispute.status.value if hasattr(dispute.status, "value") else str(dispute.status),
+        "tier": 2,
         "ai_classification": ai_classification.get("dispute_classification"),
         "validity_flag": ai_classification.get("validity_flag"),
         "confidence_score": ai_classification.get("confidence_score"),
-        "pushed_to_paypal": pushed,
+        "pushed_to_paypal": True,
         "paypal_response": paypal_res,
         "evidence_dossier": dossier
+    }
+
+@app.post("/api/disputes/{project_id}/escalate-to-human")
+async def escalate_dispute_to_human(
+    project_id: int,
+    request: EscalateToHumanRequest = EscalateToHumanRequest(),
+    db: Session = Depends(get_db)
+):
+    """
+    Phase 4: Human Review Escalation (Tier 3).
+    Formally escalates the dispute to a PayPal Claim (/v1/customer/disputes/{dispute_id}/escalate),
+    triggering PayPal's 20-day manual review cycle with human adjudicators.
+    """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    dispute = db.query(models.DisputeRecord).filter(
+        models.DisputeRecord.project_id == project_id
+    ).order_by(models.DisputeRecord.id.desc()).first()
+
+    if not dispute:
+        raise HTTPException(status_code=404, detail="No active dispute record found for this project.")
+
+    paypal_dispute_id = require_webhook_paypal_dispute_id(dispute)
+
+    # Call PayPal Disputes Claim Escalation API
+    note = request.note or f"ProofLens dispute for '{project.title}' escalated to Claim for manual human adjudication."
+    paypal_claim_res = await paypal_service.escalate_dispute_to_claim(
+        dispute_id=paypal_dispute_id,
+        note=note
+    )
+
+    claim_id = paypal_claim_res.get("claim_id")
+
+    # Update dispute state to Tier 3: ESCALATED_HUMAN
+    dispute.status = models.DisputeStatus.ESCALATED_HUMAN
+    dispute.paypal_claim_id = claim_id
+    dispute.escalated_to_human_at = datetime.utcnow()
+    project.status = models.ProjectStatus.DISPUTED
+
+    # Log audit entry to chat history
+    system_log = models.DisputeChatHistory(
+        dispute_id=dispute.id,
+        sender_role="system",
+        sender_name="PayPal Adjudication Gateway",
+        message=(
+            f"Case Formally Escalated to Tier 3: PayPal Claim (Manual Human Review). "
+            f"PayPal Claim ID: {claim_id or 'not provided'}. PayPal has initiated the official 20-day adjudication window. "
+            f"A PayPal claims specialist will review the cryptographic evidence dossier and render a binding decision."
+        ),
+        proposal_type="escalation_human_claim"
+    )
+    db.add(system_log)
+
+    db.commit()
+    db.refresh(dispute)
+
+    return {
+        "message": "Dispute formally escalated to PayPal Claim for 20-day manual human review.",
+        "dispute_id": dispute.id,
+        "paypal_dispute_id": paypal_dispute_id,
+        "claim_id": claim_id,
+        "status": dispute.status.value if hasattr(dispute.status, "value") else str(dispute.status),
+        "tier": 3,
+        "adjudication_cycle_days": 20,
+        "escalated_at": dispute.escalated_to_human_at.isoformat(),
+        "paypal_response": paypal_claim_res
+    }
+
+@app.post("/api/disputes/{project_id}/resolve")
+def resolve_dispute(
+    project_id: int,
+    request: ResolveDisputeRequest = ResolveDisputeRequest(),
+    db: Session = Depends(get_db)
+):
+    """
+    Resolves the dispute internally (either via mutual settlement or executed scope change)
+    and unlocks the project milestone fulfillment timeline.
+    """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    dispute = db.query(models.DisputeRecord).filter(
+        models.DisputeRecord.project_id == project_id
+    ).order_by(models.DisputeRecord.id.desc()).first()
+
+    if not dispute:
+        raise HTTPException(status_code=404, detail="No dispute found for this project.")
+
+    dispute.status = models.DisputeStatus.RESOLVED
+    dispute.resolution_type = request.resolution_type
+    dispute.resolution_notes = request.notes
+
+    # Unlock the project milestone fulfillment timeline
+    project.status = models.ProjectStatus.ACTIVE
+
+    # Log audit entry
+    res_label = "Executed Scope Change" if request.resolution_type == "SCOPE_CHANGE" else "Mutual Agreement"
+    system_log = models.DisputeChatHistory(
+        dispute_id=dispute.id,
+        sender_role="system",
+        sender_name="ProofLens Resolution Protocol",
+        message=f"Dispute successfully RESOLVED via {res_label}. Project milestone fulfillment unlocked.",
+        proposal_type="dispute_resolved"
+    )
+    db.add(system_log)
+
+    db.commit()
+
+    return {
+        "message": "Dispute resolved successfully. Milestone timeline unlocked.",
+        "dispute_id": dispute.id,
+        "status": "RESOLVED",
+        "resolution_type": dispute.resolution_type,
+        "project_status": project.status.value if hasattr(project.status, "value") else str(project.status)
     }
 
 @app.get("/api/disputes/{project_id}/dossier")
@@ -5895,6 +9050,13 @@ class RefundPaymentRequest(BaseModel):
 class VoidEscrowRequest(BaseModel):
     note: Optional[str] = "Escrow authorization voided"
 
+class VoidEscrowRequestAction(BaseModel):
+    reason: Optional[str] = "Mutual agreement cancellation"
+
+class VoidEscrowResponseAction(BaseModel):
+    agree: bool
+    note: Optional[str] = None
+
 class AddTrackingRequest(BaseModel):
     capture_id: Optional[str] = None
     tracking_number: str
@@ -5916,6 +9078,118 @@ async def get_paypal_transactions_api(days_back: int = 30, page_size: int = 20):
     """
     return await paypal_service.get_paypal_transactions(days_back=days_back, page_size=page_size)
 
+@app.post("/api/escrow/{project_id}/void-request")
+def request_void_escrow(
+    project_id: int,
+    req: Optional[VoidEscrowRequestAction] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Buyer requests to cancel project and void escrow authorization.
+    Requires contractor consent before the void escrow execution button unlocks.
+    """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    reason = req.reason if req and req.reason else "Buyer requested project cancellation"
+    project.void_escrow_status = "PENDING_SELLER_CONSENT"
+    project.void_escrow_reason = reason
+    project.void_escrow_requested_at = datetime.utcnow()
+    db.commit()
+    db.refresh(project)
+
+    seller_id = project.seller_id
+    if not seller_id and project.seller:
+        seller_id = project.seller.id
+
+    if seller_id:
+        create_system_notification(
+            db=db,
+            user_id=seller_id,
+            project_id=project.id,
+            title="Action Required: Void Escrow Request",
+            message=f"The buyer requested to cancel '{project.title}' and void the PayPal escrow authorization hold (Reason: '{reason}'). Your consent is required before funds can be released.",
+            type="VOID_ESCROW_REQUEST",
+            action_url=f"/project/{project.id}/fulfillment",
+            action_data={"project_id": project.id, "reason": reason}
+        )
+
+    return {
+        "status": "pending_consent",
+        "message": "Cancellation request sent to contractor. Awaiting agreement.",
+        "project_id": project.id,
+        "void_escrow_status": project.void_escrow_status,
+        "void_escrow_reason": project.void_escrow_reason
+    }
+
+@app.post("/api/escrow/{project_id}/void-request/respond")
+def respond_void_escrow_request(
+    project_id: int,
+    req: VoidEscrowResponseAction,
+    db: Session = Depends(get_db)
+):
+    """
+    Contractor responds to the buyer's void escrow cancellation request.
+    If agreed, unlocks the Cancel & Void Escrow button for the buyer.
+    """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    buyer_id = project.buyer_id
+    if not buyer_id and project.buyer:
+        buyer_id = project.buyer.id
+
+    if req.agree:
+        project.void_escrow_status = "SELLER_AGREED"
+        project.void_escrow_responded_at = datetime.utcnow()
+        db.commit()
+        db.refresh(project)
+
+        if buyer_id:
+            create_system_notification(
+                db=db,
+                user_id=buyer_id,
+                project_id=project.id,
+                title="Contractor Agreed to Void Escrow",
+                message=f"The contractor agreed to cancel '{project.title}'. You can now finalize 'Cancel & Void Escrow'.",
+                type="VOID_ESCROW_RESPONSE",
+                action_url=f"/project/{project.id}/fulfillment",
+                action_data={"project_id": project.id, "agreed": True}
+            )
+
+        return {
+            "status": "seller_agreed",
+            "message": "You agreed to project cancellation. The buyer can now void the escrow hold.",
+            "void_escrow_status": "SELLER_AGREED"
+        }
+    else:
+        project.void_escrow_status = "DECLINED"
+        project.void_escrow_responded_at = datetime.utcnow()
+        db.commit()
+        db.refresh(project)
+
+        if buyer_id:
+            decline_note = f" (Note: {req.note})" if req.note else ""
+            create_system_notification(
+                db=db,
+                user_id=buyer_id,
+                project_id=project.id,
+                title="Void Escrow Request Declined",
+                message=f"The contractor declined the cancellation request for '{project.title}'{decline_note}. Please resolve via Scope Revision or Dispute Room.",
+                type="VOID_ESCROW_RESPONSE",
+                action_url=f"/project/{project.id}/fulfillment",
+                action_data={"project_id": project.id, "agreed": False}
+            )
+
+        return {
+            "status": "declined",
+            "message": "You declined the cancellation request.",
+            "void_escrow_status": "DECLINED"
+        }
+
+@app.post("/api/projects/{project_id}/cancel")
 @app.post("/api/escrow/{project_id}/void")
 async def void_project_escrow(
     project_id: int,
@@ -5923,35 +9197,234 @@ async def void_project_escrow(
     db: Session = Depends(get_db)
 ):
     """
-    Payments v2: Voids the authorization hold for a project, releasing funds back to the buyer.
+    Payments v2: Voids the authorization hold for a project, releasing remaining funds back to the buyer.
+    Mutual Consent Rule: If a contractor is assigned, contractor agreement (void_escrow_status == 'SELLER_AGREED')
+    is strictly required before the hold can be voided.
+    Handles partial captures:
+    - remaining = total_price - captured_amount
+    - if remaining > 0, calls void_authorization
+    - project.voided_amount = remaining
+    - if captured_amount > 0, status is PARTIALLY_COMPLETED_CANCELED, else CANCELLED
+    - Unpaid milestones are marked as 'cancelled'
     """
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Enforce mutual agreement if contractor is involved, unless contractor has ghosted (inactivity >48h or missed deadline)
+    is_ghosting, ghosting_reason = check_contractor_ghosting(project, db)
+    is_agreed = getattr(project, "void_escrow_status", "NONE") == "SELLER_AGREED"
+    unilateral_permitted = is_agreed or is_ghosting or (not project.seller_id)
+
+    if not unilateral_permitted:
+        raise HTTPException(
+            status_code=400,
+            detail="Mutual consent required: The contractor must agree to project cancellation before the escrow authorization hold can be voided, unless a contractor inactivity timeout (48h) or missed milestone deadline has elapsed."
+        )
+
+    is_ghosting_override = is_ghosting and not is_agreed and bool(project.seller_id)
+
     payment = db.query(models.Payment).filter(
         models.Payment.project_id == project_id,
-        models.Payment.status == models.PaymentStatus.AUTHORIZED
-    ).first()
+        models.Payment.status.in_([
+            models.PaymentStatus.AUTHORIZED,
+            models.PaymentStatus.PARTIALLY_CAPTURED,
+            models.PaymentStatus.REAUTHORIZED
+        ])
+    ).order_by(models.Payment.id.desc()).first()
 
     if not payment or not payment.authorization_id:
         raise HTTPException(status_code=400, detail="No active authorized escrow payment found to void")
 
-    note_text = req.note if req else "Escrow authorization cancelled"
-    void_res = await paypal_service.void_authorization(payment.authorization_id, note=note_text)
-    
-    payment.status = models.PaymentStatus.VOIDED
+    captured = float(getattr(project, "captured_amount", 0.0) or 0.0)
+    total = float(project.total_price or 0.0)
+    remaining = max(0.0, round(total - captured, 2))
+
+    default_note = (
+        f"[Contractor Non-Responsiveness Protocol]: {ghosting_reason}. Escrow hold voided unilaterally by buyer under contract terms."
+        if is_ghosting_override
+        else (project.void_escrow_reason or "Escrow authorization cancelled by mutual agreement")
+    )
+    note_text = req.note if (req and req.note) else default_note
+    void_res = {}
+
+    if remaining > 0:
+        void_res = await paypal_service.void_authorization(payment.authorization_id, note=note_text)
+        payment.status = models.PaymentStatus.VOIDED
+        project.voided_amount = remaining
+    else:
+        project.voided_amount = 0.0
+
+    if captured > 0:
+        project.status = models.ProjectStatus.PARTIALLY_COMPLETED_CANCELED
+    else:
+        project.status = models.ProjectStatus.CANCELLED
+
+    if is_ghosting_override:
+        project.void_escrow_status = "VOIDED_GHOSTING_TIMEOUT"
+    else:
+        project.void_escrow_status = "VOIDED"
+
+    if project.agreement:
+        project.agreement.status = "CANCELLED"
+        if project.agreement.milestones:
+            updated_ms = []
+            for m in project.agreement.milestones:
+                m_copy = dict(m)
+                if (m_copy.get("status") or "").lower() not in ["approved", "completed"]:
+                    m_copy["status"] = "cancelled"
+                updated_ms.append(m_copy)
+            project.agreement.milestones = updated_ms
+            flag_modified(project.agreement, "milestones")
+
     db.commit()
-    db.refresh(payment)
+    if payment:
+        db.refresh(payment)
+    db.refresh(project)
+
+    # Dispatch notifications to both parties
+    if project.seller_id:
+        seller_msg = (
+            f"The project '{project.title}' was cancelled via Contractor Non-Responsiveness Protocol ({ghosting_reason}). Paid milestone funds (${captured:.2f} USD) remain with contractor; remaining hold (${project.voided_amount:.2f} USD) was voided."
+            if is_ghosting_override
+            else f"The project '{project.title}' was cancelled by mutual agreement. Paid milestone funds (${captured:.2f} USD) remain with contractor; remaining hold (${project.voided_amount:.2f} USD) was voided."
+        )
+        create_system_notification(
+            db=db,
+            user_id=project.seller_id,
+            project_id=project.id,
+            title="Escrow Authorization Voided / Project Cancelled",
+            message=seller_msg,
+            type="VOIDED",
+            action_url=f"/project/{project.id}/fulfillment"
+        )
+    if project.buyer_id:
+        buyer_msg = (
+            f"The project '{project.title}' was cancelled via Contractor Non-Responsiveness Protocol ({ghosting_reason}). Uncaptured hold (${project.voided_amount:.2f} USD) has been released back to your PayPal balance."
+            if is_ghosting_override
+            else f"The project '{project.title}' was cancelled by mutual agreement. Uncaptured hold (${project.voided_amount:.2f} USD) has been released back to your PayPal balance."
+        )
+        create_system_notification(
+            db=db,
+            user_id=project.buyer_id,
+            project_id=project.id,
+            title="Escrow Authorization Voided / Project Cancelled",
+            message=buyer_msg,
+            type="VOIDED",
+            action_url=f"/project/{project.id}/fulfillment"
+        )
+
+    project_status_val = project.status.value if hasattr(project.status, "value") else str(project.status)
 
     return {
         "message": "Escrow authorization voided successfully.",
         "project_id": project_id,
-        "payment_id": payment.id,
-        "authorization_id": payment.authorization_id,
+        "payment_id": payment.id if payment else None,
+        "authorization_id": payment.authorization_id if payment else None,
         "status": "voided",
+        "project_status": project_status_val,
+        "captured_amount": project.captured_amount,
+        "voided_amount": project.voided_amount,
+        "total_price": project.total_price,
         "paypal_response": void_res
     }
+
+# ==============================================================================
+# In-App Notification Center Endpoints
+# ==============================================================================
+
+@app.get("/api/notifications")
+def get_user_notifications(
+    user_id: Optional[int] = None,
+    role: Optional[str] = None,
+    email: Optional[str] = None,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieves in-app notifications for the specified user or active role.
+    Computes active unread count for badge display.
+    """
+    query = db.query(models.Notification)
+
+    if email:
+        user = db.query(models.User).filter(func.lower(models.User.email) == email.lower()).first()
+        if user:
+            query = query.filter(models.Notification.user_id == user.id)
+        else:
+            return {"notifications": [], "unread_count": 0}
+    elif user_id:
+        query = query.filter(models.Notification.user_id == user_id)
+    elif role:
+        role_type = "customer" if role.lower() == "buyer" else "maker"
+        role_user_ids = [u.id for u in db.query(models.User).filter(
+            (models.User.role_type == role.lower()) | (models.User.role_type == role_type)
+        ).all()]
+        if role_user_ids:
+            query = query.filter(models.Notification.user_id.in_(role_user_ids))
+        else:
+            return {"notifications": [], "unread_count": 0}
+
+    all_items = query.order_by(models.Notification.created_at.desc()).limit(limit).all()
+    unread_count = sum(1 for n in all_items if not n.is_read)
+
+    return {
+        "notifications": [
+            {
+                "id": n.id,
+                "user_id": n.user_id,
+                "project_id": n.project_id,
+                "title": n.title,
+                "message": n.message,
+                "type": n.type,
+                "is_read": n.is_read,
+                "action_url": n.action_url,
+                "action_data": n.action_data,
+                "created_at": n.created_at.isoformat() if n.created_at else None
+            }
+            for n in all_items
+        ],
+        "unread_count": unread_count
+    }
+
+@app.post("/api/notifications/{notification_id}/read")
+def mark_notification_read(notification_id: int, db: Session = Depends(get_db)):
+    notif = db.query(models.Notification).filter(models.Notification.id == notification_id).first()
+    if not notif:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    notif.is_read = True
+    db.commit()
+    return {"status": "success", "id": notification_id, "is_read": True}
+
+@app.post("/api/notifications/mark-all-read")
+def mark_all_notifications_read(
+    user_id: Optional[int] = None,
+    role: Optional[str] = None,
+    email: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.Notification).filter(models.Notification.is_read == False)
+    if email:
+        user = db.query(models.User).filter(func.lower(models.User.email) == email.lower()).first()
+        if user:
+            query = query.filter(models.Notification.user_id == user.id)
+        else:
+            return {"status": "success", "marked_read_count": 0}
+    elif user_id:
+        query = query.filter(models.Notification.user_id == user_id)
+    elif role:
+        role_type = "customer" if role.lower() == "buyer" else "maker"
+        role_user_ids = [u.id for u in db.query(models.User).filter(
+            (models.User.role_type == role.lower()) | (models.User.role_type == role_type)
+        ).all()]
+        if role_user_ids:
+            query = query.filter(models.Notification.user_id.in_(role_user_ids))
+        else:
+            return {"status": "success", "marked_read_count": 0}
+
+    count = query.update({"is_read": True}, synchronize_session=False)
+    db.commit()
+    return {"status": "success", "marked_read_count": count}
 
 @app.post("/api/escrow/{project_id}/refund")
 async def refund_project_escrow(
@@ -6048,7 +9521,7 @@ async def process_matured_warranty_payouts(db: Optional[Session] = None) -> List
 
     results = []
     try:
-        now_dt = datetime.utcnow()
+        now_dt = datetime.now(timezone.utc)
         agreements = db.query(models.Agreement).join(models.Project).filter(
             or_(
                 models.Agreement.status == "WARRANTY_PERIOD",
@@ -6072,33 +9545,85 @@ async def process_matured_warranty_payouts(db: Optional[Session] = None) -> List
                 db.commit()
                 continue
 
-            seller_email = "seller@prooflens.com"
-            if proj.seller and proj.seller.email:
-                seller_email = proj.seller.email
-            elif proj.client_email:
-                seller_email = proj.client_email
+            payment = db.query(models.Payment).filter(
+                models.Payment.project_id == proj.id,
+                models.Payment.status.in_([
+                    models.PaymentStatus.AUTHORIZED,
+                    models.PaymentStatus.PARTIALLY_CAPTURED,
+                    models.PaymentStatus.REAUTHORIZED
+                ])
+            ).order_by(models.Payment.id.desc()).first()
 
-            batch_id = f"WARRANTY-PL-{proj.id}-{uuid.uuid4().hex[:6].upper()}"
-            payout_res = await paypal_service.create_payout(
-                sender_batch_id=batch_id,
-                recipient_email=seller_email,
+            auth_id = (payment.authorization_id if payment else None) or proj.paypal_authorization_id
+            if not auth_id:
+                raise HTTPException(status_code=400, detail="No active PayPal authorization found for warranty capture.")
+            currency_code = (payment.currency if payment else "USD") or "USD"
+            cap_res = await paypal_service.capture_payment(
+                authorization_id=auth_id,
                 amount=payout_amt,
-                currency="USD",
-                note=f"ProofLens Escrow: Warranty Retainage Release for Project #{proj.id} ({proj.title})"
+                currency=currency_code,
+                final_capture=True,
+                is_final_capture=True,
+                note_to_payer=f"ProofLens Escrow: Warranty Retainage Final Capture Release for Project #{proj.id} ({proj.title})"
             )
+            capture_id = cap_res["id"]
 
-            ag.warranty_payout_batch_id = batch_id
+            current_captured = float(getattr(proj, "captured_amount", 0.0) or 0.0)
+            proj.captured_amount = round(current_captured + payout_amt, 2)
+            if payment:
+                payment.status = models.PaymentStatus.CAPTURED
+                payment.capture_id = capture_id
+                payment.captured_at = datetime.utcnow()
+
+            ag.warranty_payout_batch_id = capture_id
             ag.warranty_payout_status = "SUCCESS"
             ag.status = "COMPLETED"
             proj.status = models.ProjectStatus.COMPLETED
+            ag.dispute_active = False
+
+            # Mark final milestone as paid
+            if ag.milestones:
+                ms_list = list(ag.milestones)
+                if ms_list:
+                    last_m = dict(ms_list[-1])
+                    last_m["is_paid"] = True
+                    last_m["paid_at"] = datetime.utcnow().isoformat() + "Z"
+                    last_m["paypal_capture_id"] = capture_id
+                    ms_list[-1] = last_m
+                    ag.milestones = ms_list
+                    flag_modified(ag, "milestones")
+
             db.commit()
+            db.refresh(ag)
+            db.refresh(proj)
+
+            if proj.seller_id:
+                create_system_notification(
+                    db=db,
+                    user_id=proj.seller_id,
+                    project_id=proj.id,
+                    title="Warranty Retainage Released",
+                    message=f"Warranty period concluded for '{proj.title}'. Final escrow funds (${payout_amt:.2f} USD) have been captured and settled to your account.",
+                    type="PAYOUT_RELEASED",
+                    action_url=f"/project/{proj.id}/fulfillment"
+                )
+            if proj.buyer_id:
+                create_system_notification(
+                    db=db,
+                    user_id=proj.buyer_id,
+                    project_id=proj.id,
+                    title="Warranty Period Concluded",
+                    message=f"Warranty period ended for '{proj.title}'. Final authorization hold (${payout_amt:.2f} USD) has settled.",
+                    type="PAYOUT_RELEASED",
+                    action_url=f"/project/{proj.id}/fulfillment"
+                )
 
             results.append({
                 "project_id": proj.id,
                 "amount": payout_amt,
-                "recipient": seller_email,
-                "batch_id": batch_id,
-                "payout_response": payout_res
+                "capture_id": capture_id,
+                "authorization_id": auth_id,
+                "capture_response": cap_res
             })
     except Exception as ex:
         print(f"[WARRANTY_PAYOUTS] Processing notice: {ex}")
@@ -6152,3 +9677,699 @@ def toggle_warranty_dispute(project_id: int, request: DisputeWarrantyRequest, db
         "message": "Warranty retainage payout frozen due to dispute." if agreement.dispute_active else "Warranty retainage dispute resolved. Payout scheduled."
     }
 
+@app.post("/api/projects/{project_id}/warranty/early-release")
+async def early_release_warranty_funds(project_id: int, db: Session = Depends(get_db)):
+    """
+    Phase 4: Early Fund Release
+    Allows the Buyer to manually release held warranty retainage funds to the Seller
+    before the 14-day auto-release window expires.
+    Dispatches PayPal Payouts API and transitions project to COMPLETED.
+    """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    agreement = project.agreement
+    if not agreement:
+        raise HTTPException(status_code=400, detail="Agreement not found")
+
+    payout_amt = float(agreement.lock_in_amount or 0.0)
+    if payout_amt <= 0:
+        agreement.warranty_payout_status = "SUCCESS"
+        agreement.status = "COMPLETED"
+        project.status = models.ProjectStatus.COMPLETED
+        db.commit()
+        return {
+            "status": "success",
+            "message": "No retainage funds held. Project marked COMPLETED.",
+            "project_id": project.id,
+            "amount": 0.0
+        }
+
+    if agreement.warranty_payout_status == "SUCCESS":
+        return {
+            "status": "success",
+            "message": "Retainage funds have already been released.",
+            "project_id": project.id,
+            "amount": payout_amt,
+            "batch_id": agreement.warranty_payout_batch_id
+        }
+
+    payment = db.query(models.Payment).filter(
+        models.Payment.project_id == project.id,
+        models.Payment.status.in_([
+            models.PaymentStatus.AUTHORIZED,
+            models.PaymentStatus.PARTIALLY_CAPTURED,
+            models.PaymentStatus.REAUTHORIZED
+        ])
+    ).order_by(models.Payment.id.desc()).first()
+
+    auth_id = (payment.authorization_id if payment else None) or project.paypal_authorization_id
+    if not auth_id:
+        raise HTTPException(status_code=400, detail="No active PayPal authorization found for warranty capture.")
+    currency_code = (payment.currency if payment else "USD") or "USD"
+    cap_res = await paypal_service.capture_payment(
+        authorization_id=auth_id,
+        amount=payout_amt,
+        currency=currency_code,
+        final_capture=True,
+        is_final_capture=True,
+        note_to_payer=f"ProofLens Escrow: Early Buyer Release of Warranty Retainage for Project #{project.id} ({project.title})"
+    )
+    capture_id = cap_res["id"]
+
+    current_captured = float(getattr(project, "captured_amount", 0.0) or 0.0)
+    project.captured_amount = round(current_captured + payout_amt, 2)
+    if payment:
+        payment.status = models.PaymentStatus.CAPTURED
+        payment.capture_id = capture_id
+        payment.captured_at = datetime.utcnow()
+
+    agreement.warranty_payout_batch_id = capture_id
+    agreement.warranty_payout_status = "SUCCESS"
+    agreement.status = "COMPLETED"
+    project.status = models.ProjectStatus.COMPLETED
+    agreement.dispute_active = False
+
+    # Mark final milestone as paid
+    if agreement.milestones:
+        ms_list = list(agreement.milestones)
+        if ms_list:
+            last_m = dict(ms_list[-1])
+            last_m["is_paid"] = True
+            last_m["paid_at"] = datetime.utcnow().isoformat() + "Z"
+            last_m["paypal_capture_id"] = capture_id
+            ms_list[-1] = last_m
+            agreement.milestones = ms_list
+            flag_modified(agreement, "milestones")
+
+    db.commit()
+    db.refresh(agreement)
+    db.refresh(project)
+
+    # Notifications to buyer and seller
+    if project.seller_id:
+        create_system_notification(
+            db=db,
+            user_id=project.seller_id,
+            project_id=project.id,
+            title="Early Warranty Release",
+            message=f"Buyer approved early release of warranty retainage for '{project.title}'. Final escrow funds (${payout_amt:.2f} USD) captured and released to your account.",
+            type="PAYOUT_RELEASED",
+            action_url=f"/project/{project.id}/fulfillment"
+        )
+    if project.buyer_id:
+        create_system_notification(
+            db=db,
+            user_id=project.buyer_id,
+            project_id=project.id,
+            title="Early Warranty Release Executed",
+            message=f"You released the final warranty escrow hold (${payout_amt:.2f} USD) early for '{project.title}'. Project completed.",
+            type="PAYOUT_RELEASED",
+            action_url=f"/project/{project.id}/fulfillment"
+        )
+
+    return {
+        "status": "success",
+        "message": f"Successfully captured and released ${payout_amt:,.2f} USD warranty retainage early to seller from original escrow authorization hold.",
+        "project_id": project.id,
+        "amount": payout_amt,
+        "capture_id": capture_id,
+        "authorization_id": auth_id,
+        "capture_response": cap_res
+    }
+
+
+# ==============================================================================
+# Architectural Gap 2: Automated 20-Day Tier 1 Expiration Scheduler
+# ==============================================================================
+
+async def auto_escalate_matured_tier1_disputes(
+    db_session: Optional[Session] = None,
+    max_days: int = 20
+) -> List[Dict[str, Any]]:
+    """
+    Tier 1 Expiration Scheduler (Gap 2):
+    Queries for all disputes in INTERNAL_NEGOTIATION status that have been open for > 20 days
+    (created_at <= now - timedelta(days=max_days)).
+    Automatically compiles the authoritative cryptographic ProofLens Dossier and pushes it
+    to the PayPal Disputes API, promoting the dispute to Tier 2 (ESCALATED_PROGRAMMATIC).
+    """
+    owns_db = False
+    if db_session is None:
+        db = SessionLocal()
+        owns_db = True
+    else:
+        db = db_session
+
+    try:
+        cutoff_date = datetime.utcnow() - timedelta(days=max_days)
+        matured_disputes = db.query(models.DisputeRecord).filter(
+            models.DisputeRecord.status == models.DisputeStatus.INTERNAL_NEGOTIATION,
+            models.DisputeRecord.created_at <= cutoff_date
+        ).all()
+
+        results = []
+        for dispute in matured_disputes:
+            project = db.query(models.Project).filter(models.Project.id == dispute.project_id).first()
+            if not project:
+                continue
+            if not dispute.dispute_id or re.fullmatch(
+                rf"PP-D-{dispute.project_id}-[A-F0-9]{{6}}",
+                dispute.dispute_id,
+                flags=re.IGNORECASE
+            ):
+                results.append({
+                    "dispute_id": dispute.id,
+                    "project_id": project.id,
+                    "status": "SKIPPED_NO_PAYPAL_DISPUTE_ID"
+                })
+                continue
+
+            agreement = project.agreement
+            before_items = db.query(models.Evidence).filter(
+                models.Evidence.project_id == project.id,
+                models.Evidence.evidence_type == "before_evidence"
+            ).order_by(models.Evidence.id.asc()).all()
+
+            milestone_items = db.query(models.Evidence).filter(
+                models.Evidence.project_id == project.id,
+                models.Evidence.evidence_type == "milestone_evidence"
+            ).order_by(models.Evidence.id.asc()).all()
+
+            ai_classification = classify_dispute_with_ai(
+                project=project,
+                agreement=agreement,
+                before_items=before_items,
+                milestone_items=milestone_items,
+                dispute_reason=dispute.reason,
+                disputed_by=dispute.disputed_by
+            )
+
+            dossier = compile_evidence_dossier(
+                project=project,
+                agreement=agreement,
+                before_items=before_items,
+                milestone_items=milestone_items,
+                dispute_reason=dispute.reason,
+                disputed_by=dispute.disputed_by,
+                ai_classification=ai_classification
+            )
+
+            # Persist dossier record
+            try:
+                dossier_record = models.Dossier(
+                    dispute_id=dispute.id,
+                    project_id=project.id,
+                    dossier_id=dossier["dossier_id"],
+                    summary=dossier.get("executive_summary"),
+                    ai_classification=dossier.get("ai_dispute_classification"),
+                    validity_flag=dossier.get("ai_validity_flag"),
+                    confidence_score=dossier.get("ai_confidence_score"),
+                    dossier_data=dossier,
+                    pushed_to_paypal=True
+                )
+                db.add(dossier_record)
+            except Exception as e:
+                print(f"[WARN] Error persisting dossier record during auto-escalation: {e}")
+
+            paypal_dispute_id = dispute.dispute_id
+            notes_text = format_paypal_dispute_notes(dossier)
+            urls = [f"{FRONTEND_URL}{m.file_path}" for m in milestone_items if m.file_path]
+
+            paypal_res = await paypal_service.provide_dispute_evidence(
+                dispute_id=paypal_dispute_id,
+                evidence_type="PROOF_OF_FULFILLMENT",
+                notes=notes_text,
+                file_urls=urls
+            )
+
+            dispute.dispute_id = paypal_dispute_id
+            dispute.status = models.DisputeStatus.ESCALATED_PROGRAMMATIC
+            dispute.dispute_classification = ai_classification.get("dispute_classification")
+            dispute.validity_flag = ai_classification.get("validity_flag")
+            dispute.ai_confidence_score = ai_classification.get("confidence_score")
+            dispute.ai_analysis = ai_classification.get("discrepancy_analysis")
+            dispute.compiled_dossier = dossier
+            dispute.pushed_to_paypal = True
+            dispute.paypal_submission_response = paypal_res
+            project.status = models.ProjectStatus.DISPUTED
+
+            # Log audit record in dispute chat history
+            system_log = models.DisputeChatHistory(
+                dispute_id=dispute.id,
+                sender_role="system",
+                sender_name="ProofLens Automated Expiration Protocol",
+                message=(
+                    f"Tier 1 (20-day internal negotiation window) elapsed without mutual settlement. "
+                    f"Automated Tier 2 Programmatic Escalation executed. Cryptographic evidence dossier "
+                    f"({dossier['dossier_id']}) compiled and submitted to PayPal Disputes API for case {paypal_dispute_id}."
+                ),
+                proposal_type="escalation_programmatic"
+            )
+            db.add(system_log)
+
+            if project.buyer_id:
+                create_system_notification(
+                    db=db,
+                    user_id=project.buyer_id,
+                    project_id=project.id,
+                    title="Dispute Auto-Escalated to PayPal (Tier 2)",
+                    message=f"The 20-day internal negotiation window for '{project.title}' concluded. Evidence dossier {dossier['dossier_id']} has been programmatically submitted to PayPal.",
+                    type="DISPUTE_ESCALATED",
+                    action_url=f"/project/{project.id}/dispute"
+                )
+            if project.seller_id:
+                create_system_notification(
+                    db=db,
+                    user_id=project.seller_id,
+                    project_id=project.id,
+                    title="Dispute Auto-Escalated to PayPal (Tier 2)",
+                    message=f"The 20-day internal negotiation window for '{project.title}' concluded. Cryptographic evidence dossier {dossier['dossier_id']} has been submitted to PayPal.",
+                    type="DISPUTE_ESCALATED",
+                    action_url=f"/project/{project.id}/dispute"
+                )
+
+            results.append({
+                "dispute_id": dispute.id,
+                "project_id": project.id,
+                "paypal_dispute_id": paypal_dispute_id,
+                "dossier_id": dossier["dossier_id"],
+                "status": "ESCALATED_PROGRAMMATIC",
+                "days_elapsed": (datetime.utcnow() - dispute.created_at).days if dispute.created_at else 20
+            })
+
+        db.commit()
+        return results
+    finally:
+        if owns_db:
+            db.close()
+
+
+@app.post("/api/disputes/process-matured")
+async def trigger_process_matured_disputes(
+    max_days: int = 20,
+    db: Session = Depends(get_db)
+):
+    """
+    Scheduler trigger endpoint to scan and auto-escalate matured Tier 1 disputes past the 20-day window.
+    """
+    escalated = await auto_escalate_matured_tier1_disputes(db_session=db, max_days=max_days)
+    return {
+        "status": "success",
+        "processed_count": len(escalated),
+        "escalated_disputes": escalated
+    }
+
+
+# ==============================================================================
+# Architectural Gap 3: Inbound PayPal Webhook Synchronizer for Claims & Disputes
+# ==============================================================================
+
+async def process_paypal_webhook_event(event_payload: Dict[str, Any], db: Session) -> Dict[str, Any]:
+    """
+    Core processor for PayPal webhook events:
+    - CUSTOMER.DISPUTE.CREATED: Links project, opens/syncs dispute, pauses timeline
+    - CUSTOMER.DISPUTE.RESOLVED: Records PayPal outcome, marks resolved, unlocks project
+    - CUSTOMER.DISPUTE.UPDATED: Detects CLAIM stage, elevates to Tier 3 human review
+    - PAYMENT.AUTHORIZATION.VOIDED: Releases hold, calculates voided_amount, updates status
+    """
+    event_type = event_payload.get("event_type", "")
+    resource = event_payload.get("resource", {})
+    resource_type = event_payload.get("resource_type", "")
+
+    paypal_dispute_id = resource.get("dispute_id") or resource.get("id")
+    custom_id = resource.get("custom_id")
+    action_taken = "none"
+
+    if event_type == "CUSTOMER.DISPUTE.CREATED":
+        if not paypal_dispute_id:
+            raise HTTPException(
+                status_code=400,
+                detail="CUSTOMER.DISPUTE.CREATED webhook is missing the PayPal dispute ID."
+            )
+        dispute_reason = resource.get("reason", "Inbound customer dispute initiated on PayPal")
+        
+        # Locate project via custom_id or disputed transaction references
+        project = None
+        if custom_id:
+            try:
+                p_id = int(str(custom_id).replace("project_", "").replace("PL-", ""))
+                project = db.query(models.Project).filter(models.Project.id == p_id).first()
+            except Exception:
+                pass
+
+        if not project and resource.get("disputed_transactions"):
+            for tx in resource["disputed_transactions"]:
+                seller_tx_id = tx.get("seller_transaction_id") or tx.get("buyer_transaction_id")
+                if seller_tx_id:
+                    pay = db.query(models.Payment).filter(
+                        (models.Payment.authorization_id == seller_tx_id) |
+                        (models.Payment.capture_id == seller_tx_id) |
+                        (models.Payment.paypal_order_id == seller_tx_id)
+                    ).first()
+                    if pay:
+                        project = db.query(models.Project).filter(models.Project.id == pay.project_id).first()
+                        break
+
+        if not project and paypal_dispute_id:
+            existing_disp = db.query(models.DisputeRecord).filter(
+                models.DisputeRecord.dispute_id == paypal_dispute_id
+            ).first()
+            if existing_disp:
+                project = db.query(models.Project).filter(models.Project.id == existing_disp.project_id).first()
+
+        if project:
+            dispute = db.query(models.DisputeRecord).filter(
+                models.DisputeRecord.project_id == project.id
+            ).order_by(models.DisputeRecord.id.desc()).first()
+
+            if not dispute or dispute.status == models.DisputeStatus.RESOLVED:
+                dispute = models.DisputeRecord(
+                    project_id=project.id,
+                    dispute_id=paypal_dispute_id,
+                    reason=dispute_reason,
+                    disputed_by="buyer",
+                    status=models.DisputeStatus.INTERNAL_NEGOTIATION
+                )
+                db.add(dispute)
+                db.flush()
+            else:
+                dispute.dispute_id = paypal_dispute_id
+
+            project.status = models.ProjectStatus.DISPUTED
+
+            system_log = models.DisputeChatHistory(
+                dispute_id=dispute.id,
+                sender_role="system",
+                sender_name="PayPal Webhook Gateway",
+                message=f"Inbound PayPal Dispute Created event received (Case #{paypal_dispute_id}). Project milestone payouts paused. Internal negotiation window active.",
+                proposal_type="inbound_webhook_dispute_created"
+            )
+            db.add(system_log)
+
+            if project.seller_id:
+                create_system_notification(
+                    db=db,
+                    user_id=project.seller_id,
+                    project_id=project.id,
+                    title="PayPal Dispute Filed",
+                    message=f"Buyer opened a dispute on PayPal for '{project.title}' (Case #{paypal_dispute_id}). Payouts paused pending resolution.",
+                    type="DISPUTE_OPENED",
+                    action_url=f"/project/{project.id}/dispute"
+                )
+            if project.buyer_id:
+                create_system_notification(
+                    db=db,
+                    user_id=project.buyer_id,
+                    project_id=project.id,
+                    title="PayPal Dispute Registered",
+                    message=f"Dispute Case #{paypal_dispute_id} synced with ProofLens. Negotiation room is active.",
+                    type="DISPUTE_OPENED",
+                    action_url=f"/project/{project.id}/dispute"
+                )
+            db.commit()
+            action_taken = "dispute_created_and_timeline_paused"
+
+    elif event_type == "CUSTOMER.DISPUTE.RESOLVED":
+        dispute_outcome = (resource.get("dispute_outcome") or {}).get("outcome_code", "RESOLVED_FAVOUR_RECORDS")
+        dispute = db.query(models.DisputeRecord).filter(
+            models.DisputeRecord.dispute_id == paypal_dispute_id
+        ).first()
+
+        if not dispute and custom_id:
+            try:
+                p_id = int(str(custom_id).replace("project_", "").replace("PL-", ""))
+                dispute = db.query(models.DisputeRecord).filter(
+                    models.DisputeRecord.project_id == p_id
+                ).order_by(models.DisputeRecord.id.desc()).first()
+            except Exception:
+                pass
+
+        if dispute:
+            dispute.status = models.DisputeStatus.RESOLVED
+            dispute.resolution_type = dispute_outcome
+            dispute.resolution_notes = f"PayPal Dispute resolved with outcome: {dispute_outcome}"
+
+            project = db.query(models.Project).filter(models.Project.id == dispute.project_id).first()
+            if project:
+                project.status = models.ProjectStatus.ACTIVE
+
+                system_log = models.DisputeChatHistory(
+                    dispute_id=dispute.id,
+                    sender_role="system",
+                    sender_name="PayPal Webhook Gateway",
+                    message=f"PayPal Dispute resolved ({dispute_outcome}). Project milestone fulfillment unlocked.",
+                    proposal_type="inbound_webhook_dispute_resolved"
+                )
+                db.add(system_log)
+
+                if project.seller_id:
+                    create_system_notification(
+                        db=db,
+                        user_id=project.seller_id,
+                        project_id=project.id,
+                        title="PayPal Dispute Resolved",
+                        message=f"Dispute for '{project.title}' resolved by PayPal ({dispute_outcome}). Milestone fulfillment resumed.",
+                        type="DISPUTE_RESOLVED",
+                        action_url=f"/project/{project.id}/fulfillment"
+                    )
+                if project.buyer_id:
+                    create_system_notification(
+                        db=db,
+                        user_id=project.buyer_id,
+                        project_id=project.id,
+                        title="PayPal Dispute Resolved",
+                        message=f"Dispute for '{project.title}' resolved by PayPal ({dispute_outcome}). Project status restored.",
+                        type="DISPUTE_RESOLVED",
+                        action_url=f"/project/{project.id}/fulfillment"
+                    )
+            db.commit()
+            action_taken = "dispute_marked_resolved_and_unlocked"
+
+    elif event_type == "CUSTOMER.DISPUTE.UPDATED":
+        stage = (resource.get("dispute_life_cycle_stage") or "").upper()
+        dispute = db.query(models.DisputeRecord).filter(
+            models.DisputeRecord.dispute_id == paypal_dispute_id
+        ).first()
+
+        if not dispute and custom_id:
+            try:
+                p_id = int(str(custom_id).replace("project_", "").replace("PL-", ""))
+                dispute = db.query(models.DisputeRecord).filter(
+                    models.DisputeRecord.project_id == p_id
+                ).order_by(models.DisputeRecord.id.desc()).first()
+            except Exception:
+                pass
+
+        if dispute and stage in ["CLAIM", "ESCALATED"]:
+            dispute.status = models.DisputeStatus.ESCALATED_HUMAN
+            dispute.paypal_claim_id = paypal_dispute_id
+            dispute.escalated_to_human_at = datetime.utcnow()
+            project = db.query(models.Project).filter(models.Project.id == dispute.project_id).first()
+            if project:
+                project.status = models.ProjectStatus.DISPUTED
+
+            system_log = models.DisputeChatHistory(
+                dispute_id=dispute.id,
+                sender_role="system",
+                sender_name="PayPal Webhook Gateway",
+                message=f"Dispute updated to official PayPal Claim (Lifecycle Stage: {stage}). 20-day manual human review underway.",
+                proposal_type="inbound_webhook_dispute_escalated_human"
+            )
+            db.add(system_log)
+            db.commit()
+            action_taken = "dispute_upgraded_to_human_claim"
+
+    elif event_type == "PAYMENT.AUTHORIZATION.VOIDED":
+        auth_id = resource.get("id")
+        payment = None
+        if auth_id:
+            payment = db.query(models.Payment).filter(
+                (models.Payment.authorization_id == auth_id) |
+                (models.Payment.paypal_authorization_id == auth_id)
+            ).first()
+
+        project = None
+        if payment:
+            payment.status = models.PaymentStatus.VOIDED
+            project = db.query(models.Project).filter(models.Project.id == payment.project_id).first()
+
+        if not project and custom_id:
+            try:
+                p_id = int(str(custom_id).replace("project_", "").replace("PL-", ""))
+                project = db.query(models.Project).filter(models.Project.id == p_id).first()
+            except Exception:
+                pass
+
+        if not project and auth_id:
+            project = db.query(models.Project).filter(
+                models.Project.paypal_authorization_id == auth_id
+            ).first()
+
+        if project:
+            captured = float(getattr(project, "captured_amount", 0.0) or 0.0)
+            total = float(project.total_price or 0.0)
+            remaining = max(0.0, round(total - captured, 2))
+            project.voided_amount = remaining
+
+            # Check if this was an intentional mutual cancellation or an unexpected authorization drop
+            is_intentional_cancel = (
+                project.void_escrow_status in ["SELLER_AGREED", "MUTUAL_AGREED", "VOIDED"] or
+                project.status in [models.ProjectStatus.CANCELLED, models.ProjectStatus.PARTIALLY_COMPLETED_CANCELED]
+            )
+
+            if captured > 0:
+                project.status = models.ProjectStatus.PARTIALLY_COMPLETED_CANCELED
+                project.void_escrow_status = "VOIDED"
+                if project.agreement:
+                    project.agreement.status = "CANCELLED"
+                    if project.agreement.milestones:
+                        updated_ms = []
+                        for m in project.agreement.milestones:
+                            m_copy = dict(m)
+                            if (m_copy.get("status") or "").lower() not in ["approved", "completed"]:
+                                m_copy["status"] = "cancelled"
+                            updated_ms.append(m_copy)
+                        project.agreement.milestones = updated_ms
+                        flag_modified(project.agreement, "milestones")
+
+                if project.seller_id:
+                    create_system_notification(
+                        db=db,
+                        user_id=project.seller_id,
+                        project_id=project.id,
+                        title="PayPal Authorization Voided",
+                        message=f"PayPal authorization {auth_id} for '{project.title}' was voided. Project marked partially completed & cancelled.",
+                        type="VOIDED",
+                        action_url=f"/project/{project.id}/fulfillment"
+                    )
+                if project.buyer_id:
+                    create_system_notification(
+                        db=db,
+                        user_id=project.buyer_id,
+                        project_id=project.id,
+                        title="PayPal Authorization Voided",
+                        message=f"PayPal authorization {auth_id} for '{project.title}' was voided. Uncaptured funds released.",
+                        type="VOIDED",
+                        action_url=f"/project/{project.id}/fulfillment"
+                    )
+                db.commit()
+                action_taken = "authorization_voided_and_project_partially_completed_cancelled"
+            elif is_intentional_cancel:
+                project.status = models.ProjectStatus.CANCELLED
+                project.void_escrow_status = "VOIDED"
+                if project.agreement:
+                    project.agreement.status = "CANCELLED"
+                    if project.agreement.milestones:
+                        updated_ms = []
+                        for m in project.agreement.milestones:
+                            m_copy = dict(m)
+                            if (m_copy.get("status") or "").lower() not in ["approved", "completed"]:
+                                m_copy["status"] = "cancelled"
+                            updated_ms.append(m_copy)
+                        project.agreement.milestones = updated_ms
+                        flag_modified(project.agreement, "milestones")
+
+                if project.seller_id:
+                    create_system_notification(
+                        db=db,
+                        user_id=project.seller_id,
+                        project_id=project.id,
+                        title="PayPal Authorization Voided",
+                        message=f"PayPal authorization {auth_id} for '{project.title}' was voided. Project marked cancelled.",
+                        type="VOIDED",
+                        action_url=f"/project/{project.id}/fulfillment"
+                    )
+                if project.buyer_id:
+                    create_system_notification(
+                        db=db,
+                        user_id=project.buyer_id,
+                        project_id=project.id,
+                        title="PayPal Authorization Voided",
+                        message=f"PayPal authorization {auth_id} for '{project.title}' was voided. Uncaptured funds released.",
+                        type="VOIDED",
+                        action_url=f"/project/{project.id}/fulfillment"
+                    )
+                db.commit()
+                action_taken = "authorization_voided_and_project_cancelled"
+            else:
+                # Organic hold drop / reauthorization failure with zero captured: Escrow funds at risk
+                project.status = models.ProjectStatus.FUNDS_AT_RISK
+                if project.seller_id:
+                    create_system_notification(
+                        db=db,
+                        user_id=project.seller_id,
+                        project_id=project.id,
+                        title="Escrow Hold Voided - Funds At Risk",
+                        message=f"PayPal authorization hold for '{project.title}' was voided or dropped organically. Milestone fulfillment halted until reauthorized.",
+                        type="FUNDS_AT_RISK",
+                        action_url=f"/project/{project.id}/fulfillment"
+                    )
+                if project.buyer_id:
+                    create_system_notification(
+                        db=db,
+                        user_id=project.buyer_id,
+                        project_id=project.id,
+                        title="Escrow Hold Expired - Funds At Risk",
+                        message=f"PayPal 29-day authorization hold for '{project.title}' has expired. Please reauthorize escrow immediately to resume project fulfillment.",
+                        type="FUNDS_AT_RISK",
+                        action_url=f"/project/{project.id}/fulfillment"
+                    )
+                db.commit()
+                await escrow_notifier.broadcast_to_project(project.id, {
+                    "event": "FUNDS_AT_RISK",
+                    "project_id": project.id,
+                    "status": "FUNDS_AT_RISK",
+                    "authorization_id": auth_id,
+                    "message": "PayPal authorization expired. Escrow funds at risk."
+                })
+                action_taken = "authorization_voided_funds_at_risk_alert"
+
+    return {
+        "status": "processed",
+        "action_taken": action_taken,
+        "event_type": event_type,
+        "dispute_id": paypal_dispute_id,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+@app.post("/api/webhooks/paypal")
+@app.post("/api/paypal/webhook")
+async def paypal_inbound_webhook(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    Inbound PayPal Webhook Synchronizer (Phase 2 & Gap 3).
+    Ingests asynchronous dispute, claim, and authorization events from PayPal:
+    - CUSTOMER.DISPUTE.CREATED: Freezes project status to DISPUTED and disables fulfillment
+    - PAYMENT.AUTHORIZATION.VOIDED: Sets project status to FUNDS_AT_RISK and alerts parties
+    - CUSTOMER.DISPUTE.RESOLVED: Restores project status upon dispute resolution
+    - CUSTOMER.DISPUTE.UPDATED: Upgrades dispute to official PayPal claim / human review
+    """
+    raw_body = await request.body()
+    try:
+        body = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    # Security: Verify webhook signature using PayPal webhook ID
+    headers = dict(request.headers)
+    is_valid = await paypal_service.verify_webhook_signature(headers, raw_body)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail="Webhook signature verification failed")
+
+    return await process_paypal_webhook_event(body, db)
+
+
+@app.post("/api/paypal/webhook/simulate")
+async def simulate_paypal_webhook(
+    event_payload: Dict[str, Any],
+    db: Session = Depends(get_db)
+):
+    """
+    Local simulation endpoint for testing webhook event transitions.
+    """
+    return await process_paypal_webhook_event(event_payload, db)

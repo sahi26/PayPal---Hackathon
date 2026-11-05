@@ -82,14 +82,8 @@
             <p class="join-desc">Join to accept these terms or request changes (schedule, milestones, or price) in the ProofLens Negotiation Room.</p>
 
             <div class="join-form">
-              <div class="form-group">
-                <label>Your Name / Business Name</label>
-                <input type="text" [(ngModel)]="sellerName" placeholder="e.g. Master Woodcraft LLC" class="input" />
-              </div>
-
-              <div class="form-group">
-                <label>Your Email Address</label>
-                <input type="email" [(ngModel)]="sellerEmail" placeholder="contractor@example.com" class="input" />
+              <div class="signed-in-seller">
+                Joining as <strong>{{ sellerName }}</strong> ({{ sellerEmail }})
               </div>
 
               <button (click)="joinProject()" [disabled]="isJoining" class="btn-join" [class.is-loading]="isJoining">

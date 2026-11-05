@@ -1,4 +1,4 @@
-﻿<div class="camera-card">
+<div class="camera-card">
       <div class="camera-card-header">
         <div class="header-tag">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
@@ -68,15 +68,38 @@
         <video #videoElement autoplay playsinline class="viewfinder-video"></video>
         <div class="viewfinder-overlay">
           <div class="overlay-grid"></div>
-          <span class="live-rec-badge">
-            <span class="rec-dot"></span> LIVE SENSOR FEED
-          </span>
-          <span class="anti-spoof-chip">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-            </svg>
-            <span>Anti-Spoofing Audit Active</span>
-          </span>
+          <div class="overlay-top-row">
+            <span class="live-rec-badge">
+              <span class="rec-dot"></span> LIVE SENSOR FEED
+            </span>
+            <span class="anti-spoof-chip">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              </svg>
+              <span>Anti-Spoofing Audit Active</span>
+            </span>
+            <span class="gps-chip" [class.is-locked]="currentLocation" [class.is-acquiring]="isLocationAcquiring">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+                <circle cx="12" cy="9" r="2.5"/>
+              </svg>
+              <span>{{ currentLocation ? ('GPS Locked: ' + currentLocation) : (isLocationAcquiring ? 'Acquiring GPS...' : 'Hardware GPS Ready') }}</span>
+            </span>
+          </div>
+
+          @if (challengeInstruction) {
+            <div class="dynamic-challenge-banner">
+              <div class="chal-badge">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+                <span>PHYSICAL CHALLENGE REQUIRED</span>
+              </div>
+              <div class="chal-instruction">
+                {{ challengeInstruction }}
+              </div>
+            </div>
+          }
         </div>
 
         <div class="viewfinder-controls">

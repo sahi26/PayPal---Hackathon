@@ -4,6 +4,7 @@ import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { API_BASE_URL } from '../api.config';
+import { requiresDigitalWarrantyHold } from '../project-warranty.utils';
 import { LiveCameraComponent } from '../live-camera/live-camera.component';
 import { RevisionRoomComponent, ScopeChangeItem } from '../revision-room/revision-room.component';
 
@@ -200,12 +201,55 @@ export class NegotiationRoomComponent implements OnInit {
     });
   }
 
+  private syncRoleWithProject(data: any) {
+    const savedUser = localStorage.getItem('prooflens_user');
+    let user: { email?: string; role_type?: string } | null = null;
+    try {
+      user = savedUser ? JSON.parse(savedUser) : null;
+    } catch {
+      user = null;
+    }
+
+    const email = user?.email?.trim().toLowerCase();
+    const buyerEmail = data?.project?.buyer_email?.trim().toLowerCase();
+    const sellerEmail = data?.project?.seller_email?.trim().toLowerCase();
+    if (email && email === sellerEmail) {
+      this.currentRole = 'seller';
+    } else if (email && email === buyerEmail) {
+      this.currentRole = 'buyer';
+    } else if (!this.route.snapshot.queryParams['role']) {
+      const role = user?.role_type?.toLowerCase();
+      if (role === 'seller' || role === 'maker') this.currentRole = 'seller';
+      else if (role === 'buyer' || role === 'customer') this.currentRole = 'buyer';
+    }
+  }
+
+  isViewOnlyMode = false;
+
   fetchProject() {
     this.http.get<any>(`${API_BASE_URL}/api/projects/${this.projectId}`)
       .subscribe({
         next: (data) => {
           this.projectData = data;
+          this.syncRoleWithProject(data);
           this.isLoading = false;
+
+          // Phase 3 Route Guard:
+          // If a user manually navigates to the Negotiation/Scope room for an ACTIVE project,
+          // instantly redirect them to the Milestone Fulfillment route to prevent state corruption.
+          const status = (data?.project?.status || '').toUpperCase();
+          const isFulfillmentActive = ['ACTIVE', 'ACCEPTED', 'WARRANTY_PERIOD', 'COMPLETED', 'DISPUTED', 'FUNDS_AT_RISK', 'IN_REVIEW'].includes(status);
+          const isExplicitViewOnly = this.route.snapshot.queryParams['view_only'] === 'true';
+
+          if (isFulfillmentActive) {
+            if (!isExplicitViewOnly) {
+              this.router.navigate(['/project', this.projectId, 'fulfillment'], { queryParams: { role: this.currentRole } });
+              return;
+            } else {
+              this.isViewOnlyMode = true;
+            }
+          }
+
           this.loadProjectEvidence();
           this.fetchProjectAlerts();
           this.fetchActiveScopeChange();
@@ -278,7 +322,20 @@ export class NegotiationRoomComponent implements OnInit {
       });
   }
 
+  canBuyerEditAgreement(): boolean {
+    if (this.currentRole !== 'buyer') return false;
+    const projStatus = (this.projectData?.project?.status || '').toLowerCase();
+    const agrStatus = (this.projectData?.agreement?.status || '').toLowerCase();
+    if (['accepted', 'active', 'completed', 'warranty_period'].includes(projStatus)) return false;
+    if (agrStatus === 'accepted' || this.projectData?.agreement?.is_accepted_by_client === 1) return false;
+    return true;
+  }
+
   sendUpdatedTermsToSeller() {
+    if (!this.canBuyerEditAgreement()) {
+      alert('Agreement terms are locked and cannot be edited.');
+      return;
+    }
     if (!this.regeneratedPreview || this.isSavingTerms) return;
     this.isSavingTerms = true;
 
@@ -286,7 +343,8 @@ export class NegotiationRoomComponent implements OnInit {
       contract_terms: this.regeneratedPreview.contract_terms,
       evidence_requirements: this.regeneratedPreview.evidence_requirements,
       buyer_message: this.buyerRevisionNote.trim(),
-      milestones: this.regeneratedPreview.milestones || this.projectData.agreement.milestones
+      milestones: this.regeneratedPreview.milestones || this.projectData.agreement.milestones,
+      role: this.currentRole
     };
 
     this.http.post<any>(`${API_BASE_URL}/api/projects/${this.projectId}/update-terms`, payload)
@@ -311,6 +369,7 @@ export class NegotiationRoomComponent implements OnInit {
           this.regeneratedPreview = null;
           this.buyerRevisionNote = '';
           this.termsUpdateSuccessBanner = true;
+          this.fetchProject();
         },
         error: (err) => {
           this.isSavingTerms = false;
@@ -334,9 +393,11 @@ export class NegotiationRoomComponent implements OnInit {
         next: (res) => {
           this.isSending = false;
           this.projectData.agreement.latest_seller_message = this.sellerProposalMessage.trim();
+          this.projectData.agreement.latest_buyer_message = null;
           this.projectData.agreement.version = res.version;
           this.projectData.project.status = res.status;
           this.sellerProposalMessage = '';
+          this.fetchProject();
           alert('Your change request has been transmitted to the buyer.');
         },
         error: (err) => {
@@ -422,10 +483,23 @@ export class NegotiationRoomComponent implements OnInit {
 
   activeAlert: any = null;
 
+  isSellerAccepted(): boolean {
+    if (!this.projectData) return false;
+    const projStatus = (this.projectData?.project?.status || '').toLowerCase();
+    const agrStatus = (this.projectData?.agreement?.status || '').toLowerCase();
+    const isAcceptedFlag = this.projectData?.agreement?.is_accepted_by_client === 1 || this.projectData?.agreement?.is_accepted_by_client === true;
+
+    // In pre-acceptance phases, the seller/contractor has NOT accepted terms yet
+    if (['draft', 'invite_sent', 'negotiating', 'seller_joined', 'rejected'].includes(projStatus)) {
+      return false;
+    }
+
+    return ['accepted', 'active', 'warranty_period', 'completed', 'disputed', 'funds_at_risk', 'in_review'].includes(projStatus) ||
+           agrStatus === 'accepted' || isAcceptedFlag;
+  }
+
   isProjectActive(): boolean {
-    if (!this.projectData?.project?.status) return false;
-    const s = this.projectData.project.status.toLowerCase();
-    return s === 'active' || s === 'accepted' || s === 'work_in_progress' || s === 'completed';
+    return this.isSellerAccepted();
   }
 
   fetchActiveScopeChange() {
@@ -487,6 +561,7 @@ export class NegotiationRoomComponent implements OnInit {
   }
 
   onMilestoneDateChanged(index: number, newDeadline: string) {
+    if (!this.canBuyerEditAgreement()) return;
     if (!this.projectData?.agreement?.milestones?.[index] || !newDeadline) return;
     this.projectData.agreement.milestones[index].deadline = newDeadline;
     const effective = this.getEffectiveProjectDeadline();
@@ -529,8 +604,9 @@ export class NegotiationRoomComponent implements OnInit {
   }
 
   setLockInType(type: 'NONE' | 'FINAL_MILESTONE' | 'CUSTOM') {
+    if (!this.canBuyerEditAgreement()) return;
     if (!this.projectData?.agreement) return;
-    if (this.projectData.project.status === 'accepted' || this.projectData.project.status === 'active') return;
+    if (this.isSimpleDigitalProject()) return;
     this.projectData.agreement.lock_in_type = type;
     const budget = this.getTotalBudget();
     if (type === 'NONE') {
@@ -553,17 +629,25 @@ export class NegotiationRoomComponent implements OnInit {
   }
 
   updateLockInDays(days: any) {
+    if (!this.canBuyerEditAgreement()) return;
     if (!this.projectData?.agreement) return;
-    if (this.projectData.project.status === 'accepted' || this.projectData.project.status === 'active') return;
+    if (this.isSimpleDigitalProject()) return;
     this.projectData.agreement.lock_in_days = Number(days) || 14;
     this.saveMilestonesToBackend();
   }
 
   updateCustomLockInAmount(amount: any) {
+    if (!this.canBuyerEditAgreement()) return;
     if (!this.projectData?.agreement) return;
-    if (this.projectData.project.status === 'accepted' || this.projectData.project.status === 'active') return;
+    if (this.isSimpleDigitalProject()) return;
     this.projectData.agreement.lock_in_amount = Number(amount) || 0;
     this.saveMilestonesToBackend();
+  }
+
+  isSimpleDigitalProject(): boolean {
+    const project = this.projectData?.project;
+    if (!project || (project.project_domain || '').toLowerCase() !== 'digital') return false;
+    return !requiresDigitalWarrantyHold(project.title, project.industry_type, project.description);
   }
 
   isMilestoneFundReleased(ms: any, index: number): boolean {
@@ -574,6 +658,7 @@ export class NegotiationRoomComponent implements OnInit {
   }
 
   onMilestonePriceChanged(index: number, newPriceInput: any) {
+    if (!this.canBuyerEditAgreement()) return;
     const msList = this.projectData?.agreement?.milestones;
     if (!msList || !msList[index]) return;
 
@@ -654,6 +739,7 @@ export class NegotiationRoomComponent implements OnInit {
   }
 
   resetMilestonesToEqualSplit() {
+    if (!this.canBuyerEditAgreement()) return;
     const msList = this.projectData?.agreement?.milestones;
     if (!msList || msList.length === 0) return;
     const totalBudget = this.getTotalBudget();
@@ -700,12 +786,14 @@ export class NegotiationRoomComponent implements OnInit {
   }
 
   saveMilestonesToBackend() {
+    if (!this.canBuyerEditAgreement()) return;
     if (!this.projectId || !this.projectData?.agreement?.milestones) return;
     this.http.post<any>(`${API_BASE_URL}/api/projects/${this.projectId}/update-milestones`, {
       milestones: this.projectData.agreement.milestones,
-      lock_in_type: this.projectData.agreement.lock_in_type || 'NONE',
-      lock_in_amount: Number(this.projectData.agreement.lock_in_amount) || 0,
-      lock_in_days: Number(this.projectData.agreement.lock_in_days) || 0
+      lock_in_type: this.isSimpleDigitalProject() ? 'NONE' : (this.projectData.agreement.lock_in_type || 'NONE'),
+      lock_in_amount: this.isSimpleDigitalProject() ? 0 : (Number(this.projectData.agreement.lock_in_amount) || 0),
+      lock_in_days: this.isSimpleDigitalProject() ? 0 : (Number(this.projectData.agreement.lock_in_days) || 0),
+      role: this.currentRole
     }).subscribe({
       next: () => {},
       error: (err) => {
@@ -719,22 +807,24 @@ export class NegotiationRoomComponent implements OnInit {
     if (existingDeadline && existingDeadline !== 'Per Schedule' && existingDeadline !== 'None') {
       return existingDeadline;
     }
-    if (this.projectData?.project?.deadline) {
-      try {
-        const target = new Date(this.projectData.project.deadline);
-        const now = new Date();
-        const diffMs = target.getTime() - now.getTime();
-        const totalDays = Math.max(3, Math.round(diffMs / (1000 * 60 * 60 * 24)));
-        const count = Math.max(1, this.projectData?.agreement?.milestones?.length || 3);
-        const offset = Math.min(totalDays, Math.round((totalDays / count) * (index + 1)));
-        const d = new Date();
-        d.setDate(d.getDate() + offset);
-        return d.toISOString().split('T')[0];
-      } catch (e) {}
-    }
-    const d = new Date();
-    d.setDate(d.getDate() + (index + 1) * 4);
-    return d.toISOString().split('T')[0];
+    const parseLocalDate = (value: string): Date => {
+      const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      return match
+        ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+        : new Date(value);
+    };
+    const project = this.projectData?.project;
+    const created = project?.created_at ? parseLocalDate(project.created_at) : new Date();
+    const start = new Date(created.getFullYear(), created.getMonth(), created.getDate() + 1);
+    const target = project?.deadline ? parseLocalDate(project.deadline) : null;
+    const milestoneCount = Math.max(1, this.projectData?.agreement?.milestones?.length || 1);
+    const totalDays = target && !isNaN(target.getTime())
+      ? Math.max(1, Math.round((target.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1)
+      : (index + 1) * 4;
+    const count = Math.max(1, Math.min(milestoneCount, totalDays));
+    const offset = Math.min(totalDays - 1, Math.ceil((totalDays / count) * (index + 1)) - 1);
+    start.setDate(start.getDate() + offset);
+    return `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
   }
 
   fetchProjectAlerts() {
@@ -821,6 +911,7 @@ export class NegotiationRoomComponent implements OnInit {
           this.projectData.agreement.rejection_reason = trimmed;
           this.projectData.agreement.latest_seller_message = `AGREEMENT REJECTED: ${trimmed}`;
         }
+        this.fetchProject();
         alert('Agreement terms rejected. Your detailed feedback was sent to the buyer.');
       },
       error: (err) => {

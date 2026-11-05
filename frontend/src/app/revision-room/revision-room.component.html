@@ -31,7 +31,7 @@
             </div>
           } @else {
             <!-- If no active scope change: Request Form -->
-            @if (!activeScopeChange) {
+            @if (!activeScopeChange && currentRole === 'buyer') {
               <div class="init-request-card">
                 <div class="init-intro">
                   <div class="icon-wrap-blue">
@@ -43,9 +43,8 @@
                   <div class="intro-text">
                     <h3>Request Scope Revision & Supplementary Milestones</h3>
                     <p>
-                      Either party can propose additions or modifications to the active agreement.
-                      Our Legal AI (gemini-4-argon) will automatically draft a legally binding Agreement Addendum
-                      and establish supplementary milestone checkpoints.
+                      The buyer can request additions or modifications to the active agreement.
+                      Our Legal AI drafts the Agreement Addendum and supplementary milestones for the seller to review, negotiate, or accept.
                     </p>
                   </div>
                 </div>
@@ -112,6 +111,10 @@
                     }
                   </button>
                 </div>
+              </div>
+            } @else if (!activeScopeChange) {
+              <div class="loading-panel">
+                <span>No active scope change is awaiting your review.</span>
               </div>
             } @else {
               <!-- Active Scope Change View -->
@@ -211,7 +214,7 @@
                         must be authorized in PayPal Escrow before work begins.
                       </p>
                       <div class="auth-btn-row">
-                        @if (activeScopeChange.paypal_approval_url) {
+                        @if (currentRole === 'buyer' && activeScopeChange.paypal_approval_url) {
                           <a
                             [href]="activeScopeChange.paypal_approval_url"
                             target="_blank"
@@ -223,18 +226,22 @@
                             <span>Authorize Extra Funds via PayPal</span>
                           </a>
                         }
-                        <button
-                          (click)="authorizeFunds()"
-                          [disabled]="isAuthorizing"
-                          class="btn-confirm-funds"
-                        >
-                          @if (isAuthorizing) {
-                            <span class="mini-spinner"></span>
-                            <span>Verifying PayPal Authorization...</span>
-                          } @else {
-                            <span>I Have Authorized PayPal Deposit</span>
-                          }
-                        </button>
+                        @if (currentRole === 'buyer') {
+                          <button
+                            (click)="authorizeFunds()"
+                            [disabled]="isAuthorizing"
+                            class="btn-confirm-funds"
+                          >
+                            @if (isAuthorizing) {
+                              <span class="mini-spinner"></span>
+                              <span>Verifying PayPal Authorization...</span>
+                            } @else {
+                              <span>I Have Authorized PayPal Deposit</span>
+                            }
+                          </button>
+                        } @else {
+                          <p class="seller-waiting-message">Waiting for the buyer to authorize the additional escrow through PayPal.</p>
+                        }
                       </div>
                     </div>
                   </div>
@@ -337,11 +344,11 @@
                 </div>
 
                 <!-- Acceptance Actions Bar -->
-                @if (activeScopeChange.status === 'NEGOTIATING') {
+                @if (activeScopeChange.status === 'NEGOTIATING' && currentRole === 'seller') {
                   <div class="acceptance-actions-bar">
                     <div class="action-info">
-                      <strong>Accepting this Scope Revision</strong> will supersede the current Agreement, increment the project to Version N+1,
-                      append the supplementary milestone(s), and automatically shift all uncompleted milestone deadlines by +{{ activeScopeChange.proposed_extra_days }} days.
+                      Accepting this revision supersedes the current Agreement and requests the buyer's additional escrow authorization.
+                      The added milestones become available after escrow is authorized.
                     </div>
                     <button
                       (click)="acceptScopeChange()"
@@ -355,7 +362,7 @@
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                           <polyline points="20 6 9 17 4 12"/>
                         </svg>
-                        <span>Accept Scope Revision & Append Milestones</span>
+                        <span>Accept Revision & Request Buyer Escrow</span>
                       }
                     </button>
                   </div>

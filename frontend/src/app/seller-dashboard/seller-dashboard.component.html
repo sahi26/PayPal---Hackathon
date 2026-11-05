@@ -205,7 +205,9 @@
         <div>
           <span class="status-badge badge-emerald">Active Escrow Fulfillment Desk</span>
           <h2 class="active-project-title">{{ activeProject.title }}</h2>
-          <p class="active-project-sub">Sequential Milestone Execution &bull; Escrow Allocation: <strong>${{ Number(activeProject.total_price).toFixed(2) }} USD</strong></p>
+          <p class="active-project-sub">
+            Sequential Milestone Execution &bull; Escrow Allocation: <strong>${{ Number(activeProject.total_price).toFixed(2) }} USD</strong> &bull; Collected: <strong style="color: #059669;">${{ getActiveProjectCollectedSum().toFixed(2) }} USD</strong>
+          </p>
         </div>
         <div class="active-actions-row">
           <button (click)="openProject(activeProject.id)" class="btn-fintech btn-fintech-secondary btn-sm">
@@ -256,7 +258,7 @@
           </div>
 
           <!-- Camera Submission Desk -->
-          @if (!isMilestoneApproved(activeMilestones[activeMilestoneIndex])) {
+          @if (activeProject.project_domain === 'physical' && !isMilestoneApproved(activeMilestones[activeMilestoneIndex])) {
             <div class="cam-desk-box">
               <app-live-camera
                 [projectId]="activeProject.id"
@@ -712,16 +714,25 @@
                       </div>
                     }
 
-                    <p class="drawer-ms-desc">{{ m.description }}</p>
+                    <div class="drawer-ms-scope-box">
+                      <div class="scope-box-header">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                        <span>Milestone Requirement &amp; Deliverable Scope:</span>
+                      </div>
+                      <p class="drawer-ms-desc">{{ m.description || 'Deliverable specifications as established in active agreement.' }}</p>
+                    </div>
 
                     <div class="drawer-ms-proof-box">
                       <div class="proof-box-header">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#047857" stroke-width="2.5">
                           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
                         </svg>
-                        <span>Required AI Verification Proof (PayPal Release):</span>
+                        <span>Mandatory AI Verification Proof (PayPal Release):</span>
                       </div>
-                      <p class="proof-box-text">{{ m.proof_required }}</p>
+                      <p class="proof-box-text">{{ m.proof_required || 'Photographic or verifiable digital deliverable proof.' }}</p>
+                      <div class="drawer-ai-verif-note">
+                        ProofLens AI cross-verifies deliverable integrity directly against this agreement clause before unlocking escrow payout.
+                      </div>
                     </div>
                   </div>
                 }
@@ -749,19 +760,15 @@
       <!-- Drawer Sticky Action Footer -->
       <div class="drawer-footer-bar">
         <div class="drawer-footer-actions-left">
-          <button (click)="openProject(selectedDrawerData?.project?.id)" class="btn-fintech btn-fintech-primary">
-            <span>Open Negotiation Room</span>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
-          </button>
-          @if ((selectedDrawerData?.project?.status || '').toLowerCase() === 'accepted') {
+          @if (isProjectAccepted(selectedDrawerData?.project)) {
             <button (click)="openFulfillment(selectedDrawerData?.project?.id)" class="btn-fintech btn-emerald-solid">
-              <span>Submit Proof &amp; Fulfill</span>
+              <span>Go to Milestone Fulfillment Desk</span>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
             </button>
           } @else {
-            <button disabled class="btn-fintech btn-emerald-solid btn-disabled" title="Submit Proof unlocks once contract is accepted and funded in PayPal escrow">
-              <span>Submit Proof &amp; Fulfill</span>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+            <button (click)="openProject(selectedDrawerData?.project?.id)" class="btn-fintech btn-fintech-primary">
+              <span>Open Negotiation Room</span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
             </button>
           }
         </div>

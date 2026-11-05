@@ -975,6 +975,11 @@
       border: 1.5px solid #93c5fd;
       color: #1e3a8a;
     }
+    .seller-pending-notice {
+      background: #fffbeb;
+      border: 1.5px solid #fde68a;
+      color: #92400e;
+    }
     .buyer-notice {
       background: #fffbeb;
       border: 1.5px solid #fde68a;
@@ -2619,6 +2624,12 @@
     border-color: #94a3b8;
   }
 
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+    box-shadow: none;
+  }
+
   &.is-active {
     background: #eff6ff;
     border-color: #0070ba;
@@ -2666,6 +2677,11 @@
   &:focus {
     border-color: #0070ba;
   }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.65;
+  }
 }
 
 .room-warranty-summary-text {
@@ -2693,3 +2709,47 @@
   }
 }
 
+.view-only-mode-banner {
+  background: #f0fdf4;
+  border-bottom: 1.5px solid #bbf7d0;
+  padding: 0.85rem 2rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+
+  .view-only-content {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    flex: 1;
+    min-width: 280px;
+
+    .view-only-text {
+      margin: 0;
+      font-size: 0.82rem;
+      color: #166534;
+      line-height: 1.4;
+    }
+  }
+
+  .btn-return-fulfillment {
+    background: #16a34a;
+    color: white;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    font-weight: 750;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    transition: background 0.15s ease;
+
+    &:hover {
+      background: #15803d;
+    }
+  }
+}

@@ -41,7 +41,7 @@
 
             <div class="session-actions">
               <button (click)="proceedToConsole()" class="btn-proceed-portal">
-                <span>Enter {{ currentUser.role_type === 'seller' ? 'Contractor Desk' : 'Buyer Console' }}</span>
+                <span>Enter Dashboard</span>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                   <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
                 </svg>
@@ -60,105 +60,28 @@
                   <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                 </svg>
                 <div class="error-text">
-                  <strong>PayPal OAuth Notice:</strong>
+                  <strong>Authentication Notice:</strong>
                   <span>{{ errorMessage }}</span>
                 </div>
               </div>
             }
 
-            <!-- Role Selector -->
             <div class="form-group">
-              <label class="input-label">Select Workspace Role:</label>
-              <div class="role-radio-grid">
-                <button
-                  type="button"
-                  class="role-card"
-                  [class.is-selected]="selectedRole === 'buyer'"
-                  (click)="selectedRole = 'buyer'"
-                >
-                  <div class="role-icon-box">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
-                    </svg>
-                  </div>
-                  <div class="role-title">Buyer Console</div>
-                  <div class="role-desc">Draft agreements, fund PayPal escrow, & approve milestones</div>
-                </button>
-
-                <button
-                  type="button"
-                  class="role-card"
-                  [class.is-selected]="selectedRole === 'seller'"
-                  (click)="selectedRole = 'seller'"
-                >
-                  <div class="role-icon-box">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
-                    </svg>
-                  </div>
-                  <div class="role-title">Contractor Desk</div>
-                  <div class="role-desc">Negotiate terms, submit hardware live camera proof, & claim payouts</div>
-                </button>
-              </div>
+              <label class="input-label" for="loginRole">Sign in as</label>
+              <select id="loginRole" [(ngModel)]="selectedRole" name="loginRole" class="auth-input-field">
+                <option value="buyer">Buyer</option>
+                <option value="seller">Seller</option>
+              </select>
             </div>
 
-            <!-- SECTION 1: INSTANT APPLICATION FLOW TEST (Zero Setup) -->
-            <div class="fast-track-box">
-              <div class="fast-track-head">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.5">
-                  <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-                </svg>
-                <span>Instant Testing Mode (Skip Redirect / Test Full App Flow Right Now)</span>
-              </div>
-              <p class="fast-track-sub">
-                Authenticate immediately into the database without getting blocked by PayPal redirect URL verification during local testing:
-              </p>
-              <div class="fast-track-buttons">
-                <button type="button" (click)="fastTrackLogin('buyer')" class="btn-fast-auth" [disabled]="isAuthenticating" [class.is-loading]="isAuthenticating">
-                  @if (isAuthenticating && selectedRole === 'buyer') {
-                    <span class="btn-spinner"></span>
-                    <span>Authenticating Buyer...</span>
-                  } @else {
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2">
-                      <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
-                    </svg>
-                    <span>Test as Buyer (buyer&#64;prooflens.com)</span>
-                  }
-                </button>
-                <button type="button" (click)="fastTrackLogin('seller')" class="btn-fast-auth" [disabled]="isAuthenticating" [class.is-loading]="isAuthenticating">
-                  @if (isAuthenticating && selectedRole === 'seller') {
-                    <span class="btn-spinner"></span>
-                    <span>Authenticating Contractor...</span>
-                  } @else {
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2">
-                      <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>
-                    </svg>
-                    <span>Test as Contractor (seller&#64;prooflens.com)</span>
-                  }
-                </button>
-              </div>
-            </div>
-
-            <!-- SECTION 2: LIVE PAYPAL SANDBOX OAUTH -->
+            <!-- Primary Live PayPal Sandbox OAuth Connect -->
             <div class="oauth-section">
-              <div class="oauth-section-title">
-                <span>OR LIVE PAYPAL SANDBOX OAUTH CONNECT</span>
-              </div>
-
-              <!-- Return URL Selector (Matches Dashboard) -->
               <div class="return-url-selector-box">
-                <label class="url-selector-label">
-                  <span>PayPal Dashboard Return URL Match:</span>
-                </label>
+                <div class="url-selector-header">
+                  <span class="url-selector-label">PayPal Registered Return URL:</span>
+                  <span class="url-selector-hint">Must match Return URL in developer.paypal.com</span>
+                </div>
                 <div class="url-pills-row">
-                  <button
-                    type="button"
-                    class="url-pill-btn"
-                    [class.is-active]="selectedRedirectUri === 'http://localhost:4200'"
-                    (click)="setRedirectUri('http://localhost:4200')"
-                  >
-                    Direct Localhost (http://localhost:4200)
-                  </button>
                   <button
                     type="button"
                     class="url-pill-btn"
@@ -166,6 +89,14 @@
                     (click)="setRedirectUri('https://prooflens-auth.loca.lt')"
                   >
                     Tunnel URL (https://prooflens-auth.loca.lt)
+                  </button>
+                  <button
+                    type="button"
+                    class="url-pill-btn"
+                    [class.is-active]="selectedRedirectUri === 'http://localhost:4200'"
+                    (click)="setRedirectUri('http://localhost:4200')"
+                  >
+                    Localhost (http://localhost:4200)
                   </button>
                 </div>
               </div>
@@ -179,7 +110,7 @@
               >
                 @if (isRedirecting) {
                   <span class="btn-spinner"></span>
-                  <span>Redirecting to PayPal Sandbox...</span>
+                  <span>Connecting to PayPal Sandbox...</span>
                 } @else {
                   <div class="pp-icon-embed">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
@@ -193,18 +124,58 @@
                   </svg>
                 }
               </button>
+            </div>
 
-              <div class="dashboard-tip-card">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2">
-                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
-                </svg>
-                <div class="tip-text">
-                  <strong>Why PayPal showed "invalid client_id or redirect_uri":</strong>
-                  <span>
-                    In your PayPal Developer Dashboard, the Return URL was set to the tunnel URL. To log in directly on localhost without a tunnel, add <code>http://localhost:4200</code> to your App's <strong>Return URL</strong> list on <a href="https://developer.paypal.com/dashboard/applications/sandbox" target="_blank" rel="noopener">developer.paypal.com</a> and check the <strong>"Log in with PayPal"</strong> feature.
-                  </span>
-                </div>
+            <!-- Standard Credentials Login Form -->
+            <div class="credentials-section">
+              <div class="credentials-divider">
+                <span>OR SIGN IN WITH ACCOUNT EMAIL</span>
               </div>
+
+              <form (ngSubmit)="loginWithCredentials()" class="credentials-form">
+                <div class="form-group">
+                  <label class="input-label" for="loginEmail">Email Address</label>
+                  <input
+                    id="loginEmail"
+                    type="email"
+                    [(ngModel)]="loginEmail"
+                    name="loginEmail"
+                    placeholder="Enter your email address"
+                    class="auth-input-field"
+                    required
+                  />
+                </div>
+
+                <div class="form-group">
+                  <label class="input-label" for="loginPassword">Password</label>
+                  <input
+                    id="loginPassword"
+                    type="password"
+                    [(ngModel)]="loginPassword"
+                    name="loginPassword"
+                    placeholder="Enter your password"
+                    class="auth-input-field"
+                    required
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  class="btn-credentials-submit"
+                  [disabled]="isAuthenticating || !loginEmail || !loginPassword"
+                  [class.is-loading]="isAuthenticating"
+                >
+                  @if (isAuthenticating) {
+                    <span class="btn-spinner"></span>
+                    <span>Signing in...</span>
+                  } @else {
+                    <span>Sign In to Dashboard</span>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+                    </svg>
+                  }
+                </button>
+              </form>
             </div>
           </div>
         }

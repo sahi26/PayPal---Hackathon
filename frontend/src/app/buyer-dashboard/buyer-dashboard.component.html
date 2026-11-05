@@ -965,16 +965,25 @@
                       </div>
                     }
 
-                    <p class="drawer-ms-desc">{{ m.description }}</p>
+                    <div class="drawer-ms-scope-box">
+                      <div class="scope-box-header">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                        <span>Milestone Requirement &amp; Deliverable Scope:</span>
+                      </div>
+                      <p class="drawer-ms-desc">{{ m.description || 'Deliverable specifications as established in active agreement.' }}</p>
+                    </div>
 
                     <div class="drawer-ms-proof-box">
                       <div class="proof-box-header">
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#047857" stroke-width="2.5">
                           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
                         </svg>
-                        <span>Required AI Verification Proof (PayPal Release):</span>
+                        <span>Mandatory AI Verification Proof (PayPal Release):</span>
                       </div>
-                      <p class="proof-box-text">{{ m.proof_required }}</p>
+                      <p class="proof-box-text">{{ m.proof_required || 'Photographic or verifiable digital deliverable proof.' }}</p>
+                      <div class="drawer-ai-verif-note">
+                        ProofLens AI cross-verifies deliverable integrity directly against this agreement clause before unlocking escrow payout.
+                      </div>
                     </div>
                   </div>
                 }
@@ -1002,11 +1011,18 @@
       <!-- Drawer Sticky Action Footer -->
       <div class="drawer-footer-bar">
         <div class="drawer-footer-actions-left">
-          <button (click)="enterNegotiationRoom(selectedDrawerData?.project?.id)" class="btn-fintech btn-fintech-primary">
-            <span>Open Negotiation Room</span>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
-          </button>
-          @if (selectedDrawerData?.project?.invite_token) {
+          @if (isProjectAccepted(selectedDrawerData?.project)) {
+            <button (click)="enterFulfillment(selectedDrawerData?.project?.id)" class="btn-fintech btn-emerald-solid">
+              <span>Go to Milestone Fulfillment Desk</span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          } @else {
+            <button (click)="enterNegotiationRoom(selectedDrawerData?.project?.id)" class="btn-fintech btn-fintech-primary">
+              <span>Open Negotiation Room</span>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          }
+          @if ((selectedDrawerData?.project?.status || '').toLowerCase() === 'invite_sent' || selectedDrawerData?.project?.invite_token) {
             <button (click)="copyDrawerInviteLink(selectedDrawerData?.project?.invite_token)" class="btn-fintech btn-fintech-secondary">
               Copy Link
             </button>

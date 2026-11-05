@@ -1,4 +1,4 @@
-﻿import { Component, ElementRef, ViewChild, OnDestroy, AfterViewInit, Output, EventEmitter, Input } from '@angular/core';
+import { Component, ElementRef, ViewChild, OnDestroy, AfterViewInit, Output, EventEmitter, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { API_BASE_URL } from '../api.config';
@@ -34,10 +34,39 @@ export class LiveCameraComponent implements AfterViewInit, OnDestroy {
 
   capturedBlobs: CapturedBlobItem[] = [];
 
+  // Phase 2: Dynamic Physical Challenge Token & Instruction
+  challengeToken: string = '';
+  challengeInstruction: string = '';
+  challengeAction: string = '';
+  challengeCode: string = '';
+
+  // Geolocation tracking
+  currentLocation: string | null = null;
+  isLocationAcquiring: boolean = false;
+  locationError: string | null = null;
+
   constructor(private http: HttpClient) {}
 
   ngAfterViewInit() {
     this.startCamera();
+    this.fetchChallengeToken();
+    this.requestLocationFix();
+  }
+
+  fetchChallengeToken() {
+    if (!this.projectId) return;
+    this.http.get<any>(`${API_BASE_URL}/api/projects/${this.projectId}/challenge-token`)
+      .subscribe({
+        next: (res) => {
+          this.challengeToken = res.token || '';
+          this.challengeInstruction = res.instruction || res.action || '';
+          this.challengeAction = res.action || '';
+          this.challengeCode = res.code || '';
+        },
+        error: (err) => {
+          console.warn('Could not fetch physical challenge token:', err);
+        }
+      });
   }
 
   ngOnDestroy() {
@@ -139,22 +168,45 @@ export class LiveCameraComponent implements AfterViewInit, OnDestroy {
   startAnotherCaptureSession() {
     this.resetAll();
     this.startCamera();
+    this.requestLocationFix();
+  }
+
+  requestLocationFix() {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      this.locationError = 'GPS unavailable';
+      return;
+    }
+    this.isLocationAcquiring = true;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        this.isLocationAcquiring = false;
+        this.currentLocation = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
+      },
+      (err) => {
+        this.isLocationAcquiring = false;
+        this.locationError = err.message || 'GPS signal unavailable';
+      },
+      { timeout: 6000, enableHighAccuracy: true, maximumAge: 30000 }
+    );
   }
 
   private async fetchCoordinates(): Promise<string | null> {
+    if (this.currentLocation) return this.currentLocation;
     return new Promise((resolve) => {
-      if (!navigator.geolocation) return resolve(null);
-      const timer = setTimeout(() => resolve(null), 2000);
+      if (typeof navigator === 'undefined' || !navigator.geolocation) return resolve(null);
+      const timer = setTimeout(() => resolve(null), 2500);
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           clearTimeout(timer);
-          resolve(`${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`);
+          const coords = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`;
+          this.currentLocation = coords;
+          resolve(coords);
         },
         () => {
           clearTimeout(timer);
           resolve(null);
         },
-        { timeout: 2000, maximumAge: 60000 }
+        { timeout: 2500, enableHighAccuracy: true, maximumAge: 30000 }
       );
     });
   }
@@ -163,7 +215,7 @@ export class LiveCameraComponent implements AfterViewInit, OnDestroy {
     if (!this.projectId || this.capturedBlobs.length === 0) return;
     this.state = 'uploading';
 
-    const locationCoords = await this.fetchCoordinates();
+    const locationCoords = this.currentLocation || await this.fetchCoordinates();
 
     const formData = new FormData();
     this.capturedBlobs.forEach((item, index) => {
@@ -176,6 +228,9 @@ export class LiveCameraComponent implements AfterViewInit, OnDestroy {
     }
     if (locationCoords) {
       formData.append('location', locationCoords);
+    }
+    if (this.challengeToken) {
+      formData.append('challenge_token', this.challengeToken);
     }
 
     this.http.post<any>(`${API_BASE_URL}/api/projects/${this.projectId}/evidence-batch`, formData)

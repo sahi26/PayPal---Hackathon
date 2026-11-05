@@ -1,24 +1,26 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { ActivatedRoute, Router } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { API_BASE_URL } from '../api.config';
+import { requiresDigitalWarrantyHold } from '../project-warranty.utils';
 import { LiveCameraComponent } from '../live-camera/live-camera.component';
 import { RevisionRoomComponent, ScopeChangeItem } from '../revision-room/revision-room.component';
+import { DisputeRoomComponent } from '../dispute-room/dispute-room.component';
 
 @Component({
   selector: 'app-milestone-fulfillment',
   standalone: true,
-  imports: [CommonModule, FormsModule, LiveCameraComponent, RevisionRoomComponent],
+  imports: [CommonModule, FormsModule, LiveCameraComponent, RevisionRoomComponent, DisputeRoomComponent],
   templateUrl: './milestone-fulfillment.component.html',
   styleUrl: './milestone-fulfillment.component.scss'
 })
-export class MilestoneFulfillmentComponent implements OnInit {
+export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
   Number = Number;
   projectId = 0;
-  currentRole: 'seller' | 'buyer' = 'seller';
+  currentRole: 'seller' | 'buyer' = 'buyer';
   projectData: any = null;
   milestones: any[] = [];
   selectedMilestoneIndex = 0;
@@ -26,11 +28,12 @@ export class MilestoneFulfillmentComponent implements OnInit {
   isLoading = true;
 
   // Digital Upload & AI Watermark Audit State
-  digitalSubmissionMode: 'upload' | 'camera' = 'upload';
+  digitalSubmissionMode: 'upload' = 'upload';
   selectedDigitalFile: File | null = null;
   digitalFilePreviewUrl: string | null = null;
   digitalAssetUrl: string = '';
   isUploadingDigitalFile = false;
+  isAnalyzing = false;
   digitalUploadError: string | null = null;
   isDragOverDropzone = false;
 
@@ -38,6 +41,10 @@ export class MilestoneFulfillmentComponent implements OnInit {
   activeScopeChange: ScopeChangeItem | null = null;
   isRefreshing = false;
   isApproving = false;
+
+  // Multi-Tiered Dispute State
+  showDisputeRoom = false;
+  activeDispute: any = null;
 
   // PayPal Invoicing v2 State
   isReceiptModalOpen = false;
@@ -66,6 +73,15 @@ export class MilestoneFulfillmentComponent implements OnInit {
   isSubmittingVoid = false;
   voidSuccessMsg: string | null = null;
   voidErrorMsg: string | null = null;
+  isRespondingToVoidConsent = false;
+  voidConsentActionSuccess: string | null = null;
+  voidConsentActionError: string | null = null;
+
+  // Escrow Reauthorization & FUNDS_AT_RISK State
+  isReauthorizingEscrow = false;
+  isReapprovingEscrow = false;
+  escrowReauthSuccessMsg: string | null = null;
+  private escrowSocket?: WebSocket;
 
   constructor(
     private route: ActivatedRoute,
@@ -75,10 +91,14 @@ export class MilestoneFulfillmentComponent implements OnInit {
   ) {}
 
   ngOnInit() {
+    const storedRole = (localStorage.getItem('role') || 'buyer').toLowerCase();
+    this.currentRole = storedRole === 'seller' ? 'seller' : 'buyer';
+
     this.route.paramMap.subscribe(params => {
       this.projectId = Number(params.get('id')) || 0;
       if (this.projectId) {
         this.fetchProject();
+        this.initEscrowWebSocket();
       } else {
         this.isLoading = false;
       }
@@ -95,7 +115,18 @@ export class MilestoneFulfillmentComponent implements OnInit {
       if (token && !this.isConfirmingAuth) {
         this.confirmPayPalEscrowHold(token);
       }
+      if (q['scope_change'] === '1') {
+        this.showRevisionRoom = true;
+      }
     });
+  }
+
+  ngOnDestroy() {
+    if (this.escrowSocket) {
+      try {
+        this.escrowSocket.close();
+      } catch (e) {}
+    }
   }
 
   isConfirmingAuth = false;
@@ -130,8 +161,145 @@ export class MilestoneFulfillmentComponent implements OnInit {
     return s === 'authorized' || s === 'partially_captured' || s === 'captured';
   }
 
+  isScopeChangePendingEscrow(): boolean {
+    const total = Number(this.projectData?.project?.total_price || 0);
+    const captured = Number(this.projectData?.project?.captured_amount || 0);
+    const paymentAmt = Number(this.projectData?.payment?.amount || 0);
+    return this.activeScopeChange?.status === 'PENDING_FUNDS' ||
+           (this.projectData?.payment?.status === 'CREATED' && paymentAmt < total) ||
+           (captured > 0 && total > captured);
+  }
+
+  getEscrowDepositAmount(): number {
+    if (this.activeScopeChange?.proposed_extra_cost) {
+      return Number(this.activeScopeChange.proposed_extra_cost);
+    }
+    const total = Number(this.projectData?.project?.total_price || 0);
+    const captured = Number(this.projectData?.project?.captured_amount || 0);
+    if (captured > 0 && total > captured) {
+      return Number((total - captured).toFixed(2));
+    }
+    const paymentAmt = Number(this.projectData?.payment?.amount || 0);
+    if (paymentAmt > 0 && paymentAmt < total) {
+      return paymentAmt;
+    }
+    return Number(this.projectData?.payment?.amount || total);
+  }
+
+  getEscrowDepositUrl(): string | null {
+    if (this.isScopeChangePendingEscrow() && this.activeScopeChange?.paypal_approval_url) {
+      return this.activeScopeChange.paypal_approval_url;
+    }
+    return this.getPayPalApprovalUrl();
+  }
+
+  getInitialSettledAmount(): number {
+    const total = Number(this.projectData?.project?.total_price || 0);
+    const captured = Number(this.projectData?.project?.captured_amount || 0);
+    if (captured > 0) return captured;
+    const deposit = Number(this.getEscrowDepositAmount() || 0);
+    return Math.max(0, total - deposit);
+  }
+
   getPayPalApprovalUrl(): string | null {
     return this.projectData?.paypal_approval_url || this.projectData?.payment?.approval_url || null;
+  }
+
+  isFundsAtRisk(): boolean {
+    const s = (this.projectData?.project?.status || '').toUpperCase();
+    return s === 'FUNDS_AT_RISK' || !!this.projectData?.project?.is_funds_at_risk;
+  }
+
+  isEscrowExpiringSoon(): boolean {
+    const days = this.projectData?.project?.days_until_authorization_expiration;
+    return typeof days === 'number' && days <= 5.0 && days >= 0;
+  }
+
+  reauthorizeEscrowHold(force: boolean = false) {
+    if (!this.projectId || this.isReauthorizingEscrow) return;
+    this.isReauthorizingEscrow = true;
+    this.escrowReauthSuccessMsg = null;
+    this.http.post<any>(`${API_BASE_URL}/api/payments/${this.projectId}/reauthorize?force=${force}`, {})
+      .subscribe({
+        next: (res) => {
+          this.isReauthorizingEscrow = false;
+          this.escrowReauthSuccessMsg = res.message || 'Authorization hold extended for 29 days.';
+          this.fetchProject();
+          setTimeout(() => { this.escrowReauthSuccessMsg = null; }, 6000);
+        },
+        error: (err) => {
+          this.isReauthorizingEscrow = false;
+          const msg = err.error?.message || err.error?.detail || err.error?.error || 'Reauthorization failed.';
+          alert(`Reauthorization Notice: ${msg}`);
+          this.fetchProject();
+        }
+      });
+  }
+
+  reApproveEscrow() {
+    if (!this.projectId || this.isReapprovingEscrow) return;
+    this.isReapprovingEscrow = true;
+    this.http.post<any>(`${API_BASE_URL}/api/projects/${this.projectId}/re-approve-escrow`, {})
+      .subscribe({
+        next: (res) => {
+          this.isReapprovingEscrow = false;
+          if (res.paypal_approval_url) {
+            window.location.href = res.paypal_approval_url;
+          } else {
+            this.fetchProject();
+          }
+        },
+        error: (err) => {
+          this.isReapprovingEscrow = false;
+          alert(err.error?.detail || 'Failed to initialize escrow re-approval.');
+        }
+      });
+  }
+
+  checkEscrowStatus() {
+    if (!this.projectId) return;
+    this.http.get<any>(`${API_BASE_URL}/api/projects/${this.projectId}/escrow-status`)
+      .subscribe({
+        next: (res) => {
+          if (this.projectData?.project) {
+            this.projectData.project.status = res.status;
+            this.projectData.project.is_funds_at_risk = res.is_funds_at_risk;
+            this.projectData.project.authorization_expires_at = res.authorization_expires_at;
+            this.projectData.project.days_until_authorization_expiration = res.days_until_expiration;
+          }
+        },
+        error: (err) => console.warn('Escrow status check failed:', err)
+      });
+  }
+
+  initEscrowWebSocket() {
+    if (!this.projectId || typeof WebSocket === 'undefined') return;
+    try {
+      const loc = window.location;
+      const protocol = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${loc.hostname}:8000/ws/projects/${this.projectId}`;
+      this.escrowSocket = new WebSocket(wsUrl);
+
+      this.escrowSocket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.event === 'FUNDS_AT_RISK' || msg.status === 'FUNDS_AT_RISK') {
+            if (this.projectData?.project) {
+              this.projectData.project.status = 'FUNDS_AT_RISK';
+              this.projectData.project.is_funds_at_risk = true;
+            }
+          } else if (msg.event === 'ESCROW_REAUTHORIZED') {
+            if (this.projectData?.project) {
+              this.projectData.project.status = msg.status || 'active';
+              this.projectData.project.is_funds_at_risk = false;
+            }
+            this.fetchProject();
+          }
+        } catch (e) {}
+      };
+    } catch (e) {
+      console.warn('Escrow WebSocket connection skipped:', e);
+    }
   }
 
   fetchProject() {
@@ -145,6 +313,7 @@ export class MilestoneFulfillmentComponent implements OnInit {
           this.activeScopeChange = data.active_scope_change || null;
           this.isLoading = false;
           this.loadProjectEvidence();
+          this.loadActiveDispute();
 
           // Auto-select first unapproved milestone
           for (let i = 0; i < this.milestones.length; i++) {
@@ -168,6 +337,40 @@ export class MilestoneFulfillmentComponent implements OnInit {
       });
   }
 
+  loadActiveDispute() {
+    if (!this.projectId) return;
+    this.http.get<any>(`${API_BASE_URL}/api/disputes/${this.projectId}/active`).subscribe({
+      next: (res) => {
+        if (res && res.active) {
+          this.activeDispute = res.dispute;
+        } else {
+          this.activeDispute = null;
+        }
+      },
+      error: () => {}
+    });
+  }
+
+  isProjectDisputed(): boolean {
+    const s = (this.projectData?.project?.status || '').toLowerCase();
+    return s === 'disputed' || (this.activeDispute && this.activeDispute.status !== 'RESOLVED');
+  }
+
+  openDisputeRoom() {
+    this.showDisputeRoom = true;
+  }
+
+  closeDisputeRoom() {
+    this.showDisputeRoom = false;
+    this.fetchProject();
+  }
+
+  onDisputeResolved(event: any) {
+    this.showDisputeRoom = false;
+    this.activeDispute = null;
+    this.fetchProject();
+  }
+
   loadProjectEvidence() {
     if (!this.projectId) return;
     this.http.get<any[]>(`${API_BASE_URL}/api/projects/${this.projectId}/evidence`)
@@ -182,13 +385,93 @@ export class MilestoneFulfillmentComponent implements OnInit {
   isProjectAccepted(): boolean {
     if (!this.projectData?.project?.status) return false;
     const s = this.projectData.project.status.toLowerCase();
-    return s === 'accepted' || s === 'completed' || s === 'active' || s === 'work_in_progress' || s === 'warranty_period';
+    return s === 'accepted' || s === 'completed' || s === 'active' || s === 'work_in_progress' || 
+           s === 'warranty_period' || s === 'cancelled' || s === 'partially_completed_canceled' || s === 'disputed';
+  }
+
+  isProjectCanceled(): boolean {
+    const s = (this.projectData?.project?.status || '').toLowerCase();
+    return s === 'cancelled' || s === 'partially_completed_canceled' || s === 'rejected';
+  }
+
+  isPartiallyCompletedCanceled(): boolean {
+    const s = (this.projectData?.project?.status || '').toLowerCase();
+    return s === 'partially_completed_canceled' || (s === 'cancelled' && (this.projectData?.project?.captured_amount || 0) > 0);
+  }
+
+  getOriginallyAuthorizedAmount(): number {
+    return Number(this.projectData?.project?.total_price || 0);
+  }
+
+  getTotalPaidToSeller(): number {
+    return Number(this.projectData?.project?.captured_amount || 0);
+  }
+
+  getTotalVoidedToBuyer(): number {
+    const voided = Number(this.projectData?.project?.voided_amount || 0);
+    if (voided > 0) return voided;
+    const total = this.getOriginallyAuthorizedAmount();
+    const paid = this.getTotalPaidToSeller();
+    return Math.max(0, Number((total - paid).toFixed(2)));
+  }
+
+  canShowDisputeButton(): boolean {
+    const s = (this.projectData?.project?.status || '').toLowerCase();
+    if (s === 'draft' || s === 'invite_sent' || s === 'cancelled' ||
+        s === 'partially_completed_canceled' || s === 'rejected') {
+      return false;
+    }
+    return s === 'active' || s === 'warranty_period' || s === 'disputed' || s === 'in_review';
   }
 
   isWarrantyPeriodActive(): boolean {
+    if (this.isSimpleDigitalProject()) return false;
+    const wDays = this.getRetainageDays();
+    const lockAmt = this.getRetainageAmount();
+    if (wDays <= 0 || lockAmt <= 0) return false;
+
     const s = (this.projectData?.project?.status || '').toUpperCase();
     const agStatus = (this.projectData?.agreement?.status || '').toUpperCase();
-    return s === 'WARRANTY_PERIOD' || agStatus === 'WARRANTY_PERIOD';
+    const isStatusWarranty = s === 'WARRANTY_PERIOD' || agStatus === 'WARRANTY_PERIOD';
+    if (!isStatusWarranty) return false;
+
+    // Retainage warranty only applies once all milestones are completely approved
+    const list = this.projectData?.agreement?.milestones || this.milestones || [];
+    if (list && list.length > 0) {
+      const allApproved = list.every((m: any) => (m.status || '').toLowerCase() === 'approved');
+      if (!allApproved) return false;
+    }
+
+    return true;
+  }
+
+  getRetainageAmount(): number {
+    const ag = this.projectData?.agreement;
+    if (!ag) return 0;
+    const lockType = (ag.lock_in_type || 'NONE').toUpperCase();
+    if (lockType === 'NONE') return 0;
+
+    if (lockType === 'FINAL_MILESTONE') {
+      const list = this.projectData?.agreement?.milestones || this.milestones || [];
+      if (list && list.length > 0) {
+        const lastM = list[list.length - 1];
+        const lastAlloc = parseFloat(lastM.price_allocation || 0);
+        if (lastAlloc > 0) return lastAlloc;
+      }
+    }
+
+    const amt = parseFloat(ag.lock_in_amount || 0);
+    if (amt > 0) return amt;
+    return 0;
+  }
+
+  getRetainageDays(): number {
+    const ag = this.projectData?.agreement;
+    if (!ag) return 0;
+    if (ag.warranty_days !== undefined && ag.warranty_days !== null) {
+      return Number(ag.warranty_days);
+    }
+    return Number(ag.lock_in_days || 0);
   }
 
   isWarrantyDisputeActive(): boolean {
@@ -229,15 +512,33 @@ export class MilestoneFulfillmentComponent implements OnInit {
   }
 
   isDigitalProject(): boolean {
-    const domain = (this.projectData?.project?.project_domain || '').toLowerCase();
+    const p = this.projectData?.project;
+    if (!p) return false;
+    const domain = (p.project_domain || '').toLowerCase().trim();
     if (domain === 'digital') return true;
+    const ind = (p.industry_type || '').toLowerCase();
+    const title = (p.title || '').toLowerCase();
+    const desc = (p.description || '').toLowerCase();
+    const digitalKeywords = [
+      'digital', 'design', 'art', 'software', 'web', 'graphic', 'logo', 'brand',
+      'app', 'code', 'ui', 'ux', 'frontend', 'backend', 'api', 'saas', 'vector',
+      'illustration', 'figma', 'photoshop', 'video', 'animation', 'copywriting',
+      'content', 'seo', 'audio', 'music'
+    ];
+    if (digitalKeywords.some(kw => ind.includes(kw) || title.includes(kw) || desc.includes(kw))) {
+      return true;
+    }
     if (domain === 'physical') return false;
-    const ind = (this.projectData?.project?.industry_type || '').toLowerCase();
-    const title = (this.projectData?.project?.title || '').toLowerCase();
-    return ind.includes('design') || ind.includes('software') || ind.includes('web') ||
-           ind.includes('digital') || ind.includes('app') || ind.includes('graphic') ||
-           title.includes('logo') || title.includes('app') || title.includes('digital') ||
-           title.includes('software') || title.includes('design') || title.includes('branding');
+    return false;
+  }
+
+  isSimpleDigitalProject(): boolean {
+    const project = this.projectData?.project;
+    return this.isDigitalProject() && !requiresDigitalWarrantyHold(
+      project?.title,
+      project?.industry_type,
+      project?.description
+    );
   }
 
   onDigitalFileSelected(event: any) {
@@ -285,6 +586,11 @@ export class MilestoneFulfillmentComponent implements OnInit {
     this.selectedDigitalFile = null;
     this.digitalFilePreviewUrl = null;
     this.digitalUploadError = null;
+  }
+
+  formatCurrency(val: any): string {
+    const num = Number(val || 0);
+    return isNaN(num) ? '0.00' : num.toFixed(2);
   }
 
   formatFileSize(bytes: number): string {
@@ -339,7 +645,7 @@ export class MilestoneFulfillmentComponent implements OnInit {
 
   getCertificateBadgeText(evList: any[]): string {
     const isFraud = this.hasFraudInMilestone(evList);
-    if (!isFraud) return '• Verified';
+    if (!isFraud) return this.isHighConfidence(evList?.[0]) ? '• High Match' : '• Needs Review';
     if (this.hasSpoofingFlag(evList)) return '• Spoofing Flagged';
     if (this.hasWatermarkFlag(evList)) return '• AI Watermark Flagged';
     return this.isDigitalProject() ? '• AI Watermark Flagged' : '• Review Gated';
@@ -376,6 +682,7 @@ export class MilestoneFulfillmentComponent implements OnInit {
     if (!this.projectId) return;
 
     this.isUploadingDigitalFile = true;
+    this.isAnalyzing = true;
     this.digitalUploadError = null;
 
     const formData = new FormData();
@@ -393,6 +700,7 @@ export class MilestoneFulfillmentComponent implements OnInit {
       .subscribe({
         next: (res) => {
           this.isUploadingDigitalFile = false;
+          this.isAnalyzing = false;
           this.selectedDigitalFile = null;
           this.digitalFilePreviewUrl = null;
           this.digitalAssetUrl = '';
@@ -401,6 +709,7 @@ export class MilestoneFulfillmentComponent implements OnInit {
         },
         error: (err) => {
           this.isUploadingDigitalFile = false;
+          this.isAnalyzing = false;
           this.digitalUploadError = err.error?.detail || err.message || 'File upload failed. Please try again.';
         }
       });
@@ -488,10 +797,48 @@ export class MilestoneFulfillmentComponent implements OnInit {
       });
   }
 
+  escalateMilestoneToDispute() {
+    if (this.rejectingMilestoneIndex === null || !this.projectId) return;
+    const reason = this.rejectionReasonText.trim() || `Dispute raised on Milestone #${this.rejectingMilestoneIndex + 1} deliverables.`;
+    this.isSubmittingRejection = true;
+    this.http.post<any>(`${API_BASE_URL}/api/disputes/${this.projectId}/open`, {
+      reason,
+      disputed_by: this.currentRole
+    }).subscribe({
+      next: (res) => {
+        this.isSubmittingRejection = false;
+        this.closeRejectModal();
+        if (this.projectData?.project) {
+          this.projectData.project.status = 'DISPUTED';
+        }
+        this.activeDispute = res.dispute || {
+          status: 'INTERNAL_NEGOTIATION',
+          reason: reason
+        };
+        this.showDisputeRoom = true;
+        this.fetchProject();
+      },
+      error: (err) => {
+        this.isSubmittingRejection = false;
+        alert(err.error?.detail || err.message || 'Failed to escalate dispute');
+      }
+    });
+  }
+
   isMilestoneResubmissionRequested(index: number): boolean {
     const ms = this.milestones[index];
     const st = (ms?.status || '').toLowerCase();
-    return st === 'resubmission_requested' || st === 'rejected';
+    return st === 'resubmission_requested' || st === 'rejected' || this.isLowConfidenceDigitalSubmission(index);
+  }
+
+  isHighConfidence(evidence: any): boolean {
+    return Number(evidence?.ai_confidence_score || 0) > 90;
+  }
+
+  isLowConfidenceDigitalSubmission(index: number): boolean {
+    if (this.currentRole !== 'seller' || !this.isDigitalProject() || this.isMilestoneApproved(index)) return false;
+    const evidence = this.getEvidenceForMilestone(index);
+    return !!evidence && !this.isHighConfidence(evidence);
   }
 
   getMilestoneRejectionReason(index: number): string {
@@ -500,6 +847,7 @@ export class MilestoneFulfillmentComponent implements OnInit {
   }
 
   selectMilestone(index: number) {
+    if (!this.isMilestoneUnlocked(index)) return;
     this.selectedMilestoneIndex = index;
     this.isRecapturing = false;
   }
@@ -511,6 +859,7 @@ export class MilestoneFulfillmentComponent implements OnInit {
 
   handleRecaptureSuccess(res: any) {
     this.isRecapturing = false;
+    this.isAnalyzing = false;
     this.fetchProject();
   }
 
@@ -554,15 +903,75 @@ export class MilestoneFulfillmentComponent implements OnInit {
   }
 
   handleEvidenceSuccess(res: any) {
+    this.isAnalyzing = false;
     this.fetchProject();
   }
 
+  isReloadingEvidence: boolean = false;
+  reloadUpdatedEvidence() {
+    this.isReloadingEvidence = true;
+    this.fetchProject();
+    setTimeout(() => {
+      this.isReloadingEvidence = false;
+    }, 600);
+  }
+
+  isReleasingWarrantyEarly: boolean = false;
+  releaseWarrantyFundsEarly() {
+    if (!this.projectId || this.isReleasingWarrantyEarly) return;
+    const amt = Number(this.projectData?.agreement?.lock_in_amount || 0).toFixed(2);
+    const confirmed = confirm(`Are you sure you want to release the held warranty retainage ($${amt} USD) early to the contractor? This will finalize and complete the project.`);
+    if (!confirmed) return;
+
+    this.isReleasingWarrantyEarly = true;
+    this.http.post<any>(`${API_BASE_URL}/api/projects/${this.projectId}/warranty/early-release`, {})
+      .subscribe({
+        next: (res) => {
+          this.isReleasingWarrantyEarly = false;
+          alert(res.message || 'Warranty funds successfully released early.');
+          this.fetchProject();
+        },
+        error: (err) => {
+          this.isReleasingWarrantyEarly = false;
+          alert(err.error?.detail || err.message || 'Early release failed.');
+        }
+      });
+  }
+
   getEvidenceForMilestone(index: number): any {
-    return this.evidenceList.find(e => e.evidence_type === 'milestone_evidence' && Number(e.milestone_index) === index);
+    const list = this.getAllEvidenceForMilestone(index);
+    return list.length > 0 ? list[0] : null;
   }
 
   getAllEvidenceForMilestone(index: number): any[] {
-    return this.evidenceList.filter(e => e.evidence_type === 'milestone_evidence' && Number(e.milestone_index) === index);
+    const list = this.evidenceList.filter(
+      e => e.evidence_type === 'milestone_evidence' && Number(e.milestone_index) === index
+    );
+    if (!list || list.length === 0) return [];
+
+    // Phase 3: Fix stacking evidence issue. Sort by ID descending (newest first)
+    list.sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0));
+
+    // Isolate the single most recent submission session
+    const latest = list[0];
+    const latestTime = latest.server_receipt_timestamp ? new Date(latest.server_receipt_timestamp).getTime() : 0;
+
+    return list.filter(item => {
+      if (!latestTime || !item.server_receipt_timestamp) {
+        return item.id === latest.id;
+      }
+      const itemTime = new Date(item.server_receipt_timestamp).getTime();
+      return Math.abs(latestTime - itemTime) <= 15000;
+    });
+  }
+
+  getRejectedEvidenceForMilestone(index: number): any | null {
+    const list = this.evidenceList.filter(
+      e => e.evidence_type === 'milestone_evidence' && Number(e.milestone_index) === index
+    );
+    if (!list || list.length === 0) return null;
+    list.sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0));
+    return list.find(e => this.isItemFlagged(e) || e.status === 'possible_mismatch') || list[list.length - 1];
   }
 
   isItemFlagged(item: any): boolean {
@@ -601,8 +1010,49 @@ export class MilestoneFulfillmentComponent implements OnInit {
       (this.projectData?.project?.before_evidence_path ? {
         file_path: this.projectData.project.before_evidence_path,
         file_hash: this.projectData.project.before_evidence_hash,
-        server_receipt_timestamp: this.projectData.project.created_at
+        server_receipt_timestamp: this.projectData.project.created_at,
+        location: this.projectData.project.site_location || null
       } : null);
+  }
+
+  isLocationVerified(item: any): boolean {
+    if (!item) return false;
+    const geo = item.ai_comparison_details?.geographic_provenance;
+    if (geo?.status === 'verified') return true;
+    if (item.ai_analysis_notes && item.ai_analysis_notes.includes('Geographic Provenance: VERIFIED')) return true;
+    return false;
+  }
+
+  isLocationMismatch(item: any): boolean {
+    if (!item) return false;
+    const geo = item.ai_comparison_details?.geographic_provenance;
+    if (geo?.status === 'mismatch' || geo?.is_mismatch) return true;
+    if (item.status === 'possible_mismatch' && Array.isArray(item.fraud_flags)) {
+      if (item.fraud_flags.some((f: string) => f.includes('Geographic Proximity Mismatch') || f.includes('GPS Location Missing'))) return true;
+    }
+    if (item.ai_analysis_notes && (item.ai_analysis_notes.includes('Geographic Proximity Mismatch') || item.ai_analysis_notes.includes('OFF-SITE CAPTURE DETECTED'))) return true;
+    return false;
+  }
+
+  getLocationBadgeText(item: any): string {
+    if (!item) return '';
+    const geo = item.ai_comparison_details?.geographic_provenance;
+    if (this.isLocationVerified(item)) {
+      const dist = geo?.distance_meters;
+      return dist !== undefined ? `📍 On-Site Match (${dist}m to Baseline)` : '📍 On-Site Match';
+    }
+    if (this.isLocationMismatch(item)) {
+      const dist = geo?.distance_meters;
+      return dist !== undefined ? `⚠️ Location Mismatch (${dist}m away)` : '⚠️ Off-Site Mismatch';
+    }
+    if (item.location) {
+      return `📍 GPS: ${item.location}`;
+    }
+    return '';
+  }
+
+  getGeoProvenance(item: any): any {
+    return item?.ai_comparison_details?.geographic_provenance || null;
   }
 
   getEvidenceUrl(filePath: string): string {
@@ -613,39 +1063,96 @@ export class MilestoneFulfillmentComponent implements OnInit {
     return `${API_BASE_URL}${filePath.startsWith('/') ? '' : '/'}${filePath}`;
   }
 
+  formatLocalDate(dateStr: string | null | undefined): string {
+    if (!dateStr) return '';
+    try {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) {
+        const parts = dateStr.trim().split('-');
+        const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+        return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+      }
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    } catch {
+      return dateStr;
+    }
+  }
+
+  formatLocalDateTime(dateStr: string | null | undefined): string {
+    if (!dateStr) return '';
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      return d.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return dateStr;
+    }
+  }
+
   getMilestoneFallbackDeadline(index: number): string {
     const existingDeadline = this.milestones?.[index]?.deadline || this.projectData?.agreement?.milestones?.[index]?.deadline;
     if (existingDeadline && existingDeadline !== 'Per Schedule' && existingDeadline !== 'None') {
-      return existingDeadline;
+      return this.formatLocalDate(existingDeadline);
     }
+    const d = new Date();
     if (this.projectData?.project?.deadline) {
       try {
-        const target = new Date(this.projectData.project.deadline);
+        const target = new Date(this.projectData.project.deadline.includes('T') ? this.projectData.project.deadline : this.projectData.project.deadline + 'T00:00:00');
         const now = new Date();
         const diffMs = target.getTime() - now.getTime();
         const totalDays = Math.max(3, Math.round(diffMs / (1000 * 60 * 60 * 24)));
         const count = Math.max(1, this.milestones.length || 3);
         const offset = Math.min(totalDays, Math.round((totalDays / count) * (index + 1)));
-        const d = new Date();
         d.setDate(d.getDate() + offset);
-        return d.toISOString().split('T')[0];
-      } catch (e) {}
+      } catch (e) {
+        d.setDate(d.getDate() + (index + 1) * 4);
+      }
+    } else {
+      d.setDate(d.getDate() + (index + 1) * 4);
     }
-    const d = new Date();
-    d.setDate(d.getDate() + (index + 1) * 4);
-    return d.toISOString().split('T')[0];
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 
-  goToAgreement() {
-    this.router.navigate(['/project', this.projectId, 'negotiate'], { queryParams: { role: this.currentRole } });
-  }
+  isAgreementModalOpen = false;
 
-  goBack() {
+  goBackToDashboard() {
     if (this.currentRole === 'seller') {
       this.router.navigate(['/seller']);
     } else {
-      this.router.navigate(['/']);
+      this.router.navigate(['/buyer']);
     }
+  }
+
+  openAgreementModal() {
+    this.isAgreementModalOpen = true;
+  }
+
+  closeAgreementModal() {
+    this.isAgreementModalOpen = false;
+  }
+
+  viewAgreementPage() {
+    this.router.navigate(['/project', this.projectId, 'negotiate'], {
+      queryParams: { role: this.currentRole, view_only: 'true' }
+    });
+  }
+
+  goToAgreement() {
+    this.openAgreementModal();
+  }
+
+  goBack() {
+    this.goBackToDashboard();
   }
 
   toggleRole() {
@@ -794,8 +1301,49 @@ export class MilestoneFulfillmentComponent implements OnInit {
     });
   }
 
+  getCollectedMilestonesSum(): number {
+    const list = this.projectData?.agreement?.milestones || this.milestones || [];
+    const sum = list
+      .filter((m: any) => (m.status || '').toLowerCase() === 'approved')
+      .reduce((acc: number, m: any) => acc + (Number(m.price_allocation) || 0), 0);
+    if (sum > 0) return sum;
+    return Number(this.projectData?.project?.captured_amount || 0);
+  }
+
+  getVoidEscrowStatus(): string {
+    return this.projectData?.project?.void_escrow_status || 'NONE';
+  }
+
+  isGhostingTimeoutElapsed(): boolean {
+    return Boolean(
+      this.projectData?.is_ghosting_timeout_elapsed ||
+      this.projectData?.project?.is_ghosting_timeout_elapsed
+    );
+  }
+
+  getGhostingReason(): string {
+    return (
+      this.projectData?.ghosting_reason ||
+      this.projectData?.project?.ghosting_reason ||
+      ''
+    );
+  }
+
+  canBuyerExecuteVoid(): boolean {
+    const status = this.getVoidEscrowStatus();
+    return (
+      status === 'SELLER_AGREED' ||
+      !this.projectData?.project?.seller_id ||
+      this.isGhostingTimeoutElapsed()
+    );
+  }
+
+  isVoidPendingSellerConsent(): boolean {
+    return this.getVoidEscrowStatus() === 'PENDING_SELLER_CONSENT';
+  }
+
   openVoidModal() {
-    this.voidReason = '';
+    this.voidReason = this.projectData?.project?.void_escrow_reason || '';
     this.voidSuccessMsg = null;
     this.voidErrorMsg = null;
     this.isVoidModalOpen = true;
@@ -805,11 +1353,63 @@ export class MilestoneFulfillmentComponent implements OnInit {
     this.isVoidModalOpen = false;
   }
 
+  requestVoidEscrow() {
+    this.isSubmittingVoid = true;
+    this.voidErrorMsg = null;
+    this.voidSuccessMsg = null;
+    this.http.post<any>(`${API_BASE_URL}/api/escrow/${this.projectId}/void-request`, {
+      reason: this.voidReason || 'Buyer requested project cancellation'
+    }).subscribe({
+      next: (res) => {
+        this.isSubmittingVoid = false;
+        this.voidSuccessMsg = 'Cancellation request sent to contractor. Awaiting their consent before escrow can be voided.';
+        if (this.projectData?.project) {
+          this.projectData.project.void_escrow_status = res.void_escrow_status || 'PENDING_SELLER_CONSENT';
+          this.projectData.project.void_escrow_reason = res.void_escrow_reason || this.voidReason;
+        }
+        setTimeout(() => this.closeVoidModal(), 2500);
+      },
+      error: (err) => {
+        this.isSubmittingVoid = false;
+        this.voidErrorMsg = err.error?.detail || err.message || 'Failed to request void escrow';
+      }
+    });
+  }
+
+  respondToVoidConsent(agree: boolean, note?: string) {
+    this.isRespondingToVoidConsent = true;
+    this.voidConsentActionError = null;
+    this.voidConsentActionSuccess = null;
+    this.http.post<any>(`${API_BASE_URL}/api/escrow/${this.projectId}/void-request/respond`, {
+      agree,
+      note: note || (agree ? 'Contractor agreed to cancel project' : 'Contractor declined cancellation request')
+    }).subscribe({
+      next: (res) => {
+        this.isRespondingToVoidConsent = false;
+        this.voidConsentActionSuccess = agree 
+          ? 'You agreed to cancel and void escrow. The buyer can now release the hold.'
+          : 'You declined the cancellation request.';
+        if (this.projectData?.project) {
+          this.projectData.project.void_escrow_status = res.void_escrow_status;
+        }
+        this.fetchProject();
+      },
+      error: (err) => {
+        this.isRespondingToVoidConsent = false;
+        this.voidConsentActionError = err.error?.detail || err.message || 'Failed to submit response';
+      }
+    });
+  }
+
   submitVoidEscrow() {
+    if (!this.canBuyerExecuteVoid()) {
+      this.voidErrorMsg = 'Mutual consent required: The contractor must agree to project cancellation before escrow authorization can be voided.';
+      return;
+    }
     this.isSubmittingVoid = true;
     this.voidErrorMsg = null;
     this.http.post<any>(`${API_BASE_URL}/api/escrow/${this.projectId}/void`, {
-      note: this.voidReason || 'Contract voided / cancelled'
+      note: this.voidReason || this.projectData?.project?.void_escrow_reason || 'Contract voided by mutual agreement'
     }).subscribe({
       next: (res) => {
         this.isSubmittingVoid = false;

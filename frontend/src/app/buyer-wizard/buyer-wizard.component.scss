@@ -897,6 +897,12 @@
     color: #0070ba;
   }
 
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+    box-shadow: none;
+  }
+
   &.is-active {
     background: #eff6ff;
     border-color: #0070ba;
@@ -1065,4 +1071,3 @@
   font-size: 0.78rem;
   font-weight: 600;
 }
-

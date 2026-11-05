@@ -1,4 +1,17 @@
 <div class="fulfillment-shell">
+      @if (isAnalyzing) {
+        <div class="ai-analyzing-overlay">
+          <div class="ai-analyzing-card">
+            <div class="ai-analyzing-spinner"></div>
+            <h3>Reviewing Cryptographic Evidence</h3>
+            <p class="ai-analyzing-text">AI is running anti-spoofing checks and analyzing evidence. This may take up to 20 seconds...</p>
+            <div class="ai-analyzing-track">
+              <div class="ai-analyzing-bar"></div>
+            </div>
+          </div>
+        </div>
+      }
+
       @if (isLoading) {
         <div class="loading-state-card">
           <div class="spinner"></div>
@@ -35,96 +48,322 @@
       } @else {
         <!-- ACCEPTED PROJECT FULFILLMENT DESK -->
         <header class="fulfillment-header-card">
-          <div class="header-top-row">
-            <div class="header-left-col">
-              <button (click)="goToAgreement()" class="btn-back-link">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <path d="M19 12H5M12 19l-7-7 7-7"/>
-                </svg>
-                <span>View Agreement & Scope</span>
-              </button>
-              <div class="title-meta-cluster">
-                <h1>{{ projectData.project.title }}</h1>
-                <div class="badges-row">
-                  <span class="badge-industry">{{ projectData.project.industry_type || 'General' }}</span>
-                  <span class="badge-status-accepted">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          <!-- Row 1: Explicit Navigation Actions -->
+          <div class="header-nav-row">
+            <button (click)="goBackToDashboard()" class="btn-back-dashboard" title="Return to active projects dashboard">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="19" y1="12" x2="5" y2="12"></line>
+                <polyline points="12 19 5 12 12 5"></polyline>
+              </svg>
+              <span>Back to Dashboard</span>
+            </button>
+
+            <button (click)="openAgreementModal()" class="btn-view-agreement" title="Inspect locked contract terms, baseline evidence and agreement specifications">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+              </svg>
+              <span>View Project Agreement</span>
+            </button>
+          </div>
+
+          <!-- Row 2: Title & Badges (Left) | Total Escrow Sum & Collected (Right) -->
+          <div class="header-main-row">
+            <div class="header-title-block">
+              <h1 class="header-project-title">{{ projectData.project.title }}</h1>
+              <div class="badges-row">
+                <span class="badge-industry">{{ projectData.project.industry_type || 'General' }}</span>
+                <span class="badge-status-accepted">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                  </svg>
+                  <span>TERMS LOCKED & ESCROW FUNDED</span>
+                </span>
+                @if (getEffectiveProjectDeadline()) {
+                  <span class="badge-deadline">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                      <line x1="16" y1="2" x2="16" y2="6"/>
+                      <line x1="8" y1="2" x2="8" y2="6"/>
+                      <line x1="3" y1="10" x2="21" y2="10"/>
                     </svg>
-                    <span>TERMS LOCKED & ESCROW FUNDED</span>
+                    <span>Target Due: {{ getEffectiveProjectDeadline() }}</span>
                   </span>
-                  @if (getEffectiveProjectDeadline()) {
-                    <span class="badge-deadline">
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                        <line x1="16" y1="2" x2="16" y2="6"/>
-                        <line x1="8" y1="2" x2="8" y2="6"/>
-                        <line x1="3" y1="10" x2="21" y2="10"/>
-                      </svg>
-                      <span>Target Due: {{ getEffectiveProjectDeadline() }}</span>
-                    </span>
-                  }
-                  <span class="badge-verified-protocol">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                      <polyline points="20 6 9 17 4 12"/>
-                    </svg>
-                    <span>PayPal Escrow Protected</span>
-                  </span>
-                </div>
+                }
               </div>
             </div>
 
-            <div class="header-right-col">
+            <div class="escrow-budgets-wrapper">
+              @if (currentRole === 'seller') {
+                <div class="escrow-budget-card escrow-collected-card">
+                  <span class="budget-label">COLLECTED VIA MILESTONES</span>
+                  <span class="budget-val text-emerald">${{ getCollectedMilestonesSum().toFixed(2) }} USD</span>
+                </div>
+              }
               <div class="escrow-budget-card">
                 <span class="budget-label">TOTAL ESCROW SUM</span>
                 <span class="budget-val">${{ Number(projectData.project.total_price).toFixed(2) }} USD</span>
               </div>
-              <button (click)="openInvoicesDrawer()" class="btn-invoices-summary" title="View all settlement invoices and tax receipts for this project">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                  <line x1="16" y1="13" x2="8" y2="13"/>
-                  <line x1="16" y1="17" x2="8" y2="17"/>
-                </svg>
-                <span>Invoices & Receipts</span>
-                @if (getPaidInvoicesCount() > 0) {
-                  <span class="active-scope-badge" style="background:#059669;color:white;">{{ getPaidInvoicesCount() }} Paid</span>
-                }
-              </button>
-              <button (click)="openTrackingModal()" class="btn-invoices-summary" title="Add shipment and delivery tracking details to PayPal Order">
+            </div>
+          </div>
+
+          <!-- Row 3: Action Pills Toolbar (Full Width Horizontal Pills) -->
+          <div class="header-action-pills-row">
+            <button (click)="openInvoicesDrawer()" class="pill-btn pill-btn-blue" title="View all settlement invoices and tax receipts for this project">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+              </svg>
+              <span>Invoices & Receipts</span>
+              @if (getPaidInvoicesCount() > 0) {
+                <span class="pill-badge pill-badge-emerald">{{ getPaidInvoicesCount() }} PAID</span>
+              }
+            </button>
+
+            @if (!isDigitalProject()) {
+              <button (click)="openTrackingModal()" class="pill-btn pill-btn-blue" title="Add shipment and delivery tracking details to PayPal Order">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
                   <rect x="1" y="3" width="15" height="13"/>
-                  <polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/>
+                  <polygon points="16 8 20 8 23 11 23 16 16 16 8"/>
                   <circle cx="5.5" cy="18.5" r="2.5"/>
                   <circle cx="18.5" cy="18.5" r="2.5"/>
                 </svg>
                 <span>Shipment Tracking</span>
               </button>
-              <button (click)="openVoidModal()" class="btn-void-summary" title="Void authorized escrow hold and release funds">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                  <circle cx="12" cy="12" r="10"/>
-                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
-                </svg>
-                <span>Void Escrow</span>
-              </button>
-              <button (click)="toggleRole()" class="btn-switch-role" title="Switch between Contractor and Buyer perspectives">
-                <span>View as: <strong>{{ currentRole | uppercase }}</strong></span>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                  <path d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/>
-                </svg>
-              </button>
-              <button (click)="openRevisionRoom()" class="btn-scope-change" title="Request or view project scope changes and addenda">
+            }
+
+            @if (currentRole === 'buyer') {
+              @if (canBuyerExecuteVoid()) {
+                <button (click)="openVoidModal()" class="pill-btn pill-btn-emerald" [title]="isGhostingTimeoutElapsed() && getVoidEscrowStatus() !== 'SELLER_AGREED' ? 'Contractor non-responsive >48h. Administrative Inactivity Protocol active.' : 'Contractor agreed to cancellation. Ready to void escrow hold.'">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                  <span>Cancel &amp; Void Escrow</span>
+                  @if (getVoidEscrowStatus() === 'SELLER_AGREED') {
+                    <span class="pill-badge pill-badge-emerald">Seller Agreed</span>
+                  } @else if (isGhostingTimeoutElapsed()) {
+                    <span class="pill-badge pill-badge-amber">Inactivity Protocol</span>
+                  }
+                </button>
+              } @else if (isVoidPendingSellerConsent()) {
+                <button (click)="openVoidModal()" class="pill-btn pill-btn-amber" title="Awaiting contractor consent before escrow can be voided">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <polyline points="12 6 12 12 16 14"/>
+                  </svg>
+                  <span>Void Escrow</span>
+                  <span class="pill-badge pill-badge-amber">Awaiting Seller</span>
+                </button>
+              } @else if (getVoidEscrowStatus() === 'DECLINED') {
+                <button (click)="openVoidModal()" class="pill-btn pill-btn-rose" title="Contractor declined previous void request. Review or re-request.">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                  </svg>
+                  <span>Void Escrow</span>
+                  <span class="pill-badge pill-badge-rose">Declined</span>
+                </button>
+              } @else {
+                <button (click)="openVoidModal()" class="pill-btn pill-btn-rose" title="Request contractor consent to void authorized escrow hold">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                  </svg>
+                  <span>Request Void Escrow</span>
+                </button>
+              }
+            }
+
+            @if (currentRole === 'buyer') {
+              <button (click)="openRevisionRoom()" class="pill-btn pill-btn-amber" title="Request or view project scope changes and addenda">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                   <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
                 </svg>
                 <span>Request Scope Change</span>
                 @if (activeScopeChange && activeScopeChange.status !== 'ACCEPTED') {
-                  <span class="active-scope-badge">{{ activeScopeChange.status === 'PENDING_FUNDS' ? 'Pending Escrow' : 'Negotiating' }}</span>
+                  <span class="pill-badge pill-badge-amber">{{ activeScopeChange.status === 'PENDING_FUNDS' ? 'Pending Escrow' : 'Negotiating' }}</span>
                 }
               </button>
-            </div>
+            }
+
+            <button (click)="reauthorizeEscrowHold(true)" [disabled]="isReauthorizingEscrow" class="pill-btn pill-btn-purple" title="Extend 29-Day PayPal Escrow Authorization Hold">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <path d="M23 4v6h-6M1 20v-6h6"/>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+              </svg>
+              <span>{{ isReauthorizingEscrow ? 'Renewing...' : 'Extend 29-Day Hold' }}</span>
+              @if (isEscrowExpiringSoon()) {
+                <span class="pill-badge pill-badge-amber">Expiring Soon</span>
+              }
+            </button>
+
+            @if (canShowDisputeButton()) {
+              <button (click)="openDisputeRoom()" class="pill-btn pill-btn-rose" title="Open dispute resolution workspace and mediation chat">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                  <line x1="12" y1="8" x2="12" y2="12"/>
+                  <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <span>Dispute Room</span>
+                @if (isProjectDisputed()) {
+                  <span class="pill-badge pill-badge-amber">ACTIVE</span>
+                }
+              </button>
+            }
           </div>
+
+          <!-- Urgent DISPUTE ACTIVE Timeline Locked Banner -->
+          @if (isProjectDisputed()) {
+            <div class="dispute-active-banner">
+              <div class="dispute-banner-content">
+                <div class="dispute-badge-row">
+                  <span class="status-badge badge-rose">DISPUTE ACTIVE • TIMELINE LOCKED</span>
+                  <span class="dispute-tier-tag">{{ activeDispute?.status || 'INTERNAL_NEGOTIATION' }}</span>
+                </div>
+                <h3 class="dispute-title">Case Under Tiered Mediation: Standard Milestone Fulfillment Paused</h3>
+                <p class="dispute-desc">
+                  A formal dispute has been initiated (&ldquo;{{ activeDispute?.reason || 'Deliverable discrepancy under review' }}&rdquo;).
+                  Standard milestone submissions, verifications, and payouts are vaulted in PayPal Escrow until internal resolution, scope amendment, or PayPal adjudication.
+                </p>
+              </div>
+              <div class="dispute-action-col">
+                <button (click)="openDisputeRoom()" class="btn-enter-dispute-room">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                  </svg>
+                  <span>Open Dispute Room</span>
+                </button>
+              </div>
+            </div>
+          }
+
+          <!-- Urgent FUNDS_AT_RISK Escrow Hold Dropped Banner -->
+          @if (isFundsAtRisk()) {
+            <div class="funds-at-risk-banner">
+              <div class="risk-banner-content">
+                <div class="risk-badge-row">
+                  <span class="status-badge badge-rose">ESCROW HOLD DROPPED</span>
+                  <span class="risk-pill">PayPal Vault Alert</span>
+                </div>
+                <h3 class="risk-title">Action Required: Escrow authorization expired. Buyer must re-approve payment to continue the project.</h3>
+                <p class="risk-desc">
+                  The 29-day PayPal escrow authorization hold has lapsed or could not be automatically renewed (e.g. buyer payment method expired or bank security hold).
+                  @if (currentRole === 'buyer') {
+                    Please re-authorize payment to restore escrow coverage and allow project fulfillment to continue.
+                  } @else {
+                    Milestone disbursements are on hold until the buyer re-approves the escrow deposit.
+                  }
+                </p>
+              </div>
+              <div class="risk-action-col">
+                @if (currentRole === 'buyer') {
+                  <button (click)="reApproveEscrow()" [disabled]="isReapprovingEscrow" class="btn-reapprove-escrow" title="Re-approve escrow authorization hold on PayPal">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                    <span>{{ isReapprovingEscrow ? 'Connecting...' : 'Re-Approve Payment Authorization' }}</span>
+                  </button>
+                }
+                <button (click)="reauthorizeEscrowHold(true)" [disabled]="isReauthorizingEscrow" class="btn-retry-reauth" title="Retry PayPal 29-day reauthorization">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <path d="M23 4v6h-6M1 20v-6h6"/>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                  </svg>
+                  <span>{{ isReauthorizingEscrow ? 'Retrying...' : 'Retry Reauthorization' }}</span>
+                </button>
+              </div>
+            </div>
+          }
+
+          @if (escrowReauthSuccessMsg) {
+            <div style="margin: 0 0 16px; background: #ecfdf5; border: 1px solid #86efac; border-radius: 8px; padding: 12px 16px; display: flex; align-items: center; gap: 10px;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              <span style="color: #15803d; font-weight: 600; font-size: 13.5px;">{{ escrowReauthSuccessMsg }}</span>
+            </div>
+          }
+
+          <!-- Urgent CONTRACTOR VOID CONSENT REQUEST Banner -->
+          @if (currentRole === 'seller' && isVoidPendingSellerConsent()) {
+            <div class="seller-void-consent-banner">
+              <div class="void-consent-content">
+                <div class="void-badge-row">
+                  <span class="status-badge badge-amber">ACTION REQUIRED • VOID ESCROW REQUEST</span>
+                  <span class="void-consent-tag">Awaiting Your Consent</span>
+                </div>
+                <h3 class="void-consent-title">Buyer Requested Project Cancellation &amp; Void Escrow</h3>
+                <p class="void-consent-desc">
+                  The buyer has requested to cancel <strong>"{{ projectData.project.title }}"</strong> and void the PayPal escrow authorization hold.
+                  <br/>
+                  <strong>Reason:</strong> &ldquo;{{ projectData.project.void_escrow_reason || 'Buyer requested project cancellation' }}&rdquo;
+                </p>
+                <div class="void-consent-notice">
+                  Per ProofLens security rules, the buyer cannot void escrow funds without your explicit agreement. If you agree, the project will be marked CANCELLED and remaining held funds will be released to the buyer. If you decline, you may discuss remedies via Scope Revision or the Dispute Room.
+                </div>
+                @if (voidConsentActionSuccess) {
+                  <div class="consent-alert-success">{{ voidConsentActionSuccess }}</div>
+                }
+                @if (voidConsentActionError) {
+                  <div class="consent-alert-error">{{ voidConsentActionError }}</div>
+                }
+              </div>
+              @if (!voidConsentActionSuccess) {
+                <div class="void-consent-actions">
+                  <button (click)="respondToVoidConsent(true)" [disabled]="isRespondingToVoidConsent" class="btn-consent-agree">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                    <span>{{ isRespondingToVoidConsent ? 'Submitting...' : 'Agree to Cancel & Void' }}</span>
+                  </button>
+                  <button (click)="respondToVoidConsent(false)" [disabled]="isRespondingToVoidConsent" class="btn-consent-decline">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    <span>Decline Request</span>
+                  </button>
+                </div>
+              }
+            </div>
+          }
+
+          <!-- Mutually Canceled & Partial Void Financial Summary Banner -->
+          @if (isProjectCanceled()) {
+            <div class="cancellation-summary-card" [class.partial]="isPartiallyCompletedCanceled()">
+              <div class="cancellation-header">
+                <div class="cancellation-badge-icon">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                  </svg>
+                </div>
+                <div class="cancellation-header-text">
+                  <h3>
+                    {{ isPartiallyCompletedCanceled() ? 'Project Mutually Cancelled (Partially Completed)' : 'Project Mutually Cancelled & Escrow Voided' }}
+                  </h3>
+                  <p>
+                    {{ isPartiallyCompletedCanceled() 
+                      ? 'This project was mutually concluded mid-way. Milestone work completed was settled and paid to the contractor, and all remaining uncaptured escrow funds were voided and returned to the buyer.' 
+                      : 'This project was mutually cancelled before milestone settlement. The full authorized escrow hold was voided and released back to the buyer.' }}
+                  </p>
+                </div>
+              </div>
+
+              <div class="cancellation-financial-breakdown">
+                <div class="financial-pill financial-total">
+                  <span class="financial-label">Total Originally Authorized</span>
+                  <span class="financial-value">${{ getOriginallyAuthorizedAmount().toFixed(2) }} USD</span>
+                </div>
+                <div class="financial-pill financial-paid">
+                  <span class="financial-label">Total Paid to Seller</span>
+                  <span class="financial-value text-emerald">${{ getTotalPaidToSeller().toFixed(2) }} USD</span>
+                </div>
+                <div class="financial-pill financial-voided">
+                  <span class="financial-label">Total Voided/Released to Buyer</span>
+                  <span class="financial-value text-indigo">${{ getTotalVoidedToBuyer().toFixed(2) }} USD</span>
+                </div>
+              </div>
+            </div>
+          }
 
           <!-- PayPal Escrow Authorization Status Banners -->
           @if (isConfirmingAuth) {
@@ -139,20 +378,27 @@
               <span style="color: #065f46; font-weight: 500; font-size: 13.5px;">PayPal Escrow Secured! Full project funds are locked safely on 29-day PayPal hold.</span>
             </div>
           }
-          @if (!isEscrowAuthorized() && currentRole === 'buyer' && getPayPalApprovalUrl()) {
+          @if (!isProjectCanceled() && !isEscrowAuthorized() && currentRole === 'buyer' && (getEscrowDepositUrl() || getPayPalApprovalUrl())) {
             <div style="margin: 0 0 16px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 14px 18px; display: flex; justify-content: space-between; align-items: center;">
               <div>
-                <strong style="color: #92400e; font-size: 14px;">PayPal Escrow Deposit Required</strong>
-                <p style="margin: 4px 0 0; color: #b45309; font-size: 13px;">Please authorize the ${{ Number(projectData.project.total_price).toFixed(2) }} USD escrow hold to fund this project.</p>
+                @if (isScopeChangePendingEscrow()) {
+                  <strong style="color: #92400e; font-size: 14px;">PayPal Supplemental Escrow Deposit Required</strong>
+                  <p style="margin: 4px 0 0; color: #b45309; font-size: 13px;">
+                    The initial project escrow hold (${{ Number(getInitialSettledAmount()).toFixed(2) }} USD) is already settled. Please authorize only the incremental delta of <strong>${{ Number(getEscrowDepositAmount()).toFixed(2) }} USD</strong> in PayPal Escrow to fund the approved scope revision.
+                  </p>
+                } @else {
+                  <strong style="color: #92400e; font-size: 14px;">PayPal Escrow Deposit Required</strong>
+                  <p style="margin: 4px 0 0; color: #b45309; font-size: 13px;">Please authorize the ${{ Number(getEscrowDepositAmount()).toFixed(2) }} USD escrow hold to fund this project.</p>
+                }
               </div>
-              <a [href]="getPayPalApprovalUrl()" style="text-decoration: none; background: #0070ba; color: #fff; padding: 8px 16px; border-radius: 6px; font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;">
-                <span>Authorize via PayPal &rarr;</span>
+              <a [href]="getEscrowDepositUrl() || getPayPalApprovalUrl()" style="text-decoration: none; background: #0070ba; color: #fff; padding: 8px 16px; border-radius: 6px; font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;">
+                <span>Authorize ${{ Number(getEscrowDepositAmount()).toFixed(2) }} via PayPal &rarr;</span>
               </a>
             </div>
           }
 
           <!-- Warranty Lock-In (Retainage Vault) Active Banner -->
-          @if (isWarrantyPeriodActive()) {
+          @if (isWarrantyPeriodActive() && getRetainageAmount() > 0 && getRetainageDays() > 0) {
             <div class="warranty-status-banner" [class.is-disputed]="isWarrantyDisputeActive()">
               <div class="warranty-status-col">
                 <div class="warranty-badge-row">
@@ -162,19 +408,31 @@
                   <span class="warranty-vault-pill">PayPal Vault Retainage</span>
                 </div>
                 <h3 class="warranty-banner-title">
-                  ${{ (projectData?.agreement?.lock_in_amount || 0).toFixed(2) }} USD Retainage Held in Escrow Vault
+                  ${{ getRetainageAmount().toFixed(2) }} USD Retainage Held in Escrow Vault
                 </h3>
                 <p class="warranty-banner-desc">
                   @if (isWarrantyDisputeActive()) {
                     <strong>Inspection Dispute Active:</strong> Buyer has flagged an issue with deliverables. Automated retainage release is halted until the dispute is resolved.
                   } @else {
-                    All milestones completed! Retainage is reserved for a <strong>{{ projectData?.agreement?.lock_in_days }}-day warranty hold</strong> to check against transit defects or installation issues.
+                    All milestones completed! Retainage is reserved for a <strong>{{ getRetainageDays() }}-day warranty hold</strong> to check against transit defects or installation issues.
                     Automated release scheduled for <strong>{{ projectData?.agreement?.warranty_end_date | date:'mediumDate' }}</strong> ({{ getWarrantyDaysRemaining() }} days remaining).
                   }
                 </p>
               </div>
 
               <div class="warranty-action-col">
+                @if (currentRole === 'buyer' && !isWarrantyDisputeActive()) {
+                  <button
+                    type="button"
+                    (click)="releaseWarrantyFundsEarly()"
+                    [disabled]="isReleasingWarrantyEarly"
+                    class="btn-early-release"
+                    title="Manually release held warranty retainage funds to seller before 14-day auto-release"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                    <span>{{ isReleasingWarrantyEarly ? 'Releasing Funds...' : 'Early Fund Release' }}</span>
+                  </button>
+                }
                 <button
                   type="button"
                   (click)="toggleWarrantyDispute()"
@@ -209,6 +467,8 @@
                     <div class="step-marker" [class.marker-addendum]="ms.is_addendum">
                       @if (isMilestoneApproved($index)) {
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                      } @else if (isProjectCanceled() || (ms.status || '').toLowerCase() === 'cancelled') {
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
                       } @else if (!isMilestoneUnlocked($index)) {
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                       } @else if (isMilestoneAwaitingReview($index)) {
@@ -220,7 +480,9 @@
                     <div class="step-info">
                       <div class="step-title-line">
                         <span class="step-num">Milestone {{ $index + 1 }}</span>
-                        @if (ms.is_addendum) {
+                        @if (isProjectCanceled() && !isMilestoneApproved($index)) {
+                          <span class="pill-cancelled">CANCELED</span>
+                        } @else if (ms.is_addendum) {
                           <span class="addendum-timeline-tag">Addendum (v{{ ms.version || 2 }})</span>
                         }
                       </div>
@@ -245,7 +507,11 @@
               <div class="clause-title-group">
                 <h2>Cryptographic Milestone Fulfillment Desk</h2>
                 <p class="clause-subtitle">
-                  Direct hardware live camera capture and sequential evidence submissions. ProofLens AI compares seller submissions against agreed criteria and buyer's baseline evidence.
+                  @if (isDigitalProject()) {
+                    Digital file submissions and sequential evidence reviews. ProofLens AI compares seller deliverables against the agreed criteria and buyer's baseline evidence.
+                  } @else {
+                    Direct hardware live camera capture and sequential evidence submissions. ProofLens AI compares seller submissions against agreed criteria and buyer's baseline evidence.
+                  }
                 </p>
               </div>
             </div>
@@ -257,6 +523,7 @@
                   <button
                     type="button"
                     (click)="selectMilestone($index)"
+                    [disabled]="!isMilestoneUnlocked($index)"
                     [class.active-ms-tab]="selectedMilestoneIndex === $index"
                     class="btn-select-ms"
                   >
@@ -275,6 +542,11 @@
                         <span class="pill-verified">
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
                           <span>Approved</span>
+                        </span>
+                      } @else if (isProjectCanceled() || (ms.status || '').toLowerCase() === 'cancelled') {
+                        <span class="pill-cancelled">
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                          <span>Canceled</span>
                         </span>
                       } @else if (isMilestoneResubmissionRequested($index)) {
                         <span class="pill-resubmission">
@@ -318,6 +590,9 @@
                           <span class="badge-addendum-prominent">Supplementary Addendum Milestone (v{{ targetMs.version || 2 }})</span>
                         }
                       </div>
+                      <div class="target-scope-heading-tag">
+                        <span class="scope-tag-label">Agreed Milestone Requirement (Scope of Work):</span>
+                      </div>
                       <h4>{{ targetMs.title }}</h4>
                       <p class="target-desc">{{ targetMs.description }}</p>
                     </div>
@@ -331,7 +606,7 @@
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
                       </svg>
-                      <span>Mandatory Verification Requirement (PayPal Release Gate):</span>
+                      <span>Mandatory Evidence Requirement (Agreement Release Gate):</span>
                     </div>
                     <p class="req-text">{{ targetMs.proof_required }}</p>
                     <div class="target-due-row">
@@ -372,7 +647,7 @@
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5">
                           <polyline points="20 6 9 17 4 12"/>
                         </svg>
-                        <strong>Milestone {{ selectedMilestoneIndex + 1 }} Verified & Approved</strong>
+                        <strong>Milestone {{ selectedMilestoneIndex + 1 }} Approved</strong>
                       </div>
                       <p class="approved-desc">
                         The buyer has reviewed and approved the cryptographic evidence for this milestone. Escrow funds (${{ Number(targetMs.price_allocation).toFixed(2) }} USD) have been captured and settled via PayPal.
@@ -436,11 +711,24 @@
                           <line x1="12" y1="8" x2="12" y2="12"/>
                           <line x1="12" y1="16" x2="12.01" y2="16"/>
                         </svg>
-                        <strong>Evidence Resubmission Requested for Milestone {{ selectedMilestoneIndex + 1 }}</strong>
+                        <strong>
+                          @if (isLowConfidenceDigitalSubmission(selectedMilestoneIndex)) {
+                            Digital Match Below 90% — Upload a Better File
+                          } @else {
+                            Evidence Resubmission Requested for Milestone {{ selectedMilestoneIndex + 1 }}
+                          }
+                        </strong>
                       </div>
                       <div class="rejection-feedback-banner">
-                        <div class="rejection-feedback-label">BUYER FEEDBACK & RESUBMISSION CRITERIA:</div>
-                        <p class="rejection-feedback-text">"{{ getMilestoneRejectionReason(selectedMilestoneIndex) }}"</p>
+                        @if (isLowConfidenceDigitalSubmission(selectedMilestoneIndex)) {
+                          <div class="rejection-feedback-label">MATCH REVIEW:</div>
+                          <p class="rejection-feedback-text">
+                            The latest file matched at {{ getEvidenceForMilestone(selectedMilestoneIndex)?.ai_confidence_score }}%, below the 90% success threshold. Upload an improved file to run the audit again.
+                          </p>
+                        } @else {
+                          <div class="rejection-feedback-label">BUYER FEEDBACK & RESUBMISSION CRITERIA:</div>
+                          <p class="rejection-feedback-text">"{{ getMilestoneRejectionReason(selectedMilestoneIndex) }}"</p>
+                        }
                       </div>
 
                       @if (currentRole === 'seller') {
@@ -465,17 +753,8 @@
                                   (click)="digitalSubmissionMode = 'upload'"
                                 >
                                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                                  <span>Upload Corrected Files</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  class="digital-tab-btn"
-                                  [class.is-active]="digitalSubmissionMode === 'camera'"
-                                  (click)="digitalSubmissionMode = 'camera'"
-                                >
-                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-                                  <span>Live Camera</span>
-                                </button>
+                                      <span>Upload Corrected Files</span>
+                                    </button>
                               </div>
 
                               @if (digitalSubmissionMode === 'upload') {
@@ -549,16 +828,6 @@
                                     </button>
                                   </div>
                                 </div>
-                              } @else {
-                                <div class="recapture-active-box">
-                                  <app-live-camera
-                                    [projectId]="projectId"
-                                    evidenceType="milestone_evidence"
-                                    [milestoneIndex]="selectedMilestoneIndex"
-                                    [label]="'Resubmit Proof for Milestone ' + (selectedMilestoneIndex + 1)"
-                                    (evidenceUploaded)="handleRecaptureSuccess($event)"
-                                  ></app-live-camera>
-                                </div>
                               }
                             </div>
                           } @else {
@@ -582,10 +851,33 @@
                           <p>
                             You have requested updated evidence for this milestone. Escrow release will remain locked until the contractor submits updated proof for your review.
                           </p>
-                          <button type="button" (click)="fetchProject()" [disabled]="isRefreshing" class="btn-refresh-status" [class.is-loading]="isRefreshing">
-                            <svg [class.spin-animation]="isRefreshing" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                            <span>{{ isRefreshing ? 'Checking...' : 'Check for Updated Capture' }}</span>
-                          </button>
+
+                          @if (getRejectedEvidenceForMilestone(selectedMilestoneIndex); as rejEv) {
+                            <div class="rejected-preview-card" style="margin: 12px 0; background: #fff5f5; border: 1px solid #fed7d7; border-radius: 8px; padding: 12px;">
+                              <span class="rej-badge" style="display: inline-block; font-size: 11px; font-weight: 800; color: #c53030; text-transform: uppercase; margin-bottom: 6px;">Rejected Submission on Record:</span>
+                              <div class="rej-content-row" style="display: flex; gap: 12px; align-items: flex-start;">
+                                @if (rejEv.file_path && isPreviewableImage(rejEv.file_path)) {
+                                  <img [src]="getEvidenceUrl(rejEv.file_path)" alt="Rejected evidence preview" style="width: 80px; height: 60px; object-fit: cover; border-radius: 6px; border: 1px solid #feb2b2;" />
+                                }
+                                <div class="rej-info-block" style="font-size: 12px; color: #4a5568;">
+                                  <div style="font-weight: 700; color: #2d3748;">{{ rejEv.original_filename || 'Evidence Deliverable' }}</div>
+                                  <div style="font-family: monospace; font-size: 11px; color: #718096;">SHA: {{ rejEv.file_hash ? rejEv.file_hash.slice(0, 16) : 'Not recorded' }}...</div>
+                                  <div style="margin-top: 4px; color: #c53030;"><strong>Reason:</strong> {{ getMilestoneRejectionReason(selectedMilestoneIndex) }}</div>
+                                </div>
+                              </div>
+                            </div>
+                          }
+
+                          <div class="buyer-review-actions-row" style="display: flex; gap: 8px; margin-top: 10px;">
+                            <button type="button" (click)="reloadUpdatedEvidence()" [disabled]="isReloadingEvidence" class="btn-reload-evidence" [class.is-loading]="isReloadingEvidence">
+                              <svg [class.spin-animation]="isReloadingEvidence" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                              <span>{{ isReloadingEvidence ? 'Loading Newest Evidence...' : 'Reload Updated Evidence' }}</span>
+                            </button>
+                            <button type="button" (click)="fetchProject()" [disabled]="isRefreshing" class="btn-refresh-status" [class.is-loading]="isRefreshing">
+                              <svg [class.spin-animation]="isRefreshing" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                              <span>{{ isRefreshing ? 'Checking...' : 'Check for Updated Capture' }}</span>
+                            </button>
+                          </div>
                         </div>
                       }
                     </div>
@@ -642,15 +934,6 @@
                                 >
                                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                                   <span>Upload Clean Deliverable</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  class="digital-tab-btn"
-                                  [class.is-active]="digitalSubmissionMode === 'camera'"
-                                  (click)="digitalSubmissionMode = 'camera'"
-                                >
-                                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-                                  <span>Live Camera</span>
                                 </button>
                               </div>
 
@@ -712,10 +995,10 @@
                                     <button
                                       type="button"
                                       class="btn-submit-digital"
-                                      [disabled]="!selectedDigitalFile || isUploadingDigitalFile"
+                                      [disabled]="!selectedDigitalFile || isUploadingDigitalFile || isAnalyzing"
                                       (click)="submitDigitalDeliverable()"
                                     >
-                                      @if (isUploadingDigitalFile) {
+                                      @if (isUploadingDigitalFile || isAnalyzing) {
                                         <span class="btn-spinner"></span>
                                         <span>Auditing AI Watermarks & Resubmitting...</span>
                                       } @else {
@@ -724,16 +1007,6 @@
                                       }
                                     </button>
                                   </div>
-                                </div>
-                              } @else {
-                                <div class="recapture-active-box">
-                                  <app-live-camera
-                                    [projectId]="projectId"
-                                    evidenceType="milestone_evidence"
-                                    [milestoneIndex]="selectedMilestoneIndex"
-                                    [label]="'Recapture Proof for Milestone ' + (selectedMilestoneIndex + 1)"
-                                    (evidenceUploaded)="handleRecaptureSuccess($event)"
-                                  ></app-live-camera>
                                 </div>
                               }
                             </div>
@@ -774,15 +1047,19 @@
                           <div class="flagged-status-badge">ESCROW RELEASE HELD</div>
                           <p>
                             @if (isDigitalProject()) {
-                              This submission was flagged by the automated AI watermark audit. The contractor has been instructed to upload authentic original files without generative AI watermarks. Escrow release will remain locked until authentic proof is verified.
+                              This submission was flagged by the automated AI watermark audit. The contractor has been instructed to upload authentic original files without generative AI watermarks. Escrow release will remain locked until the buyer reviews the updated file.
                             } @else {
-                              This submission was flagged by the automated anti-spoofing audit. The contractor has been instructed to recapture physical proof of work. Escrow release will remain locked until authentic physical proof is verified.
+                              This submission was flagged by the automated anti-spoofing audit. The contractor has been instructed to recapture physical proof of work. Escrow release will remain locked until the buyer reviews the updated evidence.
                             }
                           </p>
                           <div class="buyer-review-actions-row">
                             <button type="button" (click)="fetchProject()" [disabled]="isRefreshing" class="btn-refresh-status" [class.is-loading]="isRefreshing">
                               <svg [class.spin-animation]="isRefreshing" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                               <span>{{ isRefreshing ? 'Checking...' : 'Check for Updated Capture' }}</span>
+                            </button>
+                            <button type="button" (click)="approveMilestone(selectedMilestoneIndex)" [disabled]="isApproving" class="btn-approve-escrow">
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                              <span>Approve Milestone &amp; Release Escrow Payout</span>
                             </button>
                             <button type="button" (click)="openRejectModal(selectedMilestoneIndex)" class="btn-reject-escrow">
                               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -806,39 +1083,45 @@
                       </p>
                       @if (currentRole === 'buyer') {
                         <div class="buyer-review-actions-row">
+                          <button type="button" (click)="reloadUpdatedEvidence()" [disabled]="isReloadingEvidence" class="btn-reload-evidence" [class.is-loading]="isReloadingEvidence" title="Fetch newest evidence submitted by contractor">
+                            <svg [class.spin-animation]="isReloadingEvidence" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                            <span>{{ isReloadingEvidence ? 'Loading...' : 'Reload Updated Evidence' }}</span>
+                          </button>
                           <button type="button" (click)="approveMilestone(selectedMilestoneIndex)" [disabled]="isApproving" class="btn-approve-escrow" [class.is-loading]="isApproving">
                             @if (isApproving) {
                               <span class="btn-spinner"></span>
                               <span>Releasing Escrow Payout...</span>
                             } @else {
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                               <span>Approve Milestone {{ selectedMilestoneIndex + 1 }} &amp; Release Escrow Payout</span>
                             }
                           </button>
                           <button type="button" (click)="openRejectModal(selectedMilestoneIndex)" class="btn-reject-escrow">
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                             <span>Reject Evidence & Request Resubmission</span>
                           </button>
                         </div>
                       } @else {
                         <div class="seller-waiting-note">
                           <span>Waiting for buyer to review and release funds...</span>
-                          <button type="button" (click)="isRecapturing = !isRecapturing" class="btn-add-angle-subtle">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                              @if (isRecapturing) {
-                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                              } @else {
-                                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-                              }
-                            </svg>
-                            <span>{{ isRecapturing ? 'Cancel Recapture' : 'Add Another Angle / Recapture' }}</span>
-                          </button>
+                          @if (!isDigitalProject()) {
+                            <button type="button" (click)="isRecapturing = !isRecapturing" class="btn-add-angle-subtle">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                @if (isRecapturing) {
+                                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                                } @else {
+                                  <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                                }
+                              </svg>
+                              <span>{{ isRecapturing ? 'Cancel Recapture' : 'Add Another Angle / Recapture' }}</span>
+                            </button>
+                          }
                           <button (click)="fetchProject()" [disabled]="isRefreshing" class="btn-refresh-status" [class.is-loading]="isRefreshing">
                             <svg [class.spin-animation]="isRefreshing" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                             <span>{{ isRefreshing ? 'Refreshing...' : 'Refresh Status' }}</span>
                           </button>
                         </div>
-                        @if (isRecapturing) {
+                        @if (isRecapturing && !isDigitalProject()) {
                           <div class="recapture-active-box">
                             <app-live-camera
                               [projectId]="projectId"
@@ -850,6 +1133,18 @@
                           </div>
                         }
                       }
+                    </div>
+                  } @else if (isProjectCanceled() || (milestones[selectedMilestoneIndex]?.status || '').toLowerCase() === 'cancelled') {
+                    <div class="milestone-cancelled-notice">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="15" y1="9" x2="9" y2="15"/>
+                        <line x1="9" y1="9" x2="15" y2="15"/>
+                      </svg>
+                      <div>
+                        <h4>Milestone Cancelled</h4>
+                        <p>This project was mutually concluded. Milestone deliverables are cancelled and no evidence capture is required.</p>
+                      </div>
                     </div>
                   } @else if (currentRole === 'buyer') {
                     <!-- Buyer View: Awaiting Contractor Evidence Submission -->
@@ -863,7 +1158,11 @@
                       <div class="awaiting-text">
                         <h4>Awaiting Contractor Evidence Submission</h4>
                         <p>
-                          The Contractor has not yet submitted live evidence for <strong>Milestone {{ selectedMilestoneIndex + 1 }}</strong>. Camera capture is reserved strictly for the seller to document physical proof of work.
+                          @if (isDigitalProject()) {
+                            The contractor has not yet uploaded a deliverable for <strong>Milestone {{ selectedMilestoneIndex + 1 }}</strong>.
+                          } @else {
+                            The contractor has not yet submitted live evidence for <strong>Milestone {{ selectedMilestoneIndex + 1 }}</strong>. Camera capture is reserved strictly for the seller to document physical proof of work.
+                          }
                         </p>
                         <div class="awaiting-badge-row">
                           <span class="badge-role-guard">Contractor Action Required</span>
@@ -886,19 +1185,38 @@
                             <span>Upload Files & Images</span>
                             <span class="tab-recommended-badge">Digital Deliverable</span>
                           </button>
-                          <button
-                            type="button"
-                            class="digital-tab-btn"
-                            [class.is-active]="digitalSubmissionMode === 'camera'"
-                            (click)="digitalSubmissionMode = 'camera'"
-                          >
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-                            <span>Live Hardware Camera</span>
-                          </button>
                         </div>
 
                         @if (digitalSubmissionMode === 'upload') {
                           <div class="digital-upload-container">
+                            <!-- Agreement Requirement & Mandatory Evidence Gate -->
+                            <div class="submission-req-summary-card">
+                              <div class="submission-req-header">
+                                <div class="submission-req-pill">
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                                  <span>Agreement Verification Gate — Milestone {{ selectedMilestoneIndex + 1 }}</span>
+                                </div>
+                                <span class="submission-req-due">Due: {{ targetMs.deadline || getMilestoneFallbackDeadline(selectedMilestoneIndex) }}</span>
+                              </div>
+                              <div class="submission-req-grid">
+                                <div class="submission-req-col">
+                                  <span class="submission-req-label">1. Agreed Milestone Requirement (Scope)</span>
+                                  <h5 class="submission-req-title">{{ targetMs.title }}</h5>
+                                  <p class="submission-req-desc">{{ targetMs.description }}</p>
+                                </div>
+                                <div class="submission-req-col submission-req-proof-col">
+                                  <span class="submission-req-label">2. Mandatory Evidence Requirement</span>
+                                  <div class="submission-req-proof-box">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                                    <span>{{ targetMs.proof_required }}</span>
+                                  </div>
+                                  <div class="submission-req-ai-note">
+                                    ProofLens AI will cross-verify your submitted deliverable directly against this agreement requirement before unlocking buyer approval.
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
                             <div class="digital-info-banner">
                               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2">
                                 <circle cx="12" cy="12" r="10"/>
@@ -906,7 +1224,7 @@
                                 <line x1="12" y1="8" x2="12.01" y2="8"/>
                               </svg>
                               <div>
-                                <strong>DIGITAL ASSET SUBMISSION DESK:</strong> Upload deliverable files (.png, .jpg, .svg, .pdf, .zip, etc.). ProofLens AI runs an automated scan to ensure scope compliance and audits against synthetic AI watermarks (Google SynthID, OpenAI DALL-E, Midjourney, Adobe Firefly).
+                                <strong>DIGITAL ASSET SUBMISSION DESK:</strong> Upload deliverable files satisfying the mandatory evidence requirement above. ProofLens AI runs an automated scan to ensure scope compliance and audits against synthetic AI watermarks (Google SynthID, OpenAI DALL-E, Midjourney, Adobe Firefly).
                               </div>
                             </div>
 
@@ -1004,10 +1322,10 @@
                               <button
                                 type="button"
                                 class="btn-submit-digital"
-                                [disabled]="!selectedDigitalFile || isUploadingDigitalFile"
+                                [disabled]="!selectedDigitalFile || isUploadingDigitalFile || isAnalyzing"
                                 (click)="submitDigitalDeliverable()"
                               >
-                                @if (isUploadingDigitalFile) {
+                                @if (isUploadingDigitalFile || isAnalyzing) {
                                   <span class="btn-spinner"></span>
                                   <span>Auditing for AI Watermarks & Submitting...</span>
                                 } @else {
@@ -1020,16 +1338,6 @@
                                 }
                               </button>
                             </div>
-                          </div>
-                        } @else {
-                          <div class="live-cam-embed">
-                            <app-live-camera
-                              [projectId]="projectId"
-                              evidenceType="milestone_evidence"
-                              [milestoneIndex]="selectedMilestoneIndex"
-                              [label]="'Capture Live Proof for Milestone ' + (selectedMilestoneIndex + 1)"
-                              (evidenceUploaded)="handleEvidenceSuccess($event)"
-                            ></app-live-camera>
                           </div>
                         }
                       </div>
@@ -1058,16 +1366,24 @@
                 <!-- Sleek Corporate Forensic Assessment & Certificate (Never Loud Amber/Red) -->
                 @if (getAllEvidenceForMilestone(selectedMilestoneIndex); as milestoneEvList) {
                   @if (milestoneEvList.length > 0) {
-                    <div class="ms-ai-certificate">
+                    <div
+                      class="ms-ai-certificate"
+                      [class.has-fraud-warning]="hasFraudInMilestone(milestoneEvList)"
+                      [class.is-low-match]="!isHighConfidence(milestoneEvList[0]) && !hasFraudInMilestone(milestoneEvList)"
+                    >
                       <div class="cert-head">
                         <div class="cert-title-row">
-                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" [attr.stroke]="hasFraudInMilestone(milestoneEvList) ? '#dc2626' : '#16a34a'" stroke-width="2.5">
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" [attr.stroke]="hasFraudInMilestone(milestoneEvList) ? '#dc2626' : (isHighConfidence(milestoneEvList[0]) ? '#16a34a' : '#d97706')" stroke-width="2.5">
                             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
                           </svg>
                           <strong>{{ getCertificateTitle(milestoneEvList) }}</strong>
                         </div>
-                        <span class="cert-confidence-pill" [class.is-fraud]="hasFraudInMilestone(milestoneEvList)">
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <span
+                          class="cert-confidence-pill"
+                          [class.is-fraud]="hasFraudInMilestone(milestoneEvList)"
+                          [class.is-low-match]="!isHighConfidence(milestoneEvList[0]) && !hasFraudInMilestone(milestoneEvList)"
+                        >
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
                             @if (hasFraudInMilestone(milestoneEvList)) {
                               <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                             } @else {
@@ -1115,11 +1431,54 @@
                             }
                             <span class="angle-label">{{ ev.capture_method === 'file_upload' ? ('Deliverable ' + (aIdx + 1)) : ('Angle ' + (aIdx + 1)) }}</span>
                             <span class="cert-hash" title="{{ ev.file_hash }}">SHA: {{ ev.file_hash ? ev.file_hash.slice(0, 8) : 'Locked' }}</span>
+                            @if (currentRole === 'buyer' && ev.file_path) {
+                              <a
+                                class="view-evidence-link"
+                                [href]="getEvidenceUrl(ev.file_path)"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >View Original File</a>
+                            }
                           </div>
                         }
                       </div>
 
                       <div class="cert-notes">
+                        <!-- Agreement Cross-Verification Audit Strip -->
+                        <div class="cert-cross-verification-banner">
+                          <div class="cert-cv-title-row">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                            <strong>Agreement Cross-Verification Audit</strong>
+                          </div>
+                          <div class="cert-cv-grid">
+                            <div class="cert-cv-item">
+                              <span class="cert-cv-label">Milestone Scope Requirement:</span>
+                              <span class="cert-cv-val">{{ targetMs.title }}</span>
+                            </div>
+                            <div class="cert-cv-item">
+                              <span class="cert-cv-label">Mandatory Evidence Gate:</span>
+                              <span class="cert-cv-val">{{ targetMs.proof_required }}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        @if (isLocationVerified(milestoneEvList[0])) {
+                          <div class="geo-provenance-banner is-verified">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                              <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+                              <circle cx="12" cy="9" r="2.5"/>
+                            </svg>
+                            <span>{{ getLocationBadgeText(milestoneEvList[0]) }} — Hardware GPS matches Buyer Baseline Site</span>
+                          </div>
+                        } @else if (isLocationMismatch(milestoneEvList[0])) {
+                          <div class="geo-provenance-banner is-mismatch">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                              <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+                              <circle cx="12" cy="9" r="2.5"/>
+                            </svg>
+                            <span>{{ getLocationBadgeText(milestoneEvList[0]) }} — Captured outside allowable site radius</span>
+                          </div>
+                        }
                         <div class="cert-analysis">{{ milestoneEvList[0].ai_analysis_notes }}</div>
                       </div>
                     </div>
@@ -1139,12 +1498,22 @@
                 </div>
                 <div class="evidence-cards-grid">
                   @for (item of evidenceList; track item.id) {
-                    <div class="evidence-item-card">
+                    <div
+                      class="evidence-item-card"
+                      [class.is-fraud-item]="item.status === 'possible_mismatch' || isItemFlagged(item)"
+                      [class.is-high-match]="isHighConfidence(item) && item.status !== 'possible_mismatch' && !isItemFlagged(item)"
+                      [class.is-low-match]="!isHighConfidence(item) && item.status !== 'possible_mismatch' && !isItemFlagged(item)"
+                    >
                       <div class="item-badge-bar">
                         <span class="item-method-pill" [class.is-upload]="item.capture_method === 'file_upload'">
                           {{ item.capture_method === 'file_upload' ? 'DIGITAL ASSET' : (item.evidence_type === 'before_evidence' ? 'BUYER BASELINE' : ('MILESTONE ' + (Number(item.milestone_index) + 1))) }}
                         </span>
-                        <span class="item-conf-pill" [class.is-fraud]="item.status === 'possible_mismatch' || isItemFlagged(item)">
+                        <span
+                          class="item-conf-pill"
+                          [class.is-fraud]="item.status === 'possible_mismatch' || isItemFlagged(item)"
+                          [class.is-high-match]="isHighConfidence(item) && item.status !== 'possible_mismatch' && !isItemFlagged(item)"
+                          [class.is-low-match]="!isHighConfidence(item) && item.status !== 'possible_mismatch' && !isItemFlagged(item)"
+                        >
                           {{ (item.status === 'possible_mismatch' || isItemFlagged(item)) ? (item.ai_confidence_score + '% Match (FLAGGED)') : (item.ai_confidence_score + '% Match') }}
                         </span>
                       </div>
@@ -1158,6 +1527,15 @@
                       }
                       <div class="item-meta-details">
                         <span class="item-hash" title="{{ item.file_hash }}">SHA-256: {{ item.file_hash?.slice(0, 16) }}...</span>
+                        @if (getLocationBadgeText(item)) {
+                          <span class="item-location-badge" [class.is-verified]="isLocationVerified(item)" [class.is-mismatch]="isLocationMismatch(item)">
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                              <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+                              <circle cx="12" cy="9" r="2.5"/>
+                            </svg>
+                            {{ getLocationBadgeText(item) }}
+                          </span>
+                        }
                         <span class="item-time">Recorded: {{ item.server_receipt_timestamp || 'Server Authoritative' }}</span>
                       </div>
                     </div>
@@ -1189,7 +1567,7 @@
 
             <div class="reject-modal-body">
               <p class="reject-instruction">
-                Please specify why the submitted evidence is unsatisfactory. Escrow funds (${{ Number(milestones[rejectingMilestoneIndex]?.price_allocation).toFixed(2) }} USD) remain held safely in PayPal escrow until satisfactory proof is verified.
+                Please specify why the submitted evidence is unsatisfactory. Escrow funds (${{ Number(milestones[rejectingMilestoneIndex]?.price_allocation).toFixed(2) }} USD) remain held safely in PayPal escrow until satisfactory proof is approved.
               </p>
 
               <div class="quick-reasons-block">
@@ -1198,6 +1576,7 @@
                   <button type="button" class="quick-chip" (click)="setQuickRejectionReason('Evidence does not match agreed specifications or scope.')">Scope Mismatch</button>
                   <button type="button" class="quick-chip" (click)="setQuickRejectionReason('Suspected screen reflection or re-photographed display.')">Screen Reflection</button>
                   <button type="button" class="quick-chip" (click)="setQuickRejectionReason('Suspected generative AI content or unauthorized AI watermark detected.')">AI Watermark Detected</button>
+                  <button type="button" class="quick-chip" (click)="setQuickRejectionReason('Geographic site location mismatch: Evidence not captured at physical job site.')">Site Location Mismatch</button>
                   <button type="button" class="quick-chip" (click)="setQuickRejectionReason('Evidence is blurry, low resolution, or poorly lit.')">Blurry / Low Light</button>
                   <button type="button" class="quick-chip" (click)="setQuickRejectionReason('Missing required measurement, tape measure, or caliper check.')">Missing Measurement</button>
                   <button type="button" class="quick-chip" (click)="setQuickRejectionReason('Workmanship appears incomplete or requires finish refinement.')">Incomplete Work</button>
@@ -1222,13 +1601,29 @@
               <button
                 type="button"
                 (click)="submitRejection()"
-                class="btn-modal-confirm-reject"
+                class="btn-modal-revision"
                 [disabled]="isSubmittingRejection"
+                title="Keep milestone active and request updated evidence resubmission"
               >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M23 4v6h-6M1 20v-6h6"/>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
                 </svg>
-                <span>{{ isSubmittingRejection ? 'Submitting...' : 'Send Rejection & Request Resubmission' }}</span>
+                <span>{{ isSubmittingRejection ? 'Submitting...' : 'Request Revision' }}</span>
+              </button>
+              <button
+                type="button"
+                (click)="escalateMilestoneToDispute()"
+                class="btn-modal-dispute"
+                [disabled]="isSubmittingRejection"
+                title="Halt project timeline and open Dispute Room for mediation"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                  <line x1="12" y1="8" x2="12" y2="12"/>
+                  <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <span>{{ isSubmittingRejection ? 'Escalating...' : 'Escalate to Dispute Room' }}</span>
               </button>
             </div>
           </div>
@@ -1245,6 +1640,22 @@
           (closed)="closeRevisionRoom()"
           (scopeAccepted)="onScopeChangeAccepted($event)"
         ></app-revision-room>
+      }
+
+      <!-- Multi-Tiered Dispute Resolution Room Modal -->
+      @if (showDisputeRoom) {
+        <div class="modal-backdrop" (click)="closeDisputeRoom()">
+          <div class="dispute-modal-wrap" (click)="$event.stopPropagation()">
+            <app-dispute-room
+              [projectId]="projectId"
+              [currentRole]="currentRole"
+              [projectTitle]="projectData?.project?.title || ''"
+              [totalEscrowAmount]="projectData?.project?.total_price || 0"
+              (closed)="closeDisputeRoom()"
+              (disputeResolved)="onDisputeResolved($event)"
+            ></app-dispute-room>
+          </div>
+        </div>
       }
 
       <!-- Invoices & Receipts Drawer -->
@@ -1455,20 +1866,36 @@
         </div>
       }
 
-      <!-- Payments v2 Void Escrow Modal -->
+      <!-- Payments v2 Void Escrow Modal (With Mutual Consent Enforcement) -->
       @if (isVoidModalOpen) {
         <div class="modal-backdrop" (click)="closeVoidModal()">
-          <div class="reject-modal-card" (click)="$event.stopPropagation()" style="border-color:#fca5a5;">
-            <div class="reject-modal-header" style="background:#fef2f2; border-color:#fee2e2;">
-              <div class="reject-header-icon" style="background:#fee2e2;">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.2">
-                  <circle cx="12" cy="12" r="10"/>
-                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
-                </svg>
+          <div class="reject-modal-card" (click)="$event.stopPropagation()" [style.border-color]="canBuyerExecuteVoid() ? '#86efac' : '#fca5a5'">
+            <div class="reject-modal-header" [style.background]="canBuyerExecuteVoid() ? '#ecfdf5' : '#fef2f2'" [style.border-color]="canBuyerExecuteVoid() ? '#bbf7d0' : '#fee2e2'">
+              <div class="reject-header-icon" [style.background]="canBuyerExecuteVoid() ? '#dcfce7' : '#fee2e2'">
+                @if (canBuyerExecuteVoid()) {
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                } @else {
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                  </svg>
+                }
               </div>
               <div class="reject-header-text">
-                <h3 style="color:#991b1b;">Void Escrow Authorization Hold</h3>
-                <p style="color:#b91c1c;">Release authorized hold funds immediately back to buyer.</p>
+                @if (canBuyerExecuteVoid()) {
+                  @if (isGhostingTimeoutElapsed() && getVoidEscrowStatus() !== 'SELLER_AGREED') {
+                    <h3 style="color:#15803d;">Cancel &amp; Void Escrow (Inactivity Protocol)</h3>
+                    <p style="color:#166534;">Contractor non-responsiveness threshold elapsed. Unilateral administrative release authorized.</p>
+                  } @else {
+                    <h3 style="color:#15803d;">Cancel &amp; Void Escrow (Seller Agreed)</h3>
+                    <p style="color:#166534;">Contractor agreed to cancellation. You can now release the escrow hold.</p>
+                  }
+                } @else {
+                  <h3 style="color:#991b1b;">Request Void Escrow (Mutual Consent Required)</h3>
+                  <p style="color:#b91c1c;">Contractor consent is required before the escrow hold can be voided.</p>
+                }
               </div>
             </div>
 
@@ -1484,21 +1911,149 @@
                 </div>
               }
 
-              <div style="background:#fff1f2; border:1px solid #fecdd3; border-radius:8px; padding:0.85rem; margin-bottom:1rem; font-size:0.82rem; color:#9f1239;">
-                <strong>Warning:</strong> Voiding the escrow authorization will cancel all active holds for this project. If work has already been started, ensure both parties agree to contract cancellation.
-              </div>
+              @if (canBuyerExecuteVoid()) {
+                @if (getVoidEscrowStatus() === 'SELLER_AGREED') {
+                  <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:0.85rem; margin-bottom:1rem; font-size:0.82rem; color:#166534;">
+                    <strong>Contractor Consent Recorded:</strong> The contractor has officially agreed to project cancellation. Clicking &ldquo;Confirm &amp; Void Escrow Hold&rdquo; below will invoke PayPal's Authorization Void API to immediately release all held funds back to your PayPal balance.
+                  </div>
+                } @else if (isGhostingTimeoutElapsed()) {
+                  <div style="background:#fefce8; border:1px solid #fef08a; border-radius:8px; padding:0.85rem; margin-bottom:1rem; font-size:0.82rem; color:#854d0e;">
+                    <strong>Administrative Inactivity Protocol Active:</strong> {{ getGhostingReason() || 'The contractor has been unresponsive for >48 hours or missed a milestone deadline.' }} Platform terms authorize an administrative release of uncaptured escrow authorization funds back to your PayPal balance.
+                  </div>
+                } @else {
+                  <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:0.85rem; margin-bottom:1rem; font-size:0.82rem; color:#166534;">
+                    <strong>Direct Void Authorized:</strong> Clicking &ldquo;Confirm &amp; Void Escrow Hold&rdquo; below will invoke PayPal's Authorization Void API to release held funds back to your PayPal balance.
+                  </div>
+                }
+              } @else {
+                <div style="background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:0.85rem; margin-bottom:1rem; font-size:0.82rem; color:#92400e;">
+                  <strong>Mutual Consent Policy:</strong> To protect contractors who may have commenced work or committed resources, the buyer must send a cancellation notification to the contractor. Only once the contractor agrees is the &ldquo;Confirm &amp; Void Escrow Hold&rdquo; button enabled.
+                  @if (isVoidPendingSellerConsent()) {
+                    <div style="margin-top:0.4rem; font-weight:700; color:#b45309;">
+                      Status: Cancellation request is currently pending contractor consent.
+                    </div>
+                  } @else if (getVoidEscrowStatus() === 'DECLINED') {
+                    <div style="margin-top:0.4rem; font-weight:700; color:#dc2626;">
+                      Status: Contractor previously declined. You may send an updated note or discuss in Dispute Room.
+                    </div>
+                  }
+                </div>
+              }
 
               <div style="margin-bottom:1.25rem;">
-                <label style="display:block; font-size:0.8rem; font-weight:700; color:#334155; margin-bottom:0.35rem;">Cancellation Note</label>
-                <input type="text" [(ngModel)]="voidReason" placeholder="Mutual agreement cancellation" style="width:100%; box-sizing:border-box; padding:0.6rem; border:1px solid #cbd5e1; border-radius:8px; font-size:0.875rem;" />
+                <label style="display:block; font-size:0.8rem; font-weight:700; color:#334155; margin-bottom:0.35rem;">
+                  {{ canBuyerExecuteVoid() ? 'Settlement Note' : 'Reason for Cancellation Request' }}
+                </label>
+                <input type="text" [(ngModel)]="voidReason" placeholder="e.g. Mutually agreed to cancel project" style="width:100%; box-sizing:border-box; padding:0.6rem; border:1px solid #cbd5e1; border-radius:8px; font-size:0.875rem;" />
               </div>
 
-              <div style="display:flex; justify-content:flex-end; gap:0.5rem;">
+              <div style="display:flex; justify-content:flex-end; gap:0.5rem; align-items:center;">
                 <button (click)="closeVoidModal()" style="padding:0.55rem 1rem; border:1px solid #cbd5e1; background:white; border-radius:8px; font-weight:600; cursor:pointer;">Cancel</button>
-                <button (click)="submitVoidEscrow()" [disabled]="isSubmittingVoid" style="padding:0.55rem 1.25rem; background:#dc2626; color:white; border:none; border-radius:8px; font-weight:700; cursor:pointer;">
-                  {{ isSubmittingVoid ? 'Voiding...' : 'Confirm & Void Escrow Hold' }}
+                
+                @if (!canBuyerExecuteVoid()) {
+                  <button (click)="requestVoidEscrow()" [disabled]="isSubmittingVoid" style="padding:0.55rem 1.25rem; background:#d97706; color:white; border:none; border-radius:8px; font-weight:700; cursor:pointer; display:flex; align-items:center; gap:6px;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                    <span>{{ isSubmittingVoid ? 'Sending Request...' : 'Send Request to Contractor' }}</span>
+                  </button>
+                }
+
+                <button 
+                  (click)="submitVoidEscrow()" 
+                  [disabled]="isSubmittingVoid || !canBuyerExecuteVoid()" 
+                  [style.opacity]="!canBuyerExecuteVoid() ? '0.45' : '1'"
+                  [style.cursor]="!canBuyerExecuteVoid() ? 'not-allowed' : 'pointer'"
+                  [title]="!canBuyerExecuteVoid() ? 'Disabled: Contractor consent required before voiding' : 'Execute PayPal Authorization Void'"
+                  style="padding:0.55rem 1.25rem; background:#dc2626; color:white; border:none; border-radius:8px; font-weight:700; display:flex; align-items:center; gap:6px;"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>
+                  <span>{{ isSubmittingVoid ? 'Voiding...' : 'Confirm & Void Escrow Hold' }}</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      }
+
+      <!-- Locked Project Agreement Viewer Modal -->
+      @if (isAgreementModalOpen) {
+        <div class="modal-backdrop" (click)="closeAgreementModal()">
+          <div class="agreement-viewer-modal" (click)="$event.stopPropagation()">
+            <div class="modal-head-row">
+              <div class="modal-title-cluster">
+                <span class="status-badge badge-emerald">TERMS LOCKED &amp; ESCROW FUNDED</span>
+                <h3 class="modal-dialog-title">Master Project Agreement &amp; Specifications</h3>
+                <span class="agreement-ver-pill">Version {{ projectData?.agreement?.version || 1 }}</span>
+              </div>
+              <button (click)="closeAgreementModal()" class="btn-modal-close" title="Close Agreement Viewer">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+
+            <div class="modal-scroll-body">
+              <!-- Legal Contract Clause Section -->
+              <div class="agreement-section-card">
+                <h4 class="section-title">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  <span>1. Contract Terms &amp; Clauses</span>
+                </h4>
+                <div class="contract-text-box">
+                  <pre class="legal-pre-text">{{ projectData?.agreement?.ai_generated_contract || projectData?.project?.description }}</pre>
+                </div>
+              </div>
+
+              <!-- Milestone Breakdown Section -->
+              <div class="agreement-section-card">
+                <h4 class="section-title">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#047857" stroke-width="2.2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                  <span>2. Milestone Deliverables &amp; Verification Criteria</span>
+                </h4>
+                <div class="modal-milestones-grid">
+                  @for (m of projectData?.agreement?.milestones; track $index) {
+                    <div class="modal-ms-item">
+                      <div class="modal-ms-head">
+                        <span class="m-tag">M{{ $index + 1 }}</span>
+                        <strong>{{ m.title }}</strong>
+                        <span class="m-price">${{ formatCurrency(m.price_allocation) }} USD</span>
+                      </div>
+                      <div class="modal-ms-desc-box">
+                        <span class="modal-lbl">Scope Deliverable:</span>
+                        <p>{{ m.description || 'Deliverable scope as agreed in contract specifications.' }}</p>
+                      </div>
+                      <div class="modal-ms-proof-box">
+                        <span class="modal-lbl text-emerald">Required AI Verification Proof:</span>
+                        <p>{{ m.proof_required || 'Photographic or verifiable digital deliverable proof.' }}</p>
+                      </div>
+                    </div>
+                  }
+                </div>
+              </div>
+
+              <!-- Baseline Before-Evidence Section -->
+              @if (projectData?.project?.before_evidence_path) {
+                <div class="agreement-section-card">
+                  <h4 class="section-title">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2.2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                    <span>3. Baseline Before-Evidence</span>
+                  </h4>
+                  <div class="modal-baseline-row">
+                    <img [src]="getEvidenceUrl(projectData.project.before_evidence_path)" alt="Baseline evidence" class="modal-baseline-thumb" />
+                    <div class="modal-baseline-meta">
+                      <div><strong>Status:</strong> Cryptographically Registered</div>
+                      <div class="mono-hash">SHA-256: {{ projectData.project.before_evidence_hash || 'Not recorded' }}</div>
+                    </div>
+                  </div>
+                </div>
+              }
+            </div>
+
+            <div class="modal-foot-row">
+              <button (click)="viewAgreementPage()" class="btn-open-read-only" title="Open full negotiation page in read-only mode">
+                <span>Open Dedicated Agreement View</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+              </button>
+              <button (click)="closeAgreementModal()" class="btn-close-modal-main">
+                <span>&#10005; Close &amp; Return to Fulfillment Desk</span>
+              </button>
             </div>
           </div>
         </div>

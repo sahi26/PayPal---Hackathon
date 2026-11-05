@@ -1,6 +1,7 @@
 import enum
 import datetime
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Float, Enum, JSON, Boolean
+from datetime import datetime, timezone
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Float, Enum, JSON, Boolean, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 try:
@@ -16,7 +17,7 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(100), nullable=False)
     role_type = Column(String(50), nullable=False) # 'maker' or 'customer' / 'buyer' or 'seller'
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
 
 class ProjectStatus(str, enum.Enum):
     DRAFT = "draft"
@@ -29,7 +30,10 @@ class ProjectStatus(str, enum.Enum):
     WARRANTY_PERIOD = "WARRANTY_PERIOD"
     COMPLETED = "completed"
     DISPUTED = "disputed"
+    CANCELLED = "cancelled"
+    PARTIALLY_COMPLETED_CANCELED = "partially_completed_canceled"
     REJECTED = "rejected"
+    FUNDS_AT_RISK = "FUNDS_AT_RISK"
 
 class LockInType(str, enum.Enum):
     NONE = "NONE"
@@ -52,6 +56,9 @@ class EvidenceStatus(str, enum.Enum):
 
 class Evidence(Base):
     __tablename__ = "evidence"
+    __table_args__ = (
+        UniqueConstraint("project_id", "file_hash", name="uq_project_evidence_hash"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id"))
@@ -70,7 +77,7 @@ class Evidence(Base):
     asset_url = Column(String, nullable=True) # Optional link e.g. Current Website or Figma link
     
     # Timestamps (Server-side authoritative)
-    server_receipt_timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+    server_receipt_timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # AI & Review Status
     status = Column(Enum(EvidenceStatus), default=EvidenceStatus.SUBMITTED_NOT_VERIFIED)
@@ -101,10 +108,23 @@ class Project(Base):
     project_domain = Column(String(50), default="physical", nullable=True) # "physical" | "digital"
     is_renovation = Column(Boolean, default=False, nullable=True) # true: modifying existing asset, false: built from scratch
     requires_baseline_evidence = Column(Boolean, default=False, nullable=True)
+    site_location = Column(String(100), nullable=True) # Baseline site GPS coordinates "lat,lng" for physical projects
     before_evidence_status = Column(String(50), default="pending", nullable=True) # "provided" | "exempt_no_evidence" | "pending"
     drafting_history = Column(JSON, default=list, nullable=True) # Chat history [{"role": "ai"|"user", "content": "..."}]
     contractor_rejection_reason = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
+
+    # Escrow & PayPal 29-Day Authorization Hold Tracking (Phase 1)
+    paypal_authorization_id = Column(String(100), index=True, nullable=True)
+    authorization_expires_at = Column(DateTime(timezone=True), nullable=True)
+    captured_amount = Column(Float, default=0.0, nullable=False, server_default="0.0")
+    voided_amount = Column(Float, default=0.0, nullable=False, server_default="0.0")
+
+    # Void Escrow Mutual Agreement Fields
+    void_escrow_status = Column(String(50), default="NONE", nullable=True) # NONE | PENDING_SELLER_CONSENT | SELLER_AGREED | DECLINED | VOIDED
+    void_escrow_reason = Column(Text, nullable=True)
+    void_escrow_requested_at = Column(DateTime(timezone=True), nullable=True)
+    void_escrow_responded_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     buyer = relationship("User", foreign_keys=[buyer_id], backref="bought_projects")
@@ -172,11 +192,12 @@ class Agreement(Base):
     latest_seller_message = Column(Text, nullable=True)
     version = Column(Integer, default=1)
     status = Column(String(50), default="ACTIVE") # ACTIVE, SUPERSEDED, PENDING_REVISION
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
     
     is_accepted_by_client = Column(Integer, default=0) # 0 for false, 1 for true
 
     # Warranty Lock-In (Retainage) Configuration
+    warranty_days = Column(Integer, default=0, nullable=True) # Domain-aware warranty hold days (0 for simple digital, 7 for software, 14 for physical)
     lock_in_type = Column(String(50), default="NONE", nullable=False) # NONE, FINAL_MILESTONE, CUSTOM
     lock_in_amount = Column(Float, default=0.0, nullable=False)
     lock_in_days = Column(Integer, default=0, nullable=False)
@@ -213,8 +234,8 @@ class ScopeChangeRequest(Base):
     paypal_order_id = Column(String(100), nullable=True)
     paypal_approval_url = Column(String(255), nullable=True)
     
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now(), onupdate=func.now())
 
     # Relationships
     project = relationship("Project", backref="scope_changes")
@@ -239,6 +260,7 @@ class Payment(Base):
     # PayPal identifiers
     paypal_order_id = Column(String(100), index=True, nullable=True)
     authorization_id = Column(String(100), index=True, nullable=True)
+    paypal_authorization_id = Column(String(100), index=True, nullable=True)
     capture_id = Column(String(100), index=True, nullable=True)
     
     amount = Column(Float, nullable=False)
@@ -246,11 +268,11 @@ class Payment(Base):
     status = Column(Enum(PaymentStatus), default=PaymentStatus.CREATED)
     
     # Timestamps for 29-day authorization expiration tracking
-    authorized_at = Column(DateTime, nullable=True)
-    authorization_expires_at = Column(DateTime, nullable=True) # Authorized date + 29 days
-    last_reauthorized_at = Column(DateTime, nullable=True)
-    captured_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    authorized_at = Column(DateTime(timezone=True), nullable=True)
+    authorization_expires_at = Column(DateTime(timezone=True), nullable=True) # Authorized date + 29 days
+    last_reauthorized_at = Column(DateTime(timezone=True), nullable=True)
+    captured_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
     
     # Raw PayPal responses for audit trail
     paypal_payload = Column(JSON, nullable=True)
@@ -264,18 +286,31 @@ class DisputeValidityFlag(str, enum.Enum):
     POTENTIALLY_MANIPULATED = "Potentially manipulated"
     REQUIRES_EXPERT_REVIEW = "Requires expert review"
 
+class DisputeStatus(str, enum.Enum):
+    INTERNAL_NEGOTIATION = "INTERNAL_NEGOTIATION"
+    ESCALATED_PROGRAMMATIC = "ESCALATED_PROGRAMMATIC"
+    ESCALATED_HUMAN = "ESCALATED_HUMAN"
+    RESOLVED = "RESOLVED"
+    CANCELLED = "CANCELLED"
+
 class DisputeRecord(Base):
     __tablename__ = "disputes"
 
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"))
+    project_id = Column(Integer, ForeignKey("projects.id"), index=True, nullable=False)
+    initiated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     dispute_id = Column(String(100), index=True, nullable=True) # PayPal Dispute ID e.g. PP-D-12345
     
     reason = Column(Text, nullable=False)
-    disputed_by = Column(String(50), default="buyer")
+    disputed_by = Column(String(50), default="buyer") # 'buyer' or 'seller'
     milestone_index = Column(Integer, nullable=True)
     
-    # AI Classification
+    # Tiered Escalation Status
+    status = Column(Enum(DisputeStatus), default=DisputeStatus.INTERNAL_NEGOTIATION)
+    resolution_type = Column(String(50), nullable=True) # 'SCOPE_CHANGE', 'MUTUAL_SETTLEMENT', 'PAYPAL_RULING'
+    resolution_notes = Column(Text, nullable=True)
+    
+    # AI Classification & Validity
     dispute_classification = Column(String(100), nullable=True) # missing_work, technical_defect, scope_disagreement, fraud
     validity_flag = Column(Enum(DisputeValidityFlag), default=DisputeValidityFlag.REQUIRES_EXPERT_REVIEW)
     ai_confidence_score = Column(Integer, nullable=True)
@@ -287,9 +322,52 @@ class DisputeRecord(Base):
     # PayPal Disputes API sync
     pushed_to_paypal = Column(Boolean, default=False)
     paypal_submission_response = Column(JSON, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    paypal_claim_id = Column(String(100), nullable=True)
+    escalated_to_human_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now(), onupdate=func.now())
     
     project = relationship("Project", backref="disputes")
+
+# Aliases for dispute entities
+Dispute = DisputeRecord
+
+class DisputeChatHistory(Base):
+    __tablename__ = "dispute_chat_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dispute_id = Column(Integer, ForeignKey("disputes.id"), index=True, nullable=False)
+    sender_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    sender_role = Column(String(50), nullable=False) # 'buyer', 'seller', 'system', 'ai'
+    sender_name = Column(String(100), nullable=True)
+    message = Column(Text, nullable=False)
+    proposal_type = Column(String(50), default="message") # 'message', 'remedy', 'request_proof', 'scope_change', 'escalation'
+    meta_payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
+
+    dispute = relationship("DisputeRecord", backref="chat_history")
+
+# Alias for audit trail
+ChatHistory = DisputeChatHistory
+
+class Dossier(Base):
+    __tablename__ = "dossiers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    dispute_id = Column(Integer, ForeignKey("disputes.id"), index=True, nullable=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), index=True, nullable=False)
+    dossier_id = Column(String(100), unique=True, index=True, nullable=False)
+    summary = Column(Text, nullable=True)
+    ai_classification = Column(String(100), nullable=True)
+    validity_flag = Column(String(100), nullable=True)
+    confidence_score = Column(Integer, nullable=True)
+    dossier_data = Column(JSON, nullable=False)
+    pdf_path = Column(String(500), nullable=True)
+    pushed_to_paypal = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
+
+    dispute = relationship("DisputeRecord", backref="dossier_records")
+    project = relationship("Project", backref="dossiers")
 
 
 class Invoice(Base):
@@ -318,8 +396,26 @@ class Invoice(Base):
     items = Column(JSON, nullable=True)
     metadata_json = Column(JSON, nullable=True)
     
-    issued_at = Column(DateTime(timezone=True), server_default=func.now())
+    issued_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
     paid_at = Column(DateTime(timezone=True), nullable=True)
 
     project = relationship("Project", backref="invoices")
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id"), index=True, nullable=True)
+    title = Column(String(200), nullable=False)
+    message = Column(Text, nullable=False)
+    type = Column(String(50), default="GENERAL", index=True) # FUNDS_CREDITED | VOID_ESCROW_REQUEST | VOID_ESCROW_RESPONSE | DISPUTE | GENERAL
+    is_read = Column(Boolean, default=False, index=True)
+    action_url = Column(String(300), nullable=True)
+    action_data = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
+
+    user = relationship("User", backref="notifications")
+    project = relationship("Project", backref="project_notifications")
 

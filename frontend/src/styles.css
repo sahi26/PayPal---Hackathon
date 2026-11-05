@@ -1133,3 +1133,86 @@ code, pre, .font-mono {
   .hide-on-desktop { display: block !important; }
 }
 
+/* ==========================================================================
+   GLOBAL ICON & SVG ALIGNMENT NORMALIZATION
+   Guarantees all icons are vertically and horizontally straight in all cases
+   ========================================================================== */
+svg {
+  stroke-linecap: round !important;
+  stroke-linejoin: round !important;
+  shape-rendering: geometricPrecision;
+}
+
+button svg,
+.btn svg,
+[class*="btn-"] svg,
+[class*="pill-"] svg,
+[class*="badge-"] svg,
+[class*="chip-"] svg,
+[class*="tag-"] svg,
+[class*="tab-"] svg,
+.cert-confidence-pill svg {
+  display: inline-flex !important;
+  align-self: center !important;
+  flex-shrink: 0 !important;
+  vertical-align: middle !important;
+  margin: 0 !important;
+}
+
+.pill-btn,
+.btn-approve-escrow,
+.btn-reject-escrow,
+.btn-reload-evidence,
+.btn-add-angle-subtle,
+.btn-recapture-cancel,
+.btn-refresh-status,
+.btn-back-link,
+.btn-primary-action,
+.btn-enter-dispute-room,
+.btn-early-release,
+.btn-dispute-toggle,
+.btn-equal-split,
+.btn-corp-primary,
+.cert-confidence-pill,
+.trust-badge,
+.meta-chip-due,
+.item-location-badge,
+.geo-provenance-banner,
+.badge-status-accepted,
+.badge-deadline,
+.badge-verified-protocol,
+.addendum-timeline-tag,
+.status-badge,
+.dispute-tier-tag,
+.warranty-vault-pill,
+.pill-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  vertical-align: middle !important;
+  box-sizing: border-box;
+}
+
+.pill-btn > span,
+.btn-approve-escrow > span,
+.btn-reject-escrow > span,
+.btn-reload-evidence > span,
+.cert-confidence-pill > span {
+  display: inline-flex !important;
+  align-items: center !important;
+  line-height: normal !important;
+}
+
+.pill-btn > svg,
+.btn-approve-escrow > svg,
+.btn-reject-escrow > svg,
+.btn-reload-evidence > svg,
+.cert-confidence-pill > svg {
+  display: inline-flex !important;
+  align-self: center !important;
+  vertical-align: middle !important;
+  flex-shrink: 0 !important;
+  margin: 0 !important;
+}
+
+

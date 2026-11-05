@@ -2,13 +2,12 @@ import { Component, OnInit } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
 import { API_BASE_URL } from '../api.config';
 
 @Component({
   selector: 'app-seller-invite',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule],
   templateUrl: './seller-invite.component.html',
   styleUrl: './seller-invite.component.scss'
 })
@@ -19,8 +18,8 @@ export class SellerInviteComponent implements OnInit {
   errorMessage = '';
   projectData: any = null;
 
-  sellerName = 'Master Craftsman';
-  sellerEmail = 'contractor@prooflens.com';
+  sellerName = '';
+  sellerEmail = '';
 
   constructor(
     private route: ActivatedRoute,
@@ -32,12 +31,32 @@ export class SellerInviteComponent implements OnInit {
     this.route.paramMap.subscribe(params => {
       this.token = params.get('token') || '';
       if (this.token) {
+        const user = this.getSignedInSeller();
+        if (!user) {
+          this.router.navigate(['/login'], {
+            queryParams: { role: 'seller', returnUrl: this.router.url }
+          });
+          return;
+        }
+        this.sellerName = user.full_name;
+        this.sellerEmail = user.email;
         this.fetchInviteDetails();
       } else {
         this.errorMessage = 'No invitation token found in URL.';
         this.isLoading = false;
       }
     });
+  }
+
+  private getSignedInSeller(): { full_name: string; email: string } | null {
+    try {
+      const user = JSON.parse(localStorage.getItem('prooflens_user') || 'null');
+      return user?.role_type === 'seller' && user.email && user.full_name
+        ? { full_name: user.full_name, email: user.email }
+        : null;
+    } catch {
+      return null;
+    }
   }
 
   fetchInviteDetails() {
@@ -56,10 +75,18 @@ export class SellerInviteComponent implements OnInit {
   }
 
   joinProject() {
+    const seller = this.getSignedInSeller();
+    if (!seller) {
+      this.router.navigate(['/login'], {
+        queryParams: { role: 'seller', returnUrl: this.router.url }
+      });
+      return;
+    }
+
     this.isJoining = true;
     const payload = {
-      seller_email: this.sellerEmail,
-      seller_name: this.sellerName
+      seller_email: seller.email,
+      seller_name: seller.full_name
     };
 
     this.http.post<any>(`${API_BASE_URL}/api/projects/invite/${this.token}/join`, payload)

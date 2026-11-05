@@ -42,8 +42,17 @@
       flex-wrap: wrap;
     }
     .meta-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
       font-size: 0.875rem;
       color: #64748b;
+      line-height: 1.4;
+      white-space: nowrap;
+    }
+    .meta-item svg {
+      display: block;
+      flex: 0 0 auto;
     }
     .price-tag {
       background: #dcfce7;

@@ -1,9 +1,10 @@
-import { Component } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { FormsModule, ReactiveFormsModule, FormBuilder, FormGroup, Validators } from '@angular/forms';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { API_BASE_URL } from '../api.config';
+import { requiresDigitalWarrantyHold } from '../project-warranty.utils';
 import { LiveCameraComponent } from '../live-camera/live-camera.component';
 
 interface ChatMsg {
@@ -28,6 +29,7 @@ interface DraftChatResponse {
   requires_baseline_evidence?: boolean;
   project_domain?: 'physical' | 'digital';
   is_renovation?: boolean;
+  warranty_days?: number;
 }
 
 @Component({
@@ -37,7 +39,7 @@ interface DraftChatResponse {
   templateUrl: './buyer-wizard.component.html',
   styleUrl: './buyer-wizard.component.scss'
 })
-export class BuyerWizardComponent {
+export class BuyerWizardComponent implements OnInit {
   step = 1;
   isLoading = false;
   errorMessage = '';
@@ -55,6 +57,9 @@ export class BuyerWizardComponent {
   inviteToken = '';
   inviteUrl = '';
   copyBtnText = 'Copy Link';
+  paymentStatusMessage = '';
+  aiWarrantyDays: number | null = null;
+  private handledPaypalCallback = false;
 
   // Step 2 Chat & Milestones
   userMessage = '';
@@ -82,11 +87,138 @@ export class BuyerWizardComponent {
   // Reactive Form for Warranty Lock-In (Retainage)
   warrantyForm: FormGroup;
 
-  constructor(private http: HttpClient, private router: Router, private fb: FormBuilder) {
+  constructor(
+    private http: HttpClient,
+    private router: Router,
+    private route: ActivatedRoute,
+    private fb: FormBuilder
+  ) {
     this.warrantyForm = this.fb.group({
       lockInType: ['NONE', Validators.required],
-      lockInDays: [14, [Validators.required, Validators.min(1), Validators.max(365)]],
       lockInAmount: [0, [Validators.min(0)]]
+    });
+  }
+
+  ngOnInit(): void {
+    this.route.queryParamMap.subscribe(params => {
+      const projectId = Number(params.get('project_id'));
+      if (!Number.isInteger(projectId) || projectId <= 0) return;
+
+      this.projectId = projectId;
+      const token = params.get('token') || params.get('order_id');
+      const paypalReturned = params.get('paypal_return') === '1';
+      const paypalCancelled = params.get('paypal_cancelled') === '1';
+
+      if (paypalReturned && token && !this.handledPaypalCallback) {
+        this.handledPaypalCallback = true;
+        this.isLoading = true;
+        this.paymentStatusMessage = 'Confirming PayPal escrow authorization...';
+        this.loadProject(projectId, () => this.confirmEscrowAuthorization(token));
+      } else if (paypalReturned && !token) {
+        this.paymentStatusMessage = 'PayPal returned without an order token. Retry escrow authorization.';
+        this.step = 3;
+        this.clearPaypalReturnParams(projectId);
+      } else if (paypalCancelled) {
+        this.loadProject(projectId, () => {
+          this.paymentStatusMessage = 'PayPal authorization was not completed. Retry escrow authorization to create the seller invitation.';
+          this.step = 3;
+          this.clearPaypalReturnParams(projectId);
+        });
+      } else {
+        this.loadProject(projectId, () => {
+          if (this.inviteToken) {
+            this.inviteUrl = `${window.location.origin}/invite/${this.inviteToken}`;
+            this.step = 3;
+          }
+        });
+      }
+    });
+  }
+
+  private loadProject(projectId: number, onLoaded: () => void): void {
+    this.http.get<any>(`${API_BASE_URL}/api/projects/${projectId}`).subscribe({
+      next: (res) => {
+        const project = res?.project || {};
+        this.title = project.title || this.title;
+        this.industryType = project.industry_type || this.industryType;
+        this.description = project.description || this.description;
+        this.totalPrice = Number(project.total_price ?? this.totalPrice) || 0;
+        this.deadline = project.deadline || this.deadline;
+        this.projectId = project.id || projectId;
+        this.projectDomain = project.project_domain || this.projectDomain;
+        this.isRenovation = !!project.is_renovation;
+        this.inviteToken = project.invite_token || '';
+        this.milestones = res?.agreement?.milestones || this.milestones;
+        onLoaded();
+      },
+      error: (err) => {
+        this.isLoading = false;
+        this.errorMessage = err.error?.detail || err.message || 'Could not load project after PayPal checkout.';
+        this.paymentStatusMessage = this.errorMessage;
+        this.step = 3;
+      }
+    });
+  }
+
+  private confirmEscrowAuthorization(token: string): void {
+    this.http.post<any>(
+      `${API_BASE_URL}/api/escrow/confirm-authorization?order_id=${encodeURIComponent(token)}`,
+      {}
+    ).subscribe({
+      next: (res) => {
+        this.isLoading = false;
+        this.inviteUrl = res?.seller_invite_link || '';
+        this.inviteToken = this.inviteUrl.split('/').pop() || '';
+        this.step = 3;
+        this.paymentStatusMessage = this.inviteUrl
+          ? 'Escrow is authorized. Your seller invitation is ready.'
+          : 'Escrow authorization is confirmed.';
+        this.clearPaypalReturnParams(this.projectId);
+      },
+      error: (err) => {
+        this.isLoading = false;
+        this.paymentStatusMessage = err.error?.detail || err.message || 'PayPal authorization could not be confirmed.';
+        this.step = 3;
+        this.clearPaypalReturnParams(this.projectId);
+      }
+    });
+  }
+
+  private clearPaypalReturnParams(projectId: number | null): void {
+    if (!projectId) return;
+    this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { project_id: projectId },
+      replaceUrl: true
+    });
+  }
+
+  startEscrowAuthorization(): void {
+    if (!this.projectId) return;
+    this.isLoading = true;
+    this.paymentStatusMessage = 'Creating PayPal escrow authorization...';
+    const returnUrl = `${window.location.origin}/wizard?project_id=${this.projectId}&paypal_return=1`;
+    const cancelUrl = `${window.location.origin}/wizard?project_id=${this.projectId}&paypal_cancelled=1`;
+
+    this.http.post<any>(`${API_BASE_URL}/api/payments/authorize`, {
+      project_id: this.projectId,
+      amount: Number(this.totalPrice) || undefined,
+      currency: 'USD',
+      return_url: returnUrl,
+      cancel_url: cancelUrl
+    }).subscribe({
+      next: (res) => {
+        if (!res?.approval_url) {
+          this.isLoading = false;
+          this.paymentStatusMessage = 'PayPal did not return an approval link. Please try again.';
+          return;
+        }
+        window.location.href = res.approval_url;
+      },
+      error: (err) => {
+        this.isLoading = false;
+        this.paymentStatusMessage = err.error?.detail || err.message || 'Could not start PayPal escrow authorization.';
+      }
     });
   }
 
@@ -98,14 +230,17 @@ export class BuyerWizardComponent {
   }
 
   onLockInTypeSelect(type: 'NONE' | 'FINAL_MILESTONE' | 'CUSTOM') {
+    if (this.isSimpleDigitalProject()) {
+      this.warrantyForm.patchValue({ lockInType: 'NONE', lockInAmount: 0 });
+      return;
+    }
     this.warrantyForm.patchValue({ lockInType: type });
     if (type === 'NONE') {
-      this.warrantyForm.patchValue({ lockInAmount: 0, lockInDays: 0 });
+      this.warrantyForm.patchValue({ lockInAmount: 0 });
     } else if (type === 'FINAL_MILESTONE') {
       const finalAmt = this.getFinalMilestoneAmount();
       this.warrantyForm.patchValue({
-        lockInAmount: finalAmt,
-        lockInDays: this.warrantyForm.value.lockInDays || 14
+        lockInAmount: finalAmt
       });
     } else if (type === 'CUSTOM') {
       const budget = Number(this.totalPrice) || 0;
@@ -114,8 +249,7 @@ export class BuyerWizardComponent {
         curr = Math.round(budget * 0.1) || 50;
       }
       this.warrantyForm.patchValue({
-        lockInAmount: curr,
-        lockInDays: this.warrantyForm.value.lockInDays || 14
+        lockInAmount: curr
       });
     }
   }
@@ -160,11 +294,11 @@ export class BuyerWizardComponent {
     if (type === 'FINAL_MILESTONE') {
       const finalAmt = this.getFinalMilestoneAmount();
       const sum = this.getMilestonesTotalSum();
-      return Math.abs(sum - budget) <= 0.25 && finalAmt > 0 && (Number(this.warrantyForm.value.lockInDays) || 0) > 0;
+      return Math.abs(sum - budget) <= 0.25 && finalAmt > 0 && (this.aiWarrantyDays ?? 0) > 0;
     }
     if (type === 'CUSTOM') {
       const lockInAmt = Number(this.warrantyForm.value.lockInAmount) || 0;
-      const days = Number(this.warrantyForm.value.lockInDays) || 0;
+      const days = this.aiWarrantyDays ?? 0;
       if (lockInAmt <= 0 || lockInAmt >= budget || days <= 0) return false;
       const msSum = this.getMilestonesTotalSum();
       // Enforces sum(milestones) + lock_in_amount == total_budget
@@ -238,7 +372,14 @@ export class BuyerWizardComponent {
     return digitalKeywords.some(k => text.includes(k));
   }
 
+  isSimpleDigitalProject(): boolean {
+    return this.isDigitalProject() && !requiresDigitalWarrantyHold(this.title, this.industryType, this.description);
+  }
+
   canFinalizeDraft(): boolean {
+    if (this.aiWarrantyDays === null) {
+      return false;
+    }
     if (!this.isWarrantyBudgetValid()) {
       return false;
     }
@@ -342,22 +483,42 @@ export class BuyerWizardComponent {
   }
 
   getMilestoneDefaultDeadline(index: number): string {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const d = new Date(start);
     if (this.deadline) {
       try {
-        const target = new Date(this.deadline);
-        const now = new Date();
-        const diffMs = target.getTime() - now.getTime();
-        const totalDays = Math.max(3, Math.round(diffMs / (1000 * 60 * 60 * 24)));
-        const count = Math.max(1, this.milestones.length || 3);
-        const offset = Math.min(totalDays, Math.round((totalDays / count) * (index + 1)));
-        const d = new Date();
-        d.setDate(d.getDate() + offset);
-        return d.toISOString().split('T')[0];
-      } catch (e) {}
+        const target = new Date(this.deadline.includes('T') ? this.deadline : this.deadline + 'T00:00:00');
+        const totalDays = Math.max(1, Math.round((target.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+        const count = Math.max(1, Math.min(this.milestones.length || 1, totalDays));
+        const offset = Math.min(totalDays - 1, Math.ceil((totalDays / count) * (index + 1)) - 1);
+        d.setDate(start.getDate() + offset);
+      } catch (e) {
+        d.setDate(start.getDate() + (index + 1) * 4 - 1);
+      }
+    } else {
+      d.setDate(start.getDate() + (index + 1) * 4 - 1);
     }
-    const d = new Date();
-    d.setDate(d.getDate() + (index + 1) * 4);
-    return d.toISOString().split('T')[0];
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  formatLocalDate(dateStr: string | null | undefined): string {
+    if (!dateStr) return '';
+    try {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) {
+        const parts = dateStr.trim().split('-');
+        const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+        return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+      }
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    } catch {
+      return dateStr;
+    }
   }
 
   onBeforeEvidenceCaptured(event: any) {
@@ -442,6 +603,9 @@ export class BuyerWizardComponent {
             .subscribe({
               next: (chatRes) => {
                 this.isLoading = false;
+                this.aiWarrantyDays = Number.isInteger(chatRes.warranty_days) && chatRes.warranty_days! >= 0
+                  ? chatRes.warranty_days!
+                  : null;
                 this.chatMessages = [
                   {
                     role: 'assistant',
@@ -465,10 +629,13 @@ export class BuyerWizardComponent {
               error: (chatErr) => {
                 this.isLoading = false;
                 console.warn('Draft chat init error:', chatErr);
+                const defaultMilestones = this.generateFallbackMilestones();
+                this.milestones = defaultMilestones;
+                this.isDraftComplete = true;
                 this.chatMessages = [
                   {
                     role: 'assistant',
-                    content: `Hello! I am your AI scoping assistant for "${this.title}" ($${Number(this.totalPrice || 0).toFixed(2)} USD). To break this project down into milestone-based escrow payments, what are the exact dimensions/sizes, base materials, and target delivery deadline?`
+                    content: `I have established the milestone schedule and verification criteria for "${this.title}" ($${Number(this.totalPrice || 0).toFixed(2)} USD) based on your delivery timeline (${this.deadline || 'Per Schedule'}). Review the ${defaultMilestones.length} milestones below. If you want to change any proof requirements, deadlines, or scope, simply tell me here!`
                   }
                 ];
               }
@@ -501,6 +668,9 @@ export class BuyerWizardComponent {
       .subscribe({
         next: (res) => {
           this.isLoading = false;
+          this.aiWarrantyDays = Number.isInteger(res.warranty_days) && res.warranty_days! >= 0
+            ? res.warranty_days!
+            : null;
           this.chatMessages.push({
             role: 'assistant',
             content: res.ai_response_text
@@ -524,9 +694,11 @@ export class BuyerWizardComponent {
         error: (err) => {
           this.isLoading = false;
           console.error('Draft chat error:', err);
+          this.applyUserChatInstructionLocally(text);
+          this.isDraftComplete = true;
           this.chatMessages.push({
             role: 'assistant',
-            content: `Understood! I've logged: "${text}". Please specify required verification proof or timeline to complete the milestone breakdown.`
+            content: `Agreement updated! I have adjusted the milestone specifications and proof criteria per your instruction: "${text}". Review the updated schedule and verification requirements below.`
           });
         }
       });
@@ -534,6 +706,11 @@ export class BuyerWizardComponent {
 
   finalizeDraft() {
     if (!this.projectId) return;
+
+    if (this.isSimpleDigitalProject()) {
+      this.warrantyForm.patchValue({ lockInType: 'NONE', lockInAmount: 0 });
+      this.autoBalanceMilestones();
+    }
 
     if (!this.canFinalizeDraft()) {
       if (this.projectDomain === 'physical' && this.isRenovation) {
@@ -561,16 +738,15 @@ export class BuyerWizardComponent {
       milestones: this.milestones,
       lock_in_type: this.warrantyForm.value.lockInType,
       lock_in_amount: Number(this.warrantyForm.value.lockInAmount) || 0,
-      lock_in_days: Number(this.warrantyForm.value.lockInDays) || 0
+      lock_in_days: this.aiWarrantyDays ?? 0
     };
 
     this.http.post<any>(`${API_BASE_URL}/api/projects/${this.projectId}/finalize-draft`, payload)
       .subscribe({
         next: (res) => {
           this.isLoading = false;
-          this.inviteToken = res.invite_token;
-          this.inviteUrl = res.invite_url;
-          this.step = 3;
+          this.projectId = res.project_id || this.projectId;
+          this.startEscrowAuthorization();
         },
         error: (err) => {
           this.isLoading = false;
@@ -593,5 +769,223 @@ export class BuyerWizardComponent {
 
   goToNegotiation() {
     this.router.navigate(['/project', this.projectId, 'negotiate']);
+  }
+
+  generateFallbackMilestones(): MilestoneItem[] {
+    const totalP = Number(this.totalPrice) || 0;
+    const dl = this.deadline || new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0];
+    const corpus = `${this.title || ''} ${this.industryType || ''} ${this.description || ''}`.toLowerCase();
+
+    const isDesign = corpus.includes('logo') || corpus.includes('brand') || corpus.includes('design') || corpus.includes('graphic');
+    const isSoftware = !isDesign && (corpus.includes('app') || corpus.includes('software') || corpus.includes('web') || corpus.includes('code'));
+    const isReno = corpus.includes('bath') || corpus.includes('paint') || corpus.includes('renov') || corpus.includes('plumb') || corpus.includes('sink');
+
+    const targetDate = new Date(dl);
+    const diffDays = Math.max(1, Math.round((targetDate.getTime() - Date.now()) / 86400000));
+
+    if (diffDays <= 1) {
+      // 1 day -> 1 milestone to complete in one day itself
+      return [
+        {
+          title: isDesign ? `Complete ${this.title} & Verified Asset Handover` : (isReno ? `Trade Execution, Installation & Verified Completion` : `Full Project Execution & Verified Delivery`),
+          description: `Full execution, client review, and verified handover for '${this.title}'.`,
+          price_allocation: totalP,
+          deadline: dl,
+          proof_required: isDesign ? 'Complete verified production package including high-resolution transparent PNG lockups and vector source files.' : (isReno ? 'High-resolution inspection photos and 30-second continuous video demonstration of completed, functioning work.' : 'High-resolution inspection evidence and signed delivery handover receipt.')
+        }
+      ];
+    } else if (diffDays === 2) {
+      // 2 days -> 2 milestones
+      const p1 = Math.round(totalP * 0.50 * 100) / 100;
+      const p2 = Math.round((totalP - p1) * 100) / 100;
+      const day1 = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+      return [
+        {
+          title: isDesign ? 'Creative Brief Alignment, Concepts & Lockup Draft' : 'Initial Execution & Core Assembly',
+          description: `Foundational work and draft preview for '${this.title}'.`,
+          price_allocation: p1,
+          deadline: day1,
+          proof_required: isDesign ? 'Presentation deck (PDF or PNG) showing concept explorations with typography hierarchy.' : 'Photographic inspection evidence of initial assembled work.'
+        },
+        {
+          title: isDesign ? 'Final Master Production Package & Asset Handover' : 'Final Inspection, Quality Audit & Handover',
+          description: `Final deliverable polish and verified handover for '${this.title}'.`,
+          price_allocation: p2,
+          deadline: dl,
+          proof_required: isDesign ? 'Complete downloadable production archive package (AI, EPS, SVG, and transparent PNGs).' : 'Final quality verification photos/video and signed delivery signoff.'
+        }
+      ];
+    }
+
+    const p1 = Math.round(totalP * 0.30 * 100) / 100;
+    const p2 = Math.round(totalP * 0.40 * 100) / 100;
+    const p3 = Math.round((totalP - p1 - p2) * 100) / 100;
+
+    const d1Offset = Math.max(1, Math.round(diffDays * 0.33));
+    const d2Offset = Math.max(d1Offset + 1, Math.round(diffDays * 0.67));
+    const date1 = new Date(Date.now() + d1Offset * 86400000).toISOString().split('T')[0];
+    const date2 = new Date(Date.now() + d2Offset * 86400000).toISOString().split('T')[0];
+    const m1Date = diffDays <= 1 ? dl : date1;
+    const m2Date = diffDays <= 1 ? dl : (diffDays === 2 ? dl : date2);
+
+    if (isDesign) {
+      return [
+        {
+          title: 'Creative Brief Alignment, Moodboard & Initial Concepts',
+          description: `Develop 3 distinct creative concepts, moodboard explorations, and typography pairings for '${this.title}'.`,
+          price_allocation: p1,
+          deadline: m1Date,
+          proof_required: 'Presentation deck (PDF or images) containing 3 distinct concept boards with color swatches and typography hierarchy.'
+        },
+        {
+          title: 'Concept Refinement, Iterations & Lockup Variations',
+          description: `Refine chosen direction with client revisions, finalize geometry, horizontal/vertical lockups, and application previews.`,
+          price_allocation: p2,
+          deadline: m2Date,
+          proof_required: 'High-resolution mockups (PNG or PDF) showing primary mark, secondary badge, monochrome versions, and scale legibility checks.'
+        },
+        {
+          title: 'Final Master Production Package, Style Guide & Asset Handover',
+          description: `Export complete production package: vector master files (AI, EPS, SVG), print-ready PDF (CMYK), web-optimized transparent PNGs (RGB), and brand guide.`,
+          price_allocation: p3,
+          deadline: dl,
+          proof_required: 'Downloadable production archive package containing all verified master files, exported assets, and signed brand copyright release.'
+        }
+      ];
+    } else if (isSoftware) {
+      return [
+        {
+          title: 'Wireframes, Architecture Schema & Design Approval',
+          description: `System architecture diagram, API contract specs, and UI/UX wireframes for '${this.title}'.`,
+          price_allocation: p1,
+          deadline: m1Date,
+          proof_required: 'Clickable Figma prototype link or approved technical architecture document.'
+        },
+        {
+          title: 'Core Feature Implementation & Staging Demo',
+          description: `Development of core user workflows and interactive demo on a live staging environment.`,
+          price_allocation: p2,
+          deadline: m2Date,
+          proof_required: 'Live staging preview URL with screen recording demonstrating core workflows.'
+        },
+        {
+          title: 'QA Testing, Bug Resolution & Source Repository Handover',
+          description: `Automated test coverage, production readiness audit, and Git repository transfer.`,
+          price_allocation: p3,
+          deadline: dl,
+          proof_required: 'Passing automated test suite report and GitHub repository transfer with deployment signoff.'
+        }
+      ];
+    } else if (isReno) {
+      return [
+        {
+          title: 'Surface Prep, Plumbing Rough-In & Moisture Barrier',
+          description: `Patch drywall, prepare surface, disconnect plumbing, and seal work area for '${this.title}'.`,
+          price_allocation: p1,
+          deadline: m1Date,
+          proof_required: 'High-resolution photos showing patched surface, moisture-resistant primer, and secure shutoff valves.'
+        },
+        {
+          title: 'Fixture Mounting, Plumbing Reconnection & Pressure Leak Test',
+          description: `Mount fixtures, hook up braided supply lines and P-trap drain, and test water flow.`,
+          price_allocation: p2,
+          deadline: m2Date,
+          proof_required: 'Continuous 30-second video demonstrating full water flow with dry paper towel inspection showing zero leaks.'
+        },
+        {
+          title: 'Two-Coat Finish Paint, Perimeter Silicone Seal & Final Cleanup',
+          description: `Apply 2 coats of moisture-resistant paint, apply sanitary silicone caulk bead, and clean work area.`,
+          price_allocation: p3,
+          deadline: dl,
+          proof_required: 'Wide-angle inspection photos of uniform finish and close-up of watertight perimeter silicone seal.'
+        }
+      ];
+    } else {
+      return [
+        {
+          title: 'Project Initiation & Specification Alignment',
+          description: `Detailed kickoff, material procurement, and foundational work for '${this.title}'.`,
+          price_allocation: p1,
+          deadline: m1Date,
+          proof_required: 'Kickoff specification document or initial raw material inspection photos.'
+        },
+        {
+          title: 'Core Execution & Deliverable Assembly',
+          description: `Primary production or fulfillment phase meeting agreed project requirements.`,
+          price_allocation: p2,
+          deadline: m2Date,
+          proof_required: 'Photographic and video progress proof of the assembled deliverables.'
+        },
+        {
+          title: 'Final Quality Review, Delivery & Verification',
+          description: `Final inspection, verification against requirements, and completed delivery handover.`,
+          price_allocation: p3,
+          deadline: dl,
+          proof_required: 'Completed deliverable signoff inspection and delivery confirmation receipt.'
+        }
+      ];
+    }
+  }
+
+  applyUserChatInstructionLocally(text: string) {
+    const lower = text.toLowerCase();
+    const dayMatch = lower.match(/\b(\d+)\s*(day|week)s?\b/);
+    const wantsThree = lower.includes('three milestones') || lower.includes('3 milestones');
+
+    if (dayMatch && !wantsThree) {
+      const count = parseInt(dayMatch[1], 10);
+      const totalDays = dayMatch[2].startsWith('week') ? count * 7 : count;
+      this.deadline = new Date(Date.now() + totalDays * 86400000).toISOString().split('T')[0];
+      this.milestones = this.generateFallbackMilestones();
+    } else if (!this.milestones || this.milestones.length === 0) {
+      this.milestones = this.generateFallbackMilestones();
+    }
+
+    const targetIdx = this.milestones.length > 1 ? 1 : 0;
+
+    // Detect color specifications (e.g. 'blue colour logo only', 'blue color', 'blue')
+    const colorMatch = lower.match(/\b(blue|navy|royal blue|sky blue|cyan|teal|red|crimson|green|emerald|yellow|gold|orange|purple|violet|pink|black|white|monochrome|ivory)\b/);
+    const isStrictOnly = lower.includes('only');
+    const colorSpec = colorMatch ? (isStrictOnly ? `${colorMatch[1]} color only` : `${colorMatch[1]} color scheme`) : '';
+
+    if (colorSpec) {
+      const hasPng = lower.includes('png');
+      const fmtDesc = hasPng ? 'transparent PNG mockups' : 'deliverable mockups';
+      this.milestones[targetIdx].proof_required = `High-resolution ${fmtDesc} strictly featuring the logo in ${colorSpec} (per client specification), with horizontal and vertical lockup variations.`;
+      if (!this.milestones[targetIdx].description.toLowerCase().includes(colorSpec)) {
+        this.milestones[targetIdx].description += ` (Strict color specification: ${colorSpec})`;
+      }
+    } else if (lower.includes('png') || lower.includes('lockup')) {
+      this.milestones[targetIdx].proof_required = 'High-resolution transparent PNG mockups showing primary and secondary variations with horizontal and vertical lockups.';
+    }
+
+    // Check for vector files request
+    if (lower.includes('vector') || lower.includes('svg') || lower.includes('eps') || lower.includes('.ai')) {
+      const lastIdx = this.milestones.length - 1;
+      this.milestones[lastIdx].proof_required = 'Complete downloadable vector production archive (AI, EPS, SVG) and high-resolution master asset handover.';
+    }
+
+    // Check for Figma request
+    if (lower.includes('figma')) {
+      this.milestones[0].proof_required = 'Interactive Figma design workspace link with component design tokens.';
+    }
+
+    // Check for video request
+    if (lower.includes('video')) {
+      this.milestones[targetIdx].proof_required = 'Continuous high-definition video walkthrough demonstrating agreed deliverable functionality.';
+    }
+
+    // Check for photo request
+    if (lower.includes('photo') || lower.includes('image')) {
+      this.milestones[targetIdx].proof_required = 'High-resolution multi-angle photographic inspection of completed deliverable.';
+    }
+
+    // Any other custom specification
+    if (!colorSpec && text.trim().length > 1 && !['png', 'vector', 'figma', 'video', 'photo'].some(k => lower.includes(k))) {
+      this.milestones[targetIdx].description += ` [${text.trim()}]`;
+      this.milestones[targetIdx].proof_required += ` [Inspection requirement: ${text.trim()}]`;
+    }
+
+    this.isDraftComplete = true;
   }
 }

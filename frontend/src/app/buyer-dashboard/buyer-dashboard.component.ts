@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -60,7 +60,7 @@ interface DraftChatResponse {
   templateUrl: './buyer-dashboard.component.html',
   styleUrl: './buyer-dashboard.component.scss'
 })
-export class BuyerDashboardComponent implements OnInit {
+export class BuyerDashboardComponent implements OnInit, OnDestroy {
   currentView: 'dashboard' | 'create' = 'dashboard';
   wizardStep = 1;
 
@@ -70,6 +70,7 @@ export class BuyerDashboardComponent implements OnInit {
   searchQuery = '';
   isLoadingProjects = true;
   private gridApi!: GridApi;
+  private projectRefreshInterval: ReturnType<typeof setInterval> | null = null;
 
   // KPI Metrics
   totalEscrowValue = 0;
@@ -214,8 +215,12 @@ export class BuyerDashboardComponent implements OnInit {
         let dot = '#94A3B8';
         let label = 'DRAFT';
 
-        if (val === 'accepted') {
+        if (val === 'completed') {
+          bg = '#ECFDF5'; color = '#047857'; border = '#A7F3D0'; dot = '#10B981'; label = 'ESCROW COMPLETED';
+        } else if (val === 'accepted') {
           bg = '#ECFDF5'; color = '#047857'; border = '#A7F3D0'; dot = '#10B981'; label = 'ACCEPTED & FUNDED';
+        } else if (val === 'pending_funds') {
+          bg = '#EEF2FF'; color = '#4338CA'; border = '#C7D2FE'; dot = '#6366F1'; label = 'AWAITING ESCROW';
         } else if (val === 'negotiating') {
           bg = '#FFFBEB'; color = '#B45309'; border = '#FDE68A'; dot = '#F59E0B'; label = 'IN NEGOTIATION';
         } else if (val === 'seller_joined') {
@@ -274,7 +279,18 @@ export class BuyerDashboardComponent implements OnInit {
       headerName: 'Timeline',
       width: 155,
       cellRenderer: (params: any) => {
-        const init = params.value || 'Nov 01, 2026';
+        let init = params.value;
+        if (init && (init.includes('T') || (init.includes('-') && init.length > 7))) {
+          try {
+            const parsed = new Date(init);
+            if (!isNaN(parsed.getTime())) {
+              init = parsed.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
+            }
+          } catch (_) {}
+        }
+        if (!init) {
+          init = new Date().toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
+        }
         const deadline = params.data?.deadline ? `<span style="font-size:11px; font-weight:700; color:#D97706; display:block; margin-top:2px;">Due: ${params.data.deadline}</span>` : '';
         return `
           <div style="display:flex; flex-direction:column; justify-content:center; height:100%; line-height:1.3;">
@@ -291,12 +307,15 @@ export class BuyerDashboardComponent implements OnInit {
         const id = params.data?.id;
         const token = params.data?.invite_token;
         const status = (params.data?.status || '').toLowerCase();
-        const canDelete = params.data?.can_delete !== false && !['accepted', 'active', 'in_review'].includes(status);
-        const disabledReason = params.data?.delete_disabled_reason || 'Cannot delete: Active PayPal escrow funds are held in vault.';
+        const canDelete = status === 'draft';
+        const disabledReason = canDelete ? '' : 'Cannot delete: Only projects strictly in DRAFT status can be deleted.';
+        const isAccepted = !!params.data?.is_accepted ||
+          ['accepted', 'active', 'in_review', 'warranty_period', 'completed', 'pending_funds'].includes(status);
+        const hasInvite = status === 'invite_sent' || !!token;
 
-        const copyBtnHtml = token
+        const copyBtnHtml = hasInvite
           ? `
-            <button onclick="window.dispatchEvent(new CustomEvent('copyToken', {detail: '${token}'}))"
+            <button onclick="window.dispatchEvent(new CustomEvent('copyToken', {detail: '${token || id}'}))"
                     title="Copy contractor invite link"
                     class="btn-grid-copy"
                     style="background: #ffffff; color: #0070BA; border: 1.5px solid #CBD5E1; min-width: 76px; height: 28px; padding: 0 8px; border-radius: 6px; font-size: 11.5px; font-weight: 700; cursor: pointer; transition: all 0.15s ease; display: inline-flex; align-items: center; justify-content: center;">
@@ -336,14 +355,27 @@ export class BuyerDashboardComponent implements OnInit {
             </button>
           `;
 
-        return `
-          <div style="display: flex; gap: 6px; align-items: center; height: 100%;">
+        const primaryActionHtml = isAccepted
+          ? `
+            <button onclick="window.dispatchEvent(new CustomEvent('openFulfillment', {detail: ${id}}))"
+                    title="Go to Milestone Fulfillment Desk"
+                    style="background: linear-gradient(180deg, #10B981 0%, #059669 100%); color: white; border: 1px solid rgba(4,120,87,0.4); min-width: 95px; height: 28px; padding: 0 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 4px; box-shadow: 0 1px 3px rgba(16,185,129,0.25);">
+              <span>Fulfillment</span>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
+          `
+          : `
             <button onclick="window.dispatchEvent(new CustomEvent('openRoom', {detail: ${id}}))"
                     title="Open Negotiation Room"
                     style="background: linear-gradient(180deg, #0079C1 0%, #00457C 100%); color: white; border: 1px solid rgba(0,44,102,0.4); min-width: 95px; height: 28px; padding: 0 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 4px; box-shadow: 0 1px 3px rgba(0,112,186,0.25);">
               <span>Open Room</span>
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17l9.2-9.2M17 17V7H7"/></svg>
             </button>
+          `;
+
+        return `
+          <div style="display: flex; gap: 6px; align-items: center; height: 100%;">
+            ${primaryActionHtml}
             ${copyBtnHtml}
             ${deleteBtnHtml}
           </div>
@@ -361,10 +393,14 @@ export class BuyerDashboardComponent implements OnInit {
 
   ngOnInit() {
     this.loadProjects();
+    this.projectRefreshInterval = setInterval(() => this.loadProjects(true), 15000);
 
     // Listen to AG Grid custom event button clicks
     window.addEventListener('openRoom', (event: any) => {
       this.enterNegotiationRoom(event.detail);
+    });
+    window.addEventListener('openFulfillment', (event: any) => {
+      this.enterFulfillment(event.detail);
     });
     window.addEventListener('copyToken', (event: any) => {
       const url = `http://localhost:4200/invite/${event.detail}`;
@@ -377,6 +413,23 @@ export class BuyerDashboardComponent implements OnInit {
     window.addEventListener('deleteProjectPrompt', (event: any) => {
       this.promptDeleteProject(event.detail);
     });
+  }
+
+  ngOnDestroy() {
+    if (this.projectRefreshInterval) {
+      clearInterval(this.projectRefreshInterval);
+      this.projectRefreshInterval = null;
+    }
+  }
+
+  enterFulfillment(projectId: number) {
+    this.router.navigate([`/project/${projectId}/fulfillment`], { queryParams: { role: 'buyer' } });
+  }
+
+  isProjectAccepted(p: any): boolean {
+    if (!p) return false;
+    const st = (p.status || '').toLowerCase();
+    return !!p.is_accepted || ['accepted', 'active', 'in_review', 'warranty_period', 'completed', 'pending_funds'].includes(st);
   }
 
   openProjectScopeDrawer(projectId: number) {
@@ -424,17 +477,17 @@ export class BuyerDashboardComponent implements OnInit {
 
   canDeleteProject(p: any): boolean {
     if (!p) return false;
-    if (p.can_delete === false) return false;
     const st = (p.status || '').toLowerCase();
-    if (['accepted', 'active', 'in_review'].includes(st)) {
-      return false;
-    }
-    return true;
+    return st === 'draft';
   }
 
   getDeleteDisabledReason(p: any): string {
-    if (!p) return '';
-    return p.delete_disabled_reason || 'Active PayPal escrow funds are held in vault. Must complete milestones or issue refund before deleting.';
+    if (!p) return 'Cannot delete project.';
+    const st = (p.status || '').toLowerCase();
+    if (st !== 'draft') {
+      return 'Delete is strictly permitted only for projects in DRAFT status.';
+    }
+    return 'Cannot delete project.';
   }
 
   promptDeleteProject(projectId: number) {
@@ -493,7 +546,8 @@ export class BuyerDashboardComponent implements OnInit {
 
   getStatusBadgeClass(status: string): string {
     const s = (status || '').toLowerCase();
-    if (s === 'accepted' || s === 'active') return 'badge-emerald';
+    if (s === 'accepted' || s === 'active' || s === 'completed') return 'badge-emerald';
+    if (s === 'pending_funds') return 'badge-indigo';
     if (s === 'negotiating') return 'badge-amber';
     if (s === 'seller_joined') return 'badge-blue';
     if (s === 'invite_sent') return 'badge-indigo';
@@ -505,6 +559,8 @@ export class BuyerDashboardComponent implements OnInit {
     const s = (status || '').toLowerCase();
     if (s === 'accepted') return 'ACCEPTED & FUNDED';
     if (s === 'active') return 'ACTIVE ESCROW';
+    if (s === 'pending_funds') return 'AWAITING ESCROW';
+    if (s === 'completed') return 'ESCROW COMPLETED';
     if (s === 'negotiating') return 'IN NEGOTIATION';
     if (s === 'seller_joined') return 'SELLER JOINED';
     if (s === 'invite_sent') return 'INVITE SENT';
@@ -512,22 +568,25 @@ export class BuyerDashboardComponent implements OnInit {
     return 'DRAFT';
   }
 
-  loadProjects() {
-    this.isLoadingProjects = true;
-    const start = Date.now();
+  loadProjects(silent = false) {
+    if (!silent) this.isLoadingProjects = true;
+    const start = silent ? 0 : Date.now();
     this.http.get<ProjectRow[]>(`${API_BASE_URL}/api/projects`)
       .subscribe({
         next: (data) => {
           this.projects = data || [];
           this.filteredProjects = [...this.projects];
           this.calculateKpis();
-          const elapsed = Date.now() - start;
-          const remaining = Math.max(0, 450 - elapsed);
-          setTimeout(() => {
-            this.isLoadingProjects = false;
-          }, remaining);
+          if (!silent) {
+            const elapsed = Date.now() - start;
+            const remaining = Math.max(0, 450 - elapsed);
+            setTimeout(() => {
+              this.isLoadingProjects = false;
+            }, remaining);
+          }
         },
         error: () => {
+          if (silent) return;
           this.projects = [];
           this.filteredProjects = [];
           this.isLoadingProjects = false;
@@ -676,15 +735,21 @@ export class BuyerDashboardComponent implements OnInit {
                 if (chatRes.status === 'complete' && chatRes.milestones && chatRes.milestones.length > 0) {
                   this.isDraftComplete = true;
                   this.milestones = chatRes.milestones;
+                } else {
+                  this.isDraftComplete = false;
+                  this.milestones = [];
                 }
               },
               error: (chatErr) => {
                 this.isAiThinking = false;
                 console.warn('Draft chat init error:', chatErr);
+                const defaultMilestones = this.generateFallbackMilestones();
+                this.milestones = defaultMilestones;
+                this.isDraftComplete = true;
                 this.chatMessages = [
                   {
                     role: 'assistant',
-                    content: `Hello! I am your AI scoping assistant for "${this.newProject.title}" ($${Number(this.newProject.total_price || 0).toFixed(2)} USD). To break this project down into milestone-based escrow payments, what are the exact dimensions/sizes, base materials, and target delivery deadline?`
+                    content: `I have established the milestone schedule and verification criteria for "${this.newProject.title}" ($${Number(this.newProject.total_price || 0).toFixed(2)} USD) based on your delivery timeline (${this.newProject.deadline || 'Per Schedule'}). Review the ${defaultMilestones.length} milestones below. If you want to change any proof requirements, deadlines, or scope, simply tell me here!`
                   }
                 ];
               }
@@ -734,14 +799,19 @@ export class BuyerDashboardComponent implements OnInit {
           if (res.status === 'complete' && res.milestones && res.milestones.length > 0) {
             this.isDraftComplete = true;
             this.milestones = res.milestones;
+          } else {
+            this.isDraftComplete = false;
+            this.milestones = [];
           }
         },
         error: (err) => {
           this.isAiThinking = false;
           console.error('Draft chat error:', err);
+          this.applyUserChatInstructionLocally(text);
+          this.isDraftComplete = true;
           this.chatMessages.push({
             role: 'assistant',
-            content: `Understood! I've logged: "${text}". Please specify required verification proof or timeline to complete the milestone breakdown.`
+            content: `Agreement updated! I have adjusted the milestone specifications and proof criteria per your instruction: "${text}". Review the updated schedule and verification requirements below.`
           });
         }
       });
@@ -901,10 +971,27 @@ export class BuyerDashboardComponent implements OnInit {
     this.http.post<any>(`${API_BASE_URL}/api/projects/${this.createdProjectId}/finalize-draft`, payload)
       .subscribe({
         next: (res) => {
-          this.isSubmitting = false;
-          this.createdInviteToken = res.invite_token;
-          this.createdInviteUrl = res.invite_url;
-          this.wizardStep = 3;
+          const projectId = res.project_id || this.createdProjectId;
+          this.http.post<any>(`${API_BASE_URL}/api/payments/authorize`, {
+            project_id: projectId,
+            amount: Number(this.newProject?.total_price) || undefined,
+            currency: 'USD',
+            return_url: `${window.location.origin}/wizard?project_id=${projectId}&paypal_return=1`,
+            cancel_url: `${window.location.origin}/wizard?project_id=${projectId}&paypal_cancelled=1`
+          }).subscribe({
+            next: (paymentRes) => {
+              this.isSubmitting = false;
+              if (!paymentRes?.approval_url) {
+                alert('PayPal did not return an approval link. Please retry escrow authorization from the project.');
+                return;
+              }
+              window.location.href = paymentRes.approval_url;
+            },
+            error: (err) => {
+              this.isSubmitting = false;
+              alert('Failed to start PayPal escrow authorization: ' + (err.error?.detail || err.message));
+            }
+          });
         },
         error: (err) => {
           this.isSubmitting = false;
@@ -927,5 +1014,225 @@ export class BuyerDashboardComponent implements OnInit {
 
   enterNegotiationRoom(projectId: number) {
     this.router.navigate(['/project', projectId, 'negotiate'], { queryParams: { role: 'buyer' } });
+  }
+
+  generateFallbackMilestones(): MilestoneItem[] {
+    const totalP = Number(this.newProject?.total_price) || 0;
+    const dl = this.newProject?.deadline || new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0];
+    const corpus = `${this.newProject?.title || ''} ${this.newProject?.industry_type || ''} ${this.newProject?.description || ''}`.toLowerCase();
+
+    const isDesign = corpus.includes('logo') || corpus.includes('brand') || corpus.includes('design') || corpus.includes('graphic');
+    const isSoftware = !isDesign && (corpus.includes('app') || corpus.includes('software') || corpus.includes('web') || corpus.includes('code'));
+    const isReno = corpus.includes('bath') || corpus.includes('paint') || corpus.includes('renov') || corpus.includes('plumb') || corpus.includes('sink');
+
+    const targetDate = new Date(dl);
+    const diffDays = Math.max(1, Math.round((targetDate.getTime() - Date.now()) / 86400000));
+
+    if (diffDays <= 1) {
+      // 1 day -> 1 milestone to complete in one day itself
+      return [
+        {
+          title: isDesign ? `Complete ${this.newProject?.title || 'Deliverable'} & Verified Asset Handover` : (isReno ? `Trade Execution, Installation & Verified Completion` : `Full Project Execution & Verified Delivery`),
+          description: `Full execution, client review, and verified handover for '${this.newProject?.title || 'Deliverable'}'.`,
+          price_allocation: totalP,
+          deadline: dl,
+          proof_required: isDesign ? 'Complete verified production package including high-resolution transparent PNG lockups and vector source files.' : (isReno ? 'High-resolution inspection photos and 30-second continuous video demonstration of completed, functioning work.' : 'High-resolution inspection evidence and signed delivery handover receipt.')
+        }
+      ];
+    } else if (diffDays === 2) {
+      // 2 days -> 2 milestones
+      const p1 = Math.round(totalP * 0.50 * 100) / 100;
+      const p2 = Math.round((totalP - p1) * 100) / 100;
+      const day1 = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+      return [
+        {
+          title: isDesign ? 'Creative Brief Alignment, Concepts & Lockup Draft' : 'Initial Execution & Core Assembly',
+          description: `Foundational work and draft preview for '${this.newProject?.title}'.`,
+          price_allocation: p1,
+          deadline: day1,
+          proof_required: isDesign ? 'Presentation deck (PDF or PNG) showing concept explorations with typography hierarchy.' : 'Photographic inspection evidence of initial assembled work.'
+        },
+        {
+          title: isDesign ? 'Final Master Production Package & Asset Handover' : 'Final Inspection, Quality Audit & Handover',
+          description: `Final deliverable polish and verified handover for '${this.newProject?.title}'.`,
+          price_allocation: p2,
+          deadline: dl,
+          proof_required: isDesign ? 'Complete downloadable production archive package (AI, EPS, SVG, and transparent PNGs).' : 'Final quality verification photos/video and signed delivery signoff.'
+        }
+      ];
+    }
+
+    const p1 = Math.round(totalP * 0.30 * 100) / 100;
+    const p2 = Math.round(totalP * 0.40 * 100) / 100;
+    const p3 = Math.round((totalP - p1 - p2) * 100) / 100;
+
+    const d1Offset = Math.max(1, Math.round(diffDays * 0.33));
+    const d2Offset = Math.max(d1Offset + 1, Math.round(diffDays * 0.67));
+    const date1 = new Date(Date.now() + d1Offset * 86400000).toISOString().split('T')[0];
+    const date2 = new Date(Date.now() + d2Offset * 86400000).toISOString().split('T')[0];
+    const m1Date = diffDays <= 1 ? dl : date1;
+    const m2Date = diffDays <= 1 ? dl : (diffDays === 2 ? dl : date2);
+
+    if (isDesign) {
+      return [
+        {
+          title: 'Creative Brief Alignment, Moodboard & Initial Concepts',
+          description: `Develop 3 distinct creative concepts, moodboard explorations, and typography pairings for '${this.newProject.title}'.`,
+          price_allocation: p1,
+          deadline: m1Date,
+          proof_required: 'Presentation deck (PDF or images) containing 3 distinct concept boards with color swatches and typography hierarchy.'
+        },
+        {
+          title: 'Concept Refinement, Iterations & Lockup Variations',
+          description: `Refine chosen direction with client revisions, finalize geometry, horizontal/vertical lockups, and application previews.`,
+          price_allocation: p2,
+          deadline: m2Date,
+          proof_required: 'High-resolution mockups (PNG or PDF) showing primary mark, secondary badge, monochrome versions, and scale legibility checks.'
+        },
+        {
+          title: 'Final Master Production Package, Style Guide & Asset Handover',
+          description: `Export complete production package: vector master files (AI, EPS, SVG), print-ready PDF (CMYK), web-optimized transparent PNGs (RGB), and brand guide.`,
+          price_allocation: p3,
+          deadline: dl,
+          proof_required: 'Downloadable production archive package containing all verified master files, exported assets, and signed brand copyright release.'
+        }
+      ];
+    } else if (isSoftware) {
+      return [
+        {
+          title: 'Wireframes, Architecture Schema & Design Approval',
+          description: `System architecture diagram, API contract specs, and UI/UX wireframes for '${this.newProject.title}'.`,
+          price_allocation: p1,
+          deadline: m1Date,
+          proof_required: 'Clickable Figma prototype link or approved technical architecture document.'
+        },
+        {
+          title: 'Core Feature Implementation & Staging Demo',
+          description: `Development of core user workflows and interactive demo on a live staging environment.`,
+          price_allocation: p2,
+          deadline: m2Date,
+          proof_required: 'Live staging preview URL with screen recording demonstrating core workflows.'
+        },
+        {
+          title: 'QA Testing, Bug Resolution & Source Repository Handover',
+          description: `Automated test coverage, production readiness audit, and Git repository transfer.`,
+          price_allocation: p3,
+          deadline: dl,
+          proof_required: 'Passing automated test suite report and GitHub repository transfer with deployment signoff.'
+        }
+      ];
+    } else if (isReno) {
+      return [
+        {
+          title: 'Surface Prep, Plumbing Rough-In & Moisture Barrier',
+          description: `Patch drywall, prepare surface, disconnect plumbing, and seal work area for '${this.newProject.title}'.`,
+          price_allocation: p1,
+          deadline: m1Date,
+          proof_required: 'High-resolution photos showing patched surface, moisture-resistant primer, and secure shutoff valves.'
+        },
+        {
+          title: 'Fixture Mounting, Plumbing Reconnection & Pressure Leak Test',
+          description: `Mount fixtures, hook up braided supply lines and P-trap drain, and test water flow.`,
+          price_allocation: p2,
+          deadline: m2Date,
+          proof_required: 'Continuous 30-second video demonstrating full water flow with dry paper towel inspection showing zero leaks.'
+        },
+        {
+          title: 'Two-Coat Finish Paint, Perimeter Silicone Seal & Final Cleanup',
+          description: `Apply 2 coats of moisture-resistant paint, apply sanitary silicone caulk bead, and clean work area.`,
+          price_allocation: p3,
+          deadline: dl,
+          proof_required: 'Wide-angle inspection photos of uniform finish and close-up of watertight perimeter silicone seal.'
+        }
+      ];
+    } else {
+      return [
+        {
+          title: 'Project Initiation & Specification Alignment',
+          description: `Detailed kickoff, material procurement, and foundational work for '${this.newProject.title}'.`,
+          price_allocation: p1,
+          deadline: m1Date,
+          proof_required: 'Kickoff specification document or initial raw material inspection photos.'
+        },
+        {
+          title: 'Core Execution & Deliverable Assembly',
+          description: `Primary production or fulfillment phase meeting agreed project requirements.`,
+          price_allocation: p2,
+          deadline: m2Date,
+          proof_required: 'Photographic and video progress proof of the assembled deliverables.'
+        },
+        {
+          title: 'Final Quality Review, Delivery & Verification',
+          description: `Final inspection, verification against requirements, and completed delivery handover.`,
+          price_allocation: p3,
+          deadline: dl,
+          proof_required: 'Completed deliverable signoff inspection and delivery confirmation receipt.'
+        }
+      ];
+    }
+  }
+
+  applyUserChatInstructionLocally(text: string) {
+    const lower = text.toLowerCase();
+    const dayMatch = lower.match(/\b(\d+)\s*(day|week)s?\b/);
+    const wantsThree = lower.includes('three milestones') || lower.includes('3 milestones');
+
+    if (dayMatch && !wantsThree) {
+      const count = parseInt(dayMatch[1], 10);
+      const totalDays = dayMatch[2].startsWith('week') ? count * 7 : count;
+      if (this.newProject) {
+        this.newProject.deadline = new Date(Date.now() + totalDays * 86400000).toISOString().split('T')[0];
+      }
+      this.milestones = this.generateFallbackMilestones();
+    } else if (!this.milestones || this.milestones.length === 0) {
+      this.milestones = this.generateFallbackMilestones();
+    }
+
+    const targetIdx = this.milestones.length > 1 ? 1 : 0;
+
+    // Detect color specifications (e.g. 'blue colour logo only', 'blue color', 'blue')
+    const colorMatch = lower.match(/\b(blue|navy|royal blue|sky blue|cyan|teal|red|crimson|green|emerald|yellow|gold|orange|purple|violet|pink|black|white|monochrome|ivory)\b/);
+    const isStrictOnly = lower.includes('only');
+    const colorSpec = colorMatch ? (isStrictOnly ? `${colorMatch[1]} color only` : `${colorMatch[1]} color scheme`) : '';
+
+    if (colorSpec) {
+      const hasPng = lower.includes('png');
+      const fmtDesc = hasPng ? 'transparent PNG mockups' : 'deliverable mockups';
+      this.milestones[targetIdx].proof_required = `High-resolution ${fmtDesc} strictly featuring the logo in ${colorSpec} (per client specification), with horizontal and vertical lockup variations.`;
+      if (!this.milestones[targetIdx].description.toLowerCase().includes(colorSpec)) {
+        this.milestones[targetIdx].description += ` (Strict color specification: ${colorSpec})`;
+      }
+    } else if (lower.includes('png') || lower.includes('lockup')) {
+      this.milestones[targetIdx].proof_required = 'High-resolution transparent PNG mockups showing primary and secondary variations with horizontal and vertical lockups.';
+    }
+
+    // Check for vector files request
+    if (lower.includes('vector') || lower.includes('svg') || lower.includes('eps') || lower.includes('.ai')) {
+      const lastIdx = this.milestones.length - 1;
+      this.milestones[lastIdx].proof_required = 'Complete downloadable vector production archive (AI, EPS, SVG) and high-resolution master asset handover.';
+    }
+
+    // Check for Figma request
+    if (lower.includes('figma')) {
+      this.milestones[0].proof_required = 'Interactive Figma design workspace link with component design tokens.';
+    }
+
+    // Check for video request
+    if (lower.includes('video')) {
+      this.milestones[targetIdx].proof_required = 'Continuous high-definition video walkthrough demonstrating agreed deliverable functionality.';
+    }
+
+    // Check for photo request
+    if (lower.includes('photo') || lower.includes('image')) {
+      this.milestones[targetIdx].proof_required = 'High-resolution multi-angle photographic inspection of completed deliverable.';
+    }
+
+    // Any other custom specification
+    if (!colorSpec && text.trim().length > 1 && !['png', 'vector', 'figma', 'video', 'photo'].some(k => lower.includes(k))) {
+      this.milestones[targetIdx].description += ` [${text.trim()}]`;
+      this.milestones[targetIdx].proof_required += ` [Inspection requirement: ${text.trim()}]`;
+    }
+
+    this.isDraftComplete = true;
   }
 }
