@@ -1053,24 +1053,98 @@
 
 @media (max-width: 640px) {
   .buyer-shell {
-    padding: 0 0.5rem;
+    padding: 0;
   }
   .console-hero-card {
-    padding: 1.25rem;
+    padding: 1rem;
+    border-radius: var(--radius-lg);
   }
   .hero-top-bar {
     flex-direction: column;
     align-items: flex-start;
+    gap: 1rem;
+  }
+  .user-identity-cluster {
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+  .buyer-avatar-bubble {
+    width: 42px;
+    height: 42px;
+    flex: 0 0 42px;
+  }
+  .hero-heading {
+    font-size: 1.25rem;
+  }
+  .hero-subtext {
+    font-size: 0.8rem;
+  }
+  .greeting-row {
+    align-items: flex-start;
+    gap: 0.45rem;
+  }
+  .hero-action-buttons,
+  .hero-action-buttons > button {
+    width: 100%;
+  }
+  .hero-action-buttons > button {
+    justify-content: center;
   }
   .kpi-metrics-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
+    margin-top: 1rem;
+  }
+  .kpi-card {
+    padding: 0.85rem;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+  .kpi-eyebrow {
+    font-size: 0.62rem;
+  }
+  .kpi-stat-value {
+    font-size: 1.25rem;
+    overflow-wrap: anywhere;
+  }
+  .kpi-sub-meta {
+    font-size: 0.68rem;
+  }
+  .kpi-icon-bubble {
+    width: 32px;
+    height: 32px;
+    flex: 0 0 32px;
   }
   .table-toolbar-card {
     flex-direction: column;
     align-items: flex-start;
+    padding: 1rem;
+    gap: 0.85rem;
+  }
+  .toolbar-title-group,
+  .toolbar-action-group {
+    width: 100%;
+  }
+  .table-title-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .toolbar-action-group {
+    flex-direction: column;
+    align-items: stretch;
   }
   .search-input-wrapper {
     width: 100%;
+  }
+  .btn-refresh {
+    width: 100%;
+    justify-content: center;
+  }
+  .console-body-section {
+    gap: 0.75rem;
+  }
+  .ag-grid-fintech-container {
+    border: 1px solid var(--slate-200);
   }
   .form-grid-layout {
     grid-template-columns: 1fr;
@@ -1083,10 +1157,10 @@
 
 @media (max-width: 480px) {
   .console-hero-card {
-    padding: 1rem 0.75rem;
+    padding: 0.85rem;
   }
   .wizard-form-card {
-    padding: 1.15rem 0.75rem;
+    padding: 1rem 0.85rem;
   }
   .panel-header-strip {
     flex-direction: column;
@@ -1105,6 +1179,12 @@
   .captured-success-card {
     flex-direction: column;
     align-items: flex-start;
+  }
+}
+
+@media (max-width: 360px) {
+  .kpi-metrics-grid {
+    grid-template-columns: 1fr;
   }
 }
 

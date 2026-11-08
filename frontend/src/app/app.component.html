@@ -1,4 +1,4 @@
-<div class="main-shell">
+<div class="main-shell" [class.login-route]="isLoginPage">
   <!-- Top Utility Ribbon: Security & Sandbox Notification -->
   <div class="top-utility-ribbon">
     <div class="ribbon-content">
@@ -21,18 +21,13 @@
   <header class="pp-navbar">
     <div class="nav-container">
       <div class="nav-brand-group">
-        <a routerLink="/" class="brand-link" (click)="closeMobileMenu()">
+        <a [routerLink]="currentUser ? dashboardRoute : '/'" class="brand-link" (click)="closeMobileMenu()">
           <div class="pp-brand-icon">
-            <!-- Official PayPal Monogram Duo-tone -->
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-              <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
-              <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
-            </svg>
+            <img [src]="appLogo" alt="ProofLens Logo" class="brand-logo-img">
           </div>
           <div class="brand-text-col">
             <div class="brand-title-row">
               <span class="brand-title">ProofLens</span>
-              <span class="brand-badge-gold">ESCROW AI</span>
             </div>
             <span class="brand-tagline">Milestone Verification &amp; PayPal Settlement</span>
           </div>
@@ -88,7 +83,6 @@
 
           <!-- Notifications Dropdown Popover -->
           @if (showNotificationsPopover) {
-            <div class="notifications-backdrop" (click)="closeNotificationsPopover()"></div>
             <div class="notifications-dropdown-menu" (click)="$event.stopPropagation()">
               <div class="notifications-header">
                 <div class="notif-header-title">
@@ -200,30 +194,23 @@
             <div class="avatar-badge" [class.avatar-seller]="currentUser.role_type === 'seller'">
               {{ currentUser.full_name.charAt(0) || 'U' }}
             </div>
-            <div class="user-info-snippet">
-              <span class="user-display-name">{{ currentUser.full_name }}</span>
-              <span class="role-chip" [class.role-seller]="currentUser.role_type === 'seller'">
-                {{ currentUser.role_type | uppercase }}
-              </span>
-            </div>
-            <svg class="chevron-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <polyline points="6 9 12 15 18 9"/>
-            </svg>
           </button>
         }
 
         <!-- Mobile Menu Toggle Button -->
-        <button type="button" class="mobile-menu-toggle" (click)="toggleMobileMenu()" aria-label="Toggle navigation menu">
-          @if (mobileMenuOpen) {
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          } @else {
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>
-            </svg>
-          }
-        </button>
+        @if (currentUser) {
+          <button type="button" class="mobile-menu-toggle" (click)="toggleMobileMenu()" aria-label="Toggle navigation menu">
+            @if (mobileMenuOpen) {
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            } @else {
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>
+              </svg>
+            }
+          </button>
+        }
       </div>
     </div>
   </header>
@@ -235,14 +222,10 @@
         <div class="mobile-drawer-top">
           <div class="mobile-brand-row">
             <div class="pp-brand-icon" style="width: 32px; height: 32px;">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-                <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
-                <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
-              </svg>
+              <img [src]="appLogo" alt="ProofLens Logo" class="brand-logo-img">
             </div>
             <div class="brand-text-col">
               <span class="brand-title" style="font-size: 1.1rem; color: #FFFFFF;">ProofLens</span>
-              <span class="brand-badge-gold" style="font-size: 0.65rem;">ESCROW AI</span>
             </div>
           </div>
           <button type="button" class="btn-close-drawer" (click)="closeMobileMenu()" aria-label="Close menu">
@@ -274,7 +257,7 @@
 
         <div class="mobile-user-actions">
           @if (currentUser) {
-            <div class="mobile-user-card">
+            <button type="button" class="mobile-user-card" (click)="closeMobileMenu(); openAuthModal()" aria-label="Open profile and account settings">
               <div class="avatar-badge" [class.avatar-seller]="currentUser.role_type === 'seller'">
                 {{ currentUser.full_name.charAt(0) || 'U' }}
               </div>
@@ -282,7 +265,10 @@
                 <div class="font-bold text-white">{{ currentUser.full_name }}</div>
                 <div class="text-xs" style="color: #94A3B8;">{{ currentUser.email }}</div>
               </div>
-            </div>
+              <svg class="mobile-profile-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+            </button>
             <button type="button" (click)="logout(); closeMobileMenu()" class="btn-mobile-logout">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
@@ -347,11 +333,8 @@
     <div class="footer-inner">
       <div class="footer-left">
         <div class="footer-brand">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
-            <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
-          </svg>
-          <span class="footer-title">ProofLens &bull; PayPal Escrow Protocol</span>
+          <img [src]="appLogo" alt="ProofLens Logo" class="footer-logo-img">
+          <span class="footer-title">ProofLens &bull; Escrow Protocol</span>
         </div>
         <p class="footer-copyright">
           Built for PayPal Hackathon &bull; Cryptographically Verified Milestones, AI Computer Vision Analysis, and Zero-Risk Escrow Vaults.
@@ -389,13 +372,10 @@
         <div class="auth-window-header">
           <div class="auth-header-identity">
             <div class="auth-icon-pod">
-              <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
-                <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
-                <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
-              </svg>
+              <img [src]="appLogo" alt="ProofLens Logo" class="auth-modal-logo-img">
             </div>
             <div>
-              <h3 class="auth-modal-title">PayPal Identity &amp; Escrow Vault</h3>
+              <h3 class="auth-modal-title">ProofLens Identity &amp; Escrow Vault</h3>
               <p class="auth-modal-subtitle">Secure OAuth 2.0 Credentials &amp; Session Management</p>
             </div>
           </div>
@@ -421,9 +401,6 @@
                 <span class="session-user-name">{{ currentUser.full_name }}</span>
                 <span class="session-email font-mono">{{ currentUser.email }}</span>
               </div>
-              <span class="status-badge" [ngClass]="currentUser.role_type === 'seller' ? 'badge-amber' : 'badge-blue'">
-                {{ currentUser.role_type | uppercase }}
-              </span>
             </div>
 
             <div class="auth-action-row">

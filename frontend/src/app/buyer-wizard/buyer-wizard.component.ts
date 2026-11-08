@@ -4,6 +4,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule, ReactiveFormsModule, FormBuilder, FormGroup, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { API_BASE_URL } from '../api.config';
+import { EvidenceFileService } from '../evidence-file.service';
 import { requiresDigitalWarrantyHold } from '../project-warranty.utils';
 import { LiveCameraComponent } from '../live-camera/live-camera.component';
 
@@ -91,7 +92,8 @@ export class BuyerWizardComponent implements OnInit {
     private http: HttpClient,
     private router: Router,
     private route: ActivatedRoute,
-    private fb: FormBuilder
+    private fb: FormBuilder,
+    private evidenceFiles: EvidenceFileService
   ) {
     this.warrantyForm = this.fb.group({
       lockInType: ['NONE', Validators.required],
@@ -190,35 +192,6 @@ export class BuyerWizardComponent implements OnInit {
       relativeTo: this.route,
       queryParams: { project_id: projectId },
       replaceUrl: true
-    });
-  }
-
-  startEscrowAuthorization(): void {
-    if (!this.projectId) return;
-    this.isLoading = true;
-    this.paymentStatusMessage = 'Creating PayPal escrow authorization...';
-    const returnUrl = `${window.location.origin}/wizard?project_id=${this.projectId}&paypal_return=1`;
-    const cancelUrl = `${window.location.origin}/wizard?project_id=${this.projectId}&paypal_cancelled=1`;
-
-    this.http.post<any>(`${API_BASE_URL}/api/payments/authorize`, {
-      project_id: this.projectId,
-      amount: Number(this.totalPrice) || undefined,
-      currency: 'USD',
-      return_url: returnUrl,
-      cancel_url: cancelUrl
-    }).subscribe({
-      next: (res) => {
-        if (!res?.approval_url) {
-          this.isLoading = false;
-          this.paymentStatusMessage = 'PayPal did not return an approval link. Please try again.';
-          return;
-        }
-        window.location.href = res.approval_url;
-      },
-      error: (err) => {
-        this.isLoading = false;
-        this.paymentStatusMessage = err.error?.detail || err.message || 'Could not start PayPal escrow authorization.';
-      }
     });
   }
 
@@ -560,12 +533,8 @@ export class BuyerWizardComponent implements OnInit {
       });
   }
 
-  getEvidenceUrl(filePath: string): string {
-    if (!filePath) return '';
-    if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
-      return filePath;
-    }
-    return `${API_BASE_URL}${filePath.startsWith('/') ? '' : '/'}${filePath}`;
+  getEvidenceUrl(filePath: string) {
+    return this.evidenceFiles.getFileUrl(filePath);
   }
 
   initProject() {
@@ -746,7 +715,13 @@ export class BuyerWizardComponent implements OnInit {
         next: (res) => {
           this.isLoading = false;
           this.projectId = res.project_id || this.projectId;
-          this.startEscrowAuthorization();
+          this.inviteUrl = res.seller_invite_link || '';
+          this.inviteToken = this.inviteUrl.split('/').pop() || '';
+          this.isDraftComplete = true;
+          this.step = 3;
+          this.paymentStatusMessage = this.inviteUrl
+            ? 'Agreement finalized. Share the invitation with the seller; escrow authorization starts after they join.'
+            : 'Agreement finalized, but the seller invitation link was not returned.';
         },
         error: (err) => {
           this.isLoading = false;

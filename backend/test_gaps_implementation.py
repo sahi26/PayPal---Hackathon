@@ -22,8 +22,6 @@ def override_get_db():
     finally:
         db.close()
 
-main.app.dependency_overrides[database.get_db] = override_get_db
-main.SessionLocal = TestSessionLocal
 client = TestClient(main.app)
 
 MOCK_AI_CLASSIFICATION = {
@@ -40,9 +38,16 @@ class TestGapsImplementation(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         models.Base.metadata.create_all(bind=test_engine)
+        cls._orig_session_local = main.SessionLocal
+        main.SessionLocal = TestSessionLocal
+        main.app.dependency_overrides[database.get_db] = override_get_db
+        main.app.dependency_overrides[main.get_db] = override_get_db
 
     @classmethod
     def tearDownClass(cls):
+        main.SessionLocal = cls._orig_session_local
+        main.app.dependency_overrides.pop(database.get_db, None)
+        main.app.dependency_overrides.pop(main.get_db, None)
         models.Base.metadata.drop_all(bind=test_engine)
         if os.path.exists("./test_gaps.db"):
             os.remove("./test_gaps.db")

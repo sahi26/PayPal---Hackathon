@@ -1,6 +1,6 @@
-<div class="dispute-shell">
+<div class="dispute-shell premium-page">
   <!-- Top Navigation Bar & Case Header -->
-  <header class="dispute-header-card">
+  <header class="dispute-header-card premium-card">
     <div class="header-main-row">
       <div class="header-title-block">
         <button (click)="returnToFulfillment()" class="btn-back-link">
@@ -85,7 +85,7 @@
   </header>
 
   <!-- 3-Tier Multi-Stage Escalation Stepper -->
-  <div class="stepper-card">
+  <div class="stepper-card premium-card">
     <div class="stepper-grid">
       <!-- Step 1 -->
       <div class="step-node" [class.step-active]="currentTier === 1" [class.step-completed]="currentTier > 1">
@@ -135,7 +135,7 @@
 
   <!-- If No Dispute Open Yet: Form to Initiate Dispute -->
   @if (showOpenDisputeForm && !activeDispute) {
-    <div class="empty-dispute-card">
+    <div class="empty-dispute-card premium-card">
       <div class="empty-icon-box">
         <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
@@ -172,7 +172,7 @@
       <!-- Left Column: Case Record & Resolution Control Center -->
       <div class="left-col">
         <!-- Claim Summary Card -->
-        <div class="panel-card">
+        <div class="panel-card premium-card">
           <div class="panel-header">
             <h3>Dispute Claim Details</h3>
             <span class="claimant-tag">Initiated by: {{ activeDispute.disputed_by | uppercase }}</span>
@@ -200,7 +200,7 @@
         </div>
 
         <!-- Evidence Dossier Panel -->
-        <div class="panel-card">
+        <div class="panel-card premium-card">
           <div class="panel-header">
             <h3>ProofLens Case Evidence</h3>
             <button (click)="openDossier()" class="btn-inspect-dossier">
@@ -242,7 +242,7 @@
         </div>
 
         <!-- Resolution Actions Panel -->
-        <div class="panel-card resolution-card">
+        <div class="panel-card resolution-card premium-card">
           <div class="panel-header">
             <h3>Dispute Resolution Actions</h3>
           </div>
@@ -277,7 +277,7 @@
         </div>
 
         <!-- Escalation Actions Panel -->
-        <div class="panel-card escalation-card">
+        <div class="panel-card escalation-card premium-card">
           <div class="panel-header">
             <h3>Escalate Dispute</h3>
           </div>
@@ -337,7 +337,7 @@
 
       <!-- Right Column: Internal Dispute Resolution Chat -->
       <div class="right-col">
-        <div class="chat-card">
+        <div class="chat-card premium-card">
           <div class="chat-header">
             <div class="chat-title-group">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2">

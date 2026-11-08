@@ -6,6 +6,7 @@ import { Router } from '@angular/router';
 import { AgGridAngular } from 'ag-grid-angular';
 import { ColDef, ModuleRegistry, AllCommunityModule, GridReadyEvent, GridApi } from 'ag-grid-community';
 import { API_BASE_URL } from '../api.config';
+import { EvidenceFileService } from '../evidence-file.service';
 import { LiveCameraComponent } from '../live-camera/live-camera.component';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -264,7 +265,11 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
 
   defaultColDef: ColDef = { resizable: true, sortable: true };
 
-  constructor(private http: HttpClient, private router: Router) {}
+  constructor(
+    private http: HttpClient,
+    private router: Router,
+    private evidenceFiles: EvidenceFileService
+  ) {}
 
   ngOnInit() {
     this.loadProjects();
@@ -399,12 +404,8 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
       });
   }
 
-  getEvidenceUrl(filePath: string): string {
-    if (!filePath) return '';
-    if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
-      return filePath;
-    }
-    return `${API_BASE_URL}${filePath.startsWith('/') ? '' : '/'}${filePath}`;
+  getEvidenceUrl(filePath: string) {
+    return this.evidenceFiles.getFileUrl(filePath);
   }
 
   formatCurrency(val: any): string {

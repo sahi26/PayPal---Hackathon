@@ -1,7 +1,7 @@
 import enum
 import datetime
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Float, Enum, JSON, Boolean, UniqueConstraint
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Float, Enum, JSON, Boolean, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 try:
@@ -14,9 +14,14 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
+    __table_args__ = (Index("uq_users_email_lower", func.lower(email), unique=True),)
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(100), nullable=False)
     role_type = Column(String(50), nullable=False) # 'maker' or 'customer' / 'buyer' or 'seller'
+    email_verified = Column(Boolean, default=False, server_default="false", nullable=False)
+    email_verification_token_hash = Column(String(64), unique=True, index=True, nullable=True)
+    email_verification_expires_at = Column(DateTime(timezone=True), nullable=True)
+    email_verification_sent_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now())
 
 class ProjectStatus(str, enum.Enum):
@@ -418,4 +423,3 @@ class Notification(Base):
 
     user = relationship("User", backref="notifications")
     project = relationship("Project", backref="project_notifications")
-

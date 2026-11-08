@@ -1,13 +1,13 @@
-﻿// Central API Configuration
+import { resolveApiBaseUrl } from './runtime-config.mjs';
+
+declare global {
+  var __PROOFFLOW_CONFIG__: { apiBaseUrl?: string } | undefined;
+}
+
 export function getApiBaseUrl(): string {
-  if (typeof window !== 'undefined') {
-    // Prefer 127.0.0.1 over localhost on local dev to prevent Windows IPv6 ::1 2000ms DNS resolution stall
-    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-      return 'http://127.0.0.1:8000';
-    }
-    return `${window.location.protocol}//${window.location.hostname}:8000`;
-  }
-  return 'http://127.0.0.1:8000';
+  const location = typeof window !== 'undefined' ? window.location : undefined;
+  // Set globalThis.__PROOFFLOW_CONFIG__.apiBaseUrl before app startup to override the production API origin.
+  return resolveApiBaseUrl(location, globalThis.__PROOFFLOW_CONFIG__?.apiBaseUrl);
 }
 
 export const API_BASE_URL = getApiBaseUrl();

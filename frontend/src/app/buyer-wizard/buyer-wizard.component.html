@@ -1,7 +1,7 @@
-<div class="wizard-page-shell">
+<div class="wizard-page-shell premium-page">
   <!-- Step 1: Basic Project Details -->
   @if (step === 1) {
-    <div class="fintech-card wizard-form-card">
+    <div class="fintech-card wizard-form-card premium-card">
       <div class="wizard-step-header">
         <span class="status-badge badge-blue">Step 1 of 3 &bull; Project Specifications</span>
         <h2 class="wizard-title">Initiate Escrow Agreement</h2>
@@ -64,7 +64,7 @@
 
   <!-- Step 2: Interactive AI Scoping & Milestones -->
   @if (step === 2) {
-    <div class="fintech-card wizard-form-card">
+    <div class="fintech-card wizard-form-card premium-card">
       <div class="wizard-step-header">
         <div class="step-title-cluster">
           <span class="status-badge badge-indigo">Step 2 of 3 &bull; AI Scope &amp; Evidence Formulation</span>
@@ -431,7 +431,7 @@
                 </div>
                 <div class="captured-content-layout">
                   @if (beforeEvidenceItem?.file_path) {
-                    <img [src]="getEvidenceUrl(beforeEvidenceItem.file_path)" alt="Baseline" class="before-thumb" />
+                    <img [src]="getEvidenceUrl(beforeEvidenceItem.file_path) | async" alt="Baseline" class="before-thumb" />
                   }
                   <div class="meta-texts">
                     <span class="font-mono text-xs">SHA-256: {{ beforeEvidenceItem?.file_hash ? beforeEvidenceItem.file_hash.slice(0, 20) + '...' : 'Locked' }}</span>
@@ -584,9 +584,9 @@
             >
               @if (isLoading) {
                 <span class="btn-spinner"></span>
-                <span>Saving Agreement &amp; Opening PayPal...</span>
+                <span>Saving Agreement &amp; Creating Invitation...</span>
               } @else {
-                <span>Save Agreement &amp; Continue to Escrow &rarr;</span>
+                <span>Finalize Agreement &amp; Invite Seller &rarr;</span>
               }
             </button>
             @if (paymentStatusMessage) {
@@ -607,16 +607,16 @@
     </div>
   }
 
-  <!-- Step 3: Show the invitation only after PayPal authorization succeeds -->
+  <!-- Step 3: Show the invitation after the buyer finalizes the agreement -->
   @if (step === 3 && inviteUrl) {
-    <div class="fintech-card success-share-card">
+    <div class="fintech-card success-share-card premium-card">
       <div class="success-icon-badge">
         <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3">
           <polyline points="20 6 9 17 4 12"/>
         </svg>
       </div>
       <h2 class="success-heading">Seller Invitation Created!</h2>
-      <p class="success-sub">Share this private link with your contractor/seller. When they open it, they can review the terms and join the negotiation room.</p>
+      <p class="success-sub">Share this private link with your contractor. They can review and accept the invitation before either party authorizes milestone funds.</p>
 
       <div class="share-link-box">
         <input type="text" [value]="inviteUrl" readonly class="share-url-input font-mono" />
@@ -652,26 +652,13 @@
       </div>
     </div>
   } @else if (step === 3) {
-    <div class="fintech-card success-share-card">
-      <h2 class="success-heading">Escrow Authorization Required</h2>
-      <p class="success-sub">{{ paymentStatusMessage }}</p>
+    <div class="fintech-card success-share-card premium-card">
+      <h2 class="success-heading">Seller Invitation Unavailable</h2>
+      <p class="success-sub">{{ paymentStatusMessage || 'The agreement was saved, but an invitation link was not returned. Reload the project or contact support before sharing a link.' }}</p>
       <p class="summary-chip">
         <span class="chip-label">Project:</span>
         <span class="chip-val">{{ title }}</span>
       </p>
-      <button
-        type="button"
-        (click)="startEscrowAuthorization()"
-        [disabled]="isLoading"
-        class="btn-fintech btn-fintech-primary"
-      >
-        @if (isLoading) {
-          <span class="btn-spinner"></span>
-          <span>Connecting to PayPal...</span>
-        } @else {
-          <span>Authorize Escrow with PayPal</span>
-        }
-      </button>
     </div>
   }
 </div>

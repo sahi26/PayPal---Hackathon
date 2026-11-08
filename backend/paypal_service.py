@@ -20,15 +20,26 @@ import uuid
 import datetime
 from datetime import timedelta
 from typing import Optional, Dict, Any, List
+from urllib.parse import urlparse
 import httpx
 from fastapi import HTTPException
 from dotenv import load_dotenv
 
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 load_dotenv()
 
 PAYPAL_API_BASE = os.getenv("PAYPAL_API_BASE", "https://api-m.sandbox.paypal.com").rstrip("/")
 PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "")
 PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET", "")
+APP_ENV = os.getenv("APP_ENV", "development").lower()
+
+if APP_ENV == "production":
+    if not PAYPAL_CLIENT_ID or not PAYPAL_CLIENT_SECRET:
+        raise RuntimeError("PayPal credentials are required in production.")
+    if urlparse(PAYPAL_API_BASE).scheme != "https" or urlparse(PAYPAL_API_BASE).hostname != "api-m.paypal.com":
+        raise RuntimeError("Production must use PayPal's HTTPS live API endpoint.")
+    if not os.getenv("PAYPAL_WEBHOOK_ID"):
+        raise RuntimeError("PAYPAL_WEBHOOK_ID is required in production.")
 
 # In-memory token cache
 _cached_token: Optional[str] = None
@@ -133,6 +144,17 @@ async def create_order_for_authorize(
     Creates a PayPal Order with intent 'AUTHORIZE'.
     Funds are NOT captured yet; the buyer approves the authorization hold.
     """
+    if APP_ENV != "production" and (APP_ENV == "test" and not has_network_connection()):
+        mock_order_id = f"ORDER-TEST-{uuid.uuid4().hex[:8].upper()}"
+        approval_url = f"https://www.sandbox.paypal.com/checkoutnow?token={mock_order_id}"
+        return {
+            "id": mock_order_id,
+            "status": "CREATED",
+            "links": [
+                {"href": approval_url, "rel": "approve", "method": "GET"}
+            ]
+        }
+
     headers = await get_paypal_headers()
     headers["PayPal-Request-Id"] = str(uuid.uuid4())
 
@@ -177,11 +199,47 @@ async def create_order_for_authorize(
         raise HTTPException(status_code=502, detail=f"PayPal API Error: Create order failed: {ex}") from ex
 
 
+async def get_order_details(order_id: str) -> Dict[str, Any]:
+    """Fetches the current PayPal order response, including available checkout links."""
+    headers = await get_paypal_headers()
+    url = f"{PAYPAL_API_BASE}/v2/checkout/orders/{order_id}"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers=headers)
+            if response.status_code == 200:
+                return response.json()
+            raise HTTPException(
+                status_code=502,
+                detail=f"PayPal API Error: Retrieve order failed ({response.status_code}): {response.text or 'No response body'}"
+            )
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail=f"PayPal API Error: Retrieve order failed: {ex}") from ex
+
+
 async def authorize_order(order_id: str) -> Dict[str, Any]:
     """
     Executes the authorization once the buyer approves the Order.
     Generates the PayPal 'authorization_id' with a 29-day hold guarantee.
     """
+    if APP_ENV != "production" and (order_id.startswith(("ORDER-TEST", "ORDER_TEST", "MOCK-")) or (APP_ENV == "test" and not has_network_connection())):
+        auth_id = f"AUTH-TEST-{uuid.uuid4().hex[:8].upper()}"
+        return {
+            "id": order_id,
+            "status": "COMPLETED",
+            "purchase_units": [
+                {
+                    "payments": {
+                        "authorizations": [
+                            {"id": auth_id, "status": "CREATED"}
+                        ]
+                    }
+                }
+            ]
+        }
+
     headers = await get_paypal_headers()
     headers["PayPal-Request-Id"] = str(uuid.uuid4())
     url = f"{PAYPAL_API_BASE}/v2/checkout/orders/{order_id}/authorize"
@@ -208,6 +266,7 @@ async def capture_payment(
     final_capture: bool = True,
     is_final_capture: Optional[bool] = None,
     note_to_payer: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Step 2 of Auth & Capture:
@@ -218,8 +277,21 @@ async def capture_payment(
     """
     final_flag = bool(is_final_capture if is_final_capture is not None else final_capture)
 
+    if APP_ENV != "production" and (
+        authorization_id.startswith(("AUTH-TEST", "AUTH_TEST", "AUTH-ORIGINAL", "MOCK-", "AUTH-"))
+        or (APP_ENV == "test" and not has_network_connection())
+    ):
+        cap_id = f"CAP-{uuid.uuid4().hex[:8].upper()}"
+        return {
+            "id": cap_id,
+            "status": "COMPLETED",
+            "final_capture": final_flag,
+            "is_final_capture": final_flag,
+            "amount": {"currency_code": currency, "value": f"{amount:.2f}" if amount else "0.00"},
+        }
+
     headers = await get_paypal_headers()
-    headers["PayPal-Request-Id"] = str(uuid.uuid4())
+    headers["PayPal-Request-Id"] = request_id or str(uuid.uuid4())
     url = f"{PAYPAL_API_BASE}/v2/payments/authorizations/{authorization_id}/capture"
 
     payload: Dict[str, Any] = {
@@ -272,12 +344,8 @@ async def reauthorize_payment(
     This function calls PayPal to extend the escrow hold for custom, long-running projects before it drops.
     Captures the new authorization_id (PayPal generates a fresh ID) and calculates the new 29-day expiration date.
     """
-    if simulate_failure:
+    if simulate_failure and APP_ENV != "production" and os.getenv("ALLOW_SIMULATED_PAYPAL_FAILURES", "").lower() in {"1", "true", "yes"}:
         raise Exception("Simulated bank decline: Buyer payment method expired or card limit exceeded.")
-
-    headers = await get_paypal_headers()
-    headers["PayPal-Request-Id"] = str(uuid.uuid4())
-    url = f"{PAYPAL_API_BASE}/v2/payments/authorizations/{authorization_id}/reauthorize"
 
     payload: Dict[str, Any] = {}
     if amount is not None and amount > 0:
@@ -286,69 +354,58 @@ async def reauthorize_payment(
             "value": f"{amount:.2f}",
         }
 
-    # Attempt live PayPal API call if network is reachable and client configured
-    if has_network_connection() and PAYPAL_CLIENT_ID and not PAYPAL_CLIENT_ID.startswith("MOCK_"):
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.post(url, json=payload, headers=headers)
-                if response.status_code in (200, 201):
-                    data = response.json()
-                    new_auth_id = data.get("id") or authorization_id
-                    exp_str = data.get("expiration_time")
-                    if exp_str:
-                        try:
-                            clean_str = exp_str.replace("Z", "+00:00")
-                            new_expires_dt = datetime.datetime.fromisoformat(clean_str).replace(tzinfo=None)
-                        except Exception:
-                            new_expires_dt = datetime.datetime.utcnow() + timedelta(days=29)
-                    else:
-                        new_expires_dt = datetime.datetime.utcnow() + timedelta(days=29)
+    if APP_ENV != "production" and (
+        authorization_id.startswith(("AUTH-TEST", "AUTH_TEST", "AUTH-ORIGINAL", "MOCK-", "AUTH-"))
+        or (APP_ENV == "test" and not has_network_connection())
+    ):
+        now_dt = datetime.datetime.utcnow()
+        new_expires_dt = now_dt + timedelta(days=29)
+        new_auth_id = f"AUTH-RENEW-{uuid.uuid4().hex[:10].upper()}"
+        return {
+            "success": True,
+            "id": new_auth_id,
+            "status": "CREATED",
+            "parent_payment": authorization_id,
+            "amount": payload.get("amount", {"currency_code": currency, "value": f"{amount:.2f}" if amount else "0.00"}),
+            "expiration_time": new_expires_dt.isoformat() + "Z",
+            "expiration_date": new_expires_dt,
+            "raw_response": {"id": new_auth_id, "status": "CREATED", "expiration_time": new_expires_dt.isoformat() + "Z"},
+            "message": "Authorization successfully renewed for additional 29 days.",
+        }
 
-                    return {
-                        "success": True,
-                        "id": new_auth_id,
-                        "status": data.get("status", "CREATED"),
-                        "expiration_time": new_expires_dt.isoformat() + "Z",
-                        "expiration_date": new_expires_dt,
-                        "amount": data.get("amount", payload.get("amount", {})),
-                        "parent_payment": authorization_id,
-                        "raw_response": data,
-                        "message": "Authorization successfully reauthorized with PayPal."
-                    }
-                else:
-                    err_detail = response.text
-                    try:
-                        err_json = response.json()
-                        err_detail = err_json.get("message") or err_json.get("details", [{}])[0].get("description") or response.text
-                    except Exception:
-                        pass
-                    print(f"PayPal reauthorize_payment declined ({response.status_code}): {err_detail}")
-                    raise Exception(f"PayPal Reauthorization Declined ({response.status_code}): {err_detail}")
-        except httpx.RequestError as net_err:
-            print(f"PayPal reauthorize_payment network notice: {net_err}")
-            # If network error occurs on non-mock credentials, fall back or bubble up
-        except Exception as ex:
-            if "PayPal Reauthorization Declined" in str(ex):
-                raise ex
-            print(f"PayPal reauthorize_payment error: {ex}")
-            raise ex
+    headers = await get_paypal_headers()
+    headers["PayPal-Request-Id"] = str(uuid.uuid4())
+    url = f"{PAYPAL_API_BASE}/v2/payments/authorizations/{authorization_id}/reauthorize"
 
-    # Fallback reauthorization response with renewed 29-day expiration for sandbox execution
-    now_dt = datetime.datetime.utcnow()
-    new_expires_dt = now_dt + timedelta(days=29)
-    new_auth_id = f"AUTH-RENEW-{uuid.uuid4().hex[:10].upper()}"
-
-    return {
-        "success": True,
-        "id": new_auth_id,
-        "status": "CREATED",
-        "parent_payment": authorization_id,
-        "amount": payload.get("amount", {"currency_code": currency, "value": f"{amount:.2f}" if amount else "0.00"}),
-        "expiration_time": new_expires_dt.isoformat() + "Z",
-        "expiration_date": new_expires_dt,
-        "raw_response": {"id": new_auth_id, "status": "CREATED", "expiration_time": new_expires_dt.isoformat() + "Z"},
-        "message": "Authorization successfully renewed for additional 29 days.",
-    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            if response.status_code not in (200, 201):
+                raise HTTPException(status_code=502, detail="PayPal authorization renewal failed.")
+            data = response.json()
+            new_auth_id = data.get("id")
+            exp_str = data.get("expiration_time")
+            if not new_auth_id or not exp_str:
+                raise HTTPException(status_code=502, detail="PayPal authorization renewal response is incomplete.")
+            try:
+                new_expires_dt = datetime.datetime.fromisoformat(exp_str.replace("Z", "+00:00")).replace(tzinfo=None)
+            except ValueError as exc:
+                raise HTTPException(status_code=502, detail="PayPal returned an invalid authorization expiration.") from exc
+            return {
+                "success": True,
+                "id": new_auth_id,
+                "status": data.get("status"),
+                "expiration_time": exp_str,
+                "expiration_date": new_expires_dt,
+                "amount": data.get("amount", payload.get("amount", {})),
+                "parent_payment": authorization_id,
+                "raw_response": data,
+                "message": "Authorization successfully reauthorized with PayPal."
+            }
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=502, detail="PayPal authorization renewal service is unavailable.") from ex
 
 
 async def get_authorization_details(authorization_id: str) -> Dict[str, Any]:
@@ -363,14 +420,11 @@ async def get_authorization_details(authorization_id: str) -> Dict[str, Any]:
             response = await client.get(url, headers=headers)
             if response.status_code == 200:
                 return response.json()
+            raise HTTPException(status_code=502, detail="PayPal authorization lookup failed.")
+    except HTTPException:
+        raise
     except Exception as ex:
-        print(f"PayPal get_authorization_details notice: {ex}")
-
-    return {
-        "id": authorization_id,
-        "status": "CREATED",
-        "expiration_time": (datetime.datetime.utcnow() + timedelta(days=29)).isoformat() + "Z",
-    }
+        raise HTTPException(status_code=502, detail="PayPal authorization service is unavailable.") from ex
 
 
 # ==============================================================================
@@ -381,7 +435,6 @@ async def provide_dispute_evidence(
     dispute_id: str,
     evidence_type: str = "PROOF_OF_FULFILLMENT",
     notes: str = "",
-    file_urls: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Pushes compiled ProofLens Evidence Dossier directly to PayPal Disputes API:
@@ -394,14 +447,6 @@ async def provide_dispute_evidence(
         "evidence_type": evidence_type or "PROOF_OF_FULFILLMENT",
         "notes": notes,
     }
-
-    if file_urls:
-        payload["evidence_info"] = {
-            "tracking_info": [
-                {"carrier_name": "PROOFLENS_CRYPTOGRAPHIC_AUDIT", "tracking_number": u}
-                for u in file_urls[:5]
-            ]
-        }
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -435,16 +480,11 @@ async def get_dispute_details(dispute_id: str) -> Dict[str, Any]:
             response = await client.get(url, headers=headers)
             if response.status_code == 200:
                 return response.json()
+            raise HTTPException(status_code=502, detail="PayPal dispute lookup failed.")
+    except HTTPException:
+        raise
     except Exception as ex:
-        print(f"PayPal get_dispute_details notice: {ex}")
-
-    return {
-        "dispute_id": dispute_id,
-        "status": "UNDER_REVIEW",
-        "reason": "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
-        "dispute_amount": {"currency_code": "USD", "value": "400.00"},
-        "create_time": datetime.datetime.utcnow().isoformat() + "Z",
-    }
+        raise HTTPException(status_code=502, detail="PayPal dispute service is unavailable.") from ex
 
 
 async def escalate_dispute_to_claim(dispute_id: str, note: str = "") -> Dict[str, Any]:
@@ -498,17 +538,18 @@ async def list_disputes() -> List[Dict[str, Any]]:
             if response.status_code == 200:
                 data = response.json()
                 return data.get("items", [])
+            raise HTTPException(status_code=502, detail="PayPal dispute list could not be retrieved.")
+    except HTTPException:
+        raise
     except Exception as ex:
-        print(f"PayPal list_disputes notice: {ex}")
-
-    return []
+        raise HTTPException(status_code=502, detail="PayPal dispute service is unavailable.") from ex
 
 
 # ==============================================================================
 # Phase 3: Invoicing API v2 (Milestone Invoices & Receipts)
 # ==============================================================================
 
-async def get_invoicing_merchant_email() -> str:
+async def get_invoicing_merchant_email() -> Optional[str]:
     """
     Retrieves the primary merchant email for the invoicing party.
     Falls back to environment variable or sandbox business merchant.
@@ -533,7 +574,7 @@ async def get_invoicing_merchant_email() -> str:
     except Exception as ex:
         print(f"PayPal userinfo notice: {ex}")
 
-    return "sb-b19vq53627736@business.example.com"
+    return None
 
 
 async def generate_invoice_number() -> str:
@@ -548,11 +589,15 @@ async def generate_invoice_number() -> str:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, headers=headers)
             if resp.status_code in (200, 201):
-                return resp.json().get("invoice_number", f"INV-{uuid.uuid4().hex[:8].upper()}")
+                invoice_number = resp.json().get("invoice_number")
+                if invoice_number:
+                    return invoice_number
+                raise HTTPException(status_code=502, detail="PayPal did not return an invoice number.")
+            raise HTTPException(status_code=502, detail="PayPal could not generate an invoice number.")
+    except HTTPException:
+        raise
     except Exception as ex:
-        print(f"PayPal generate_invoice_number notice: {ex}")
-
-    return f"INV-{uuid.uuid4().hex[:8].upper()}"
+        raise HTTPException(status_code=502, detail="PayPal invoice number service is unavailable.") from ex
 
 
 async def create_draft_invoice(invoice_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -572,19 +617,15 @@ async def create_draft_invoice(invoice_payload: Dict[str, Any]) -> Dict[str, Any
                 inv_id = data.get("id")
                 if not inv_id and "href" in data:
                     inv_id = data["href"].rstrip("/").split("/")[-1]
+                if not inv_id:
+                    raise HTTPException(status_code=502, detail="PayPal did not return an invoice identifier.")
                 data["id"] = inv_id
                 return data
-            else:
-                print(f"PayPal create_draft_invoice error ({resp.status_code}): {resp.text}")
+            raise HTTPException(status_code=502, detail="PayPal invoice creation failed.")
+    except HTTPException:
+        raise
     except Exception as ex:
-        print(f"PayPal create_draft_invoice notice: {ex}")
-
-    mock_id = f"INV2-{uuid.uuid4().hex[:4].upper()}-{uuid.uuid4().hex[:4].upper()}-{uuid.uuid4().hex[:4].upper()}"
-    return {
-        "id": mock_id,
-        "href": f"{PAYPAL_API_BASE}/v2/invoicing/invoices/{mock_id}",
-        "rel": "self"
-    }
+        raise HTTPException(status_code=502, detail="PayPal invoice service is unavailable.") from ex
 
 
 async def send_invoice(invoice_id: str, send_to_recipient: bool = False) -> Dict[str, Any]:
@@ -599,17 +640,28 @@ async def send_invoice(invoice_id: str, send_to_recipient: bool = False) -> Dict
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, headers=headers, json={"send_to_recipient": send_to_recipient})
             if resp.status_code in (200, 202):
-                return resp.json()
-            else:
-                print(f"PayPal send_invoice error ({resp.status_code}): {resp.text}")
+                data = resp.json() if resp.content else {}
+                payer_link = data.get("href")
+                if not payer_link:
+                    payer_link = next(
+                        (link.get("href") for link in data.get("links", []) if link.get("rel") == "payer-view"),
+                        None
+                    )
+                if not payer_link:
+                    invoice_details = await get_invoice_details(invoice_id)
+                    payer_link = next(
+                        (link.get("href") for link in invoice_details.get("links", []) if link.get("rel") == "payer-view"),
+                        None
+                    )
+                if not payer_link:
+                    raise HTTPException(status_code=502, detail="PayPal did not return a payer invoice URL.")
+                data["href"] = payer_link
+                return data
+            raise HTTPException(status_code=502, detail="PayPal could not publish the invoice.")
+    except HTTPException:
+        raise
     except Exception as ex:
-        print(f"PayPal send_invoice notice: {ex}")
-
-    return {
-        "href": f"https://www.sandbox.paypal.com/invoice/p/#{invoice_id}",
-        "rel": "payer-view",
-        "method": "GET"
-    }
+        raise HTTPException(status_code=502, detail="PayPal invoice service is unavailable.") from ex
 
 
 async def record_invoice_payment(
@@ -641,15 +693,12 @@ async def record_invoice_payment(
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code in (200, 201):
-                return resp.json()
-            else:
-                print(f"PayPal record_invoice_payment error ({resp.status_code}): {resp.text}")
+                return resp.json() if resp.content else {"confirmed": True}
+            raise HTTPException(status_code=502, detail="PayPal could not record the captured payment against the invoice.")
+    except HTTPException:
+        raise
     except Exception as ex:
-        print(f"PayPal record_invoice_payment notice: {ex}")
-
-    return {
-        "payment_id": f"EXTR-{uuid.uuid4().hex[:12].upper()}"
-    }
+        raise HTTPException(status_code=502, detail="PayPal invoice service is unavailable.") from ex
 
 
 async def get_invoice_details(invoice_id: str) -> Dict[str, Any]:
@@ -665,20 +714,11 @@ async def get_invoice_details(invoice_id: str) -> Dict[str, Any]:
             resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
                 return resp.json()
+            raise HTTPException(status_code=502, detail="PayPal invoice lookup failed.")
+    except HTTPException:
+        raise
     except Exception as ex:
-        print(f"PayPal get_invoice_details notice: {ex}")
-
-    return {
-        "id": invoice_id,
-        "status": "MARKED_AS_PAID",
-        "links": [
-            {
-                "href": f"https://www.sandbox.paypal.com/invoice/p/#{invoice_id}",
-                "rel": "payer-view",
-                "method": "GET"
-            }
-        ]
-    }
+        raise HTTPException(status_code=502, detail="PayPal invoice service is unavailable.") from ex
 
 
 async def generate_invoice_qr_code(invoice_id: str) -> Optional[str]:
@@ -730,6 +770,39 @@ async def create_and_finalize_milestone_invoice(
     4. Records external escrow capture payment against the invoice
     5. Obtains QR code and returns complete invoice record
     """
+    if not capture_id:
+        raise HTTPException(status_code=400, detail="A confirmed PayPal capture ID is required before invoicing.")
+
+    if APP_ENV != "production" and (APP_ENV == "test" and not has_network_connection()):
+        inv_id = f"INV2-TEST-{uuid.uuid4().hex[:8].upper()}"
+        inv_num = f"INV-TEST-{project_id}-{milestone_index + 1}"
+        today_str = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+        return {
+            "paypal_invoice_id": inv_id,
+            "invoice_number": inv_num,
+            "invoice_url": f"https://www.sandbox.paypal.com/invoice/p/#{inv_id}",
+            "status": "PAID",
+            "amount": amount,
+            "currency": currency,
+            "paypal_capture_id": capture_id,
+            "payment_record_id": f"PAY-{uuid.uuid4().hex[:8].upper()}",
+            "qr_code_base64": None,
+            "issued_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "buyer_email": buyer_email or "buyer@proofflow.io",
+            "seller_email": seller_email or "escrow@proofflow.io",
+            "items": [
+                {
+                    "name": f"Milestone {milestone_index + 1}: {milestone_title or 'Deliverable'}",
+                    "description": milestone_description or "Deliverable verified",
+                    "quantity": "1",
+                    "unit_amount": {
+                        "currency_code": currency,
+                        "value": f"{amount:.2f}"
+                    }
+                }
+            ]
+        }
+
     inv_num = await generate_invoice_number()
     merchant_email = await get_invoicing_merchant_email()
     seller_party_email = merchant_email or seller_email or "escrow@proofflow.io"
@@ -782,12 +855,10 @@ async def create_and_finalize_milestone_invoice(
     }
 
     create_res = await create_draft_invoice(draft_payload)
-    invoice_id = create_res.get("id") or f"INV2-{uuid.uuid4().hex[:12].upper()}"
+    invoice_id = create_res["id"]
 
     send_res = await send_invoice(invoice_id, send_to_recipient=False)
     payer_url = send_res.get("href")
-    if not payer_url:
-        payer_url = f"https://www.sandbox.paypal.com/invoice/p/#{invoice_id}"
 
     rec_res = await record_invoice_payment(
         invoice_id=invoice_id,
@@ -796,6 +867,8 @@ async def create_and_finalize_milestone_invoice(
         note=f"Automated release from Escrow Authorization (Capture ID: {capture_id})",
         capture_id=capture_id
     )
+    if not rec_res.get("confirmed") and not rec_res.get("payment_id") and not rec_res.get("id"):
+        raise HTTPException(status_code=502, detail="PayPal did not confirm the invoice payment record.")
 
     qr_b64 = await generate_invoice_qr_code(invoice_id)
 
@@ -834,32 +907,36 @@ async def get_paypal_balances() -> Dict[str, Any]:
     if _balances_cache and _balances_cache_expires_at and now < _balances_cache_expires_at:
         return _balances_cache
 
+    if APP_ENV != "production" and (APP_ENV == "test" and not has_network_connection()):
+        return {
+            "balances": [
+                {
+                    "currency": "USD",
+                    "primary": True,
+                    "total_balance": {"currency_code": "USD", "value": "15000.00"},
+                    "available_balance": {"currency_code": "USD", "value": "12500.00"},
+                    "withheld_balance": {"currency_code": "USD", "value": "2500.00"}
+                }
+            ],
+            "account_id": "TEST_MERCHANT_ID",
+            "as_of_time": now.isoformat() + "Z"
+        }
+
     headers = await get_paypal_headers()
     url = f"{PAYPAL_API_BASE}/v1/reporting/balances"
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, headers=headers)
-            if resp.status_code == 200:
-                data = resp.json()
-                _balances_cache = data
-                _balances_cache_expires_at = now + timedelta(seconds=60)
-                return data
+            if resp.status_code != 200:
+                raise HTTPException(status_code=502, detail="PayPal balance lookup failed.")
+            data = resp.json()
+            _balances_cache = data
+            _balances_cache_expires_at = now + timedelta(seconds=60)
+            return data
+    except HTTPException:
+        raise
     except Exception as ex:
-        print(f"PayPal get_balances notice: {ex}")
-
-    fallback = {
-        "balances": [
-            {
-                "currency": "USD",
-                "total_balance": {"currency_code": "USD", "value": "5000.00"},
-                "available_balance": {"currency_code": "USD", "value": "5000.00"},
-                "withheld_balance": {"currency_code": "USD", "value": "0.00"}
-            }
-        ]
-    }
-    _balances_cache = fallback
-    _balances_cache_expires_at = now + timedelta(seconds=30)
-    return fallback
+        raise HTTPException(status_code=502, detail="PayPal balance service is unavailable.") from ex
 
 
 async def get_paypal_transactions(
@@ -871,6 +948,13 @@ async def get_paypal_transactions(
     Transaction Search v1: Lists transactions within a given date range:
     GET /v1/reporting/transactions
     """
+    if APP_ENV != "production" and (APP_ENV == "test" and not has_network_connection()):
+        return {
+            "transaction_details": [],
+            "total_items": 0,
+            "total_pages": 1
+        }
+
     headers = await get_paypal_headers()
     now = datetime.datetime.utcnow()
     start_date = (now - datetime.timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -882,10 +966,11 @@ async def get_paypal_transactions(
             resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
                 return resp.json()
+            raise HTTPException(status_code=502, detail="PayPal transaction lookup failed.")
+    except HTTPException:
+        raise
     except Exception as ex:
-        print(f"PayPal get_transactions notice: {ex}")
-
-    return {"total_items": 0, "total_pages": 1, "transaction_details": []}
+        raise HTTPException(status_code=502, detail="PayPal transaction service is unavailable.") from ex
 
 
 async def void_authorization(authorization_id: str, note: Optional[str] = None) -> Dict[str, Any]:
@@ -893,6 +978,12 @@ async def void_authorization(authorization_id: str, note: Optional[str] = None) 
     Payments v2: Voids, or cancels, an authorized escrow payment hold:
     POST /v2/payments/authorizations/{authorization_id}/void
     """
+    if APP_ENV != "production" and (
+        authorization_id.startswith(("AUTH-TEST", "AUTH_TEST", "AUTH-ORIGINAL", "MOCK-", "AUTH-"))
+        or (APP_ENV == "test" and not has_network_connection())
+    ):
+        return {"status": "VOIDED", "authorization_id": authorization_id, "id": authorization_id}
+
     headers = await get_paypal_headers()
     headers["PayPal-Request-Id"] = str(uuid.uuid4())
     url = f"{PAYPAL_API_BASE}/v2/payments/authorizations/{authorization_id}/void"
@@ -922,6 +1013,17 @@ async def refund_capture(
     Payments v2: Refunds a captured payment:
     POST /v2/payments/captures/{capture_id}/refund
     """
+    if APP_ENV != "production" and (
+        capture_id.startswith(("TEST_", "CAP-", "MOCK-"))
+        or (APP_ENV == "test" and not has_network_connection())
+    ):
+        ref_id = f"REF-{uuid.uuid4().hex[:8].upper()}"
+        return {
+            "id": ref_id,
+            "status": "COMPLETED",
+            "amount": {"value": f"{amount:.2f}" if amount else "0.00", "currency_code": currency}
+        }
+
     headers = await get_paypal_headers()
     headers["PayPal-Request-Id"] = str(uuid.uuid4())
     url = f"{PAYPAL_API_BASE}/v2/payments/captures/{capture_id}/refund"
@@ -939,18 +1041,15 @@ async def refund_capture(
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, headers=headers, json=payload if payload else None)
             if resp.status_code in (200, 201):
-                return resp.json()
-            else:
-                print(f"PayPal refund_capture error ({resp.status_code}): {resp.text}")
+                data = resp.json()
+                if data.get("id"):
+                    return data
+                raise HTTPException(status_code=502, detail="PayPal refund response is missing its refund ID.")
+            raise HTTPException(status_code=502, detail="PayPal refund failed.")
+    except HTTPException:
+        raise
     except Exception as ex:
-        print(f"PayPal refund_capture notice: {ex}")
-
-    return {
-        "id": f"REFUND-{uuid.uuid4().hex[:10].upper()}",
-        "status": "COMPLETED",
-        "capture_id": capture_id,
-        "amount": {"value": f"{amount:.2f}" if amount else "0.00", "currency_code": currency}
-    }
+        raise HTTPException(status_code=502, detail="PayPal refund service is unavailable.") from ex
 
 
 async def add_order_tracking(
@@ -965,6 +1064,17 @@ async def add_order_tracking(
     Orders v2: Adds shipment tracking information for an order:
     POST /v2/checkout/orders/{order_id}/track
     """
+    if APP_ENV != "production" and (
+        order_id.startswith(("TEST_", "ORDER-", "MOCK-"))
+        or (APP_ENV == "test" and not has_network_connection())
+    ):
+        return {
+            "status": "TRACKING_ADDED",
+            "order_id": order_id,
+            "tracking_number": tracking_number,
+            "carrier": carrier
+        }
+
     headers = await get_paypal_headers()
     url = f"{PAYPAL_API_BASE}/v2/checkout/orders/{order_id}/track"
 
@@ -981,18 +1091,12 @@ async def add_order_tracking(
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code in (200, 201):
-                return resp.json()
-            else:
-                print(f"PayPal add_order_tracking error ({resp.status_code}): {resp.text}")
+                return resp.json() if resp.content else {"status": "TRACKING_ADDED"}
+            raise HTTPException(status_code=502, detail="PayPal could not add shipment tracking.")
+    except HTTPException:
+        raise
     except Exception as ex:
-        print(f"PayPal add_order_tracking notice: {ex}")
-
-    return {
-        "transaction_id": order_id,
-        "tracking_number": tracking_number,
-        "carrier": carrier,
-        "status": status
-    }
+        raise HTTPException(status_code=502, detail="PayPal tracking service is unavailable.") from ex
 
 async def create_payout(
     sender_batch_id: str,
@@ -1028,6 +1132,22 @@ async def create_payout(
         ]
     }
 
+    if APP_ENV == "production":
+        headers["PayPal-Request-Id"] = sender_batch_id
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code not in (200, 201):
+                    raise HTTPException(status_code=502, detail="PayPal payout request failed.")
+                data = resp.json()
+                if not data.get("batch_header", {}).get("payout_batch_id"):
+                    raise HTTPException(status_code=502, detail="PayPal payout response is missing its batch ID.")
+                return data
+        except HTTPException:
+            raise
+        except Exception as ex:
+            raise HTTPException(status_code=502, detail="PayPal payout service is unavailable.") from ex
+
     try:
         if has_network_connection() and PAYPAL_CLIENT_ID and not headers.get("Authorization", "").startswith("Bearer MOCK_"):
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1061,7 +1181,7 @@ async def verify_webhook_signature(
     If in local sandbox/offline or running simulated tests, provides resilient verification.
     """
     import json
-    w_id = webhook_id or os.getenv("PAYPAL_WEBHOOK_ID", "TEST_WEBHOOK_ID")
+    w_id = webhook_id or os.getenv("PAYPAL_WEBHOOK_ID", "")
 
     # Case-insensitive headers dict
     h_lower = {k.lower(): v for k, v in headers.items()}
@@ -1071,17 +1191,15 @@ async def verify_webhook_signature(
     transmission_sig = h_lower.get("paypal-transmission-sig")
     transmission_time = h_lower.get("paypal-transmission-time")
 
-    # Simulation / Local test override
-    if h_lower.get("x-simulate-webhook") == "true":
-        return True
-    if transmission_id and "test" in transmission_id.lower():
-        return True
+    if APP_ENV != "production" and (
+        APP_ENV == "test"
+        or os.getenv("ALLOW_SIMULATED_WEBHOOKS", "").lower() in {"1", "true", "yes"}
+    ):
+        if h_lower.get("x-simulate-webhook") == "true" or (transmission_id and "test" in transmission_id.lower()):
+            return True
 
-    # If no network or mock credentials, verify presence of headers or allow offline testing
-    if not PAYPAL_CLIENT_ID or not PAYPAL_CLIENT_SECRET or not has_network_connection():
-        # Offline development mode: allow if transmission headers are present or simulated
-        return True
-
+    if not w_id or not PAYPAL_CLIENT_ID or not PAYPAL_CLIENT_SECRET:
+        return False
     if not all([auth_algo, cert_url, transmission_id, transmission_sig, transmission_time]):
         # Required PayPal signature headers missing
         return False

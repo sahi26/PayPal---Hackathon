@@ -35,6 +35,10 @@ class TestPartialVoidAndCancelFlow(unittest.TestCase):
         app.dependency_overrides[get_db] = override_get_db
         cls.client = TestClient(app)
 
+    @classmethod
+    def tearDownClass(cls):
+        app.dependency_overrides.clear()
+
     def setUp(self):
         self.db = TestingSessionLocal()
         self.db.query(models.Notification).delete()

@@ -25,7 +25,7 @@
           </div>
         </div>
 
-        <div class="alert-controls-cluster">
+        <div class="alert-controls-cluster" [class.has-multiple-alert-actions]="activeAlerts.length > 1">
           <!-- Primary Action for the most urgent deadline -->
           <button (click)="openProject(activeAlerts[0].project_id)" class="btn-alert-quick-action" title="Open first urgent project">
             <span>Submit Proof</span>
@@ -375,10 +375,7 @@
         <div class="modal-dialog-header">
           <div class="header-logo-group">
             <div class="pp-brand-icon">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
-                <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
-              </svg>
+              <img src="assests/PF_logo.png" alt="ProofLens Logo" class="modal-logo-img">
             </div>
             <div>
               <h3 class="modal-title">PayPal Account &amp; Activity Ledger</h3>
@@ -647,7 +644,7 @@
                   <span class="baseline-title">Baseline / Before Evidence (Client Pre-Condition)</span>
                 </div>
                 <div class="baseline-body">
-                  <a [href]="getEvidenceUrl(selectedDrawerData?.project?.before_evidence_path)" target="_blank" class="baseline-view-link">
+                  <a [href]="getEvidenceUrl(selectedDrawerData?.project?.before_evidence_path) | async" target="_blank" rel="noopener noreferrer" class="baseline-view-link">
                     <span>Inspect Client Baseline Evidence Asset</span>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
                   </a>

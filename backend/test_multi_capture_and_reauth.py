@@ -38,7 +38,6 @@ class TestMultiCaptureAndReauth(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         app.dependency_overrides.clear()
-        models.Base.metadata.drop_all(bind=engine)
 
     def setUp(self):
         self.db = TestingSessionLocal()

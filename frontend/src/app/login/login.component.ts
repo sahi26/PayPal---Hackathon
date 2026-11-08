@@ -4,13 +4,24 @@ import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { API_BASE_URL } from '../api.config';
+import { PROOFLENS_LOGO_BASE64 } from '../assets.constants';
 
 interface CurrentUser {
   id: number;
   email: string;
   full_name: string;
   role_type: string;
+  access_token?: string;
+  token_type?: string;
 }
+
+interface RegistrationResponse {
+  email: string;
+  message: string;
+  verification_url?: string | null;
+}
+
+type VerificationResponse = RegistrationResponse;
 
 @Component({
   selector: 'app-login',
@@ -20,14 +31,20 @@ interface CurrentUser {
   styleUrl: './login.component.scss'
 })
 export class LoginComponent implements OnInit {
+  readonly appLogo = PROOFLENS_LOGO_BASE64;
   selectedRole: 'buyer' | 'seller' = 'buyer';
   selectedRedirectUri: string = 'https://prooflens-auth.loca.lt';
   currentUser: CurrentUser | null = null;
+  isRegistering: boolean = false;
+  registrationFullName: string = '';
   loginEmail: string = '';
   loginPassword: string = '';
   isAuthenticating: boolean = false;
   isRedirecting: boolean = false;
   errorMessage: string | null = null;
+  verificationMessage: string | null = null;
+  verificationLink: string | null = null;
+  isEmailVerificationPending = false;
   returnUrl: string | null = null;
 
   constructor(
@@ -39,6 +56,7 @@ export class LoginComponent implements OnInit {
   ngOnInit() {
     this.route.queryParamMap.subscribe(params => {
       this.returnUrl = this.getSafeInviteReturnUrl(params.get('returnUrl'));
+      this.loginEmail = params.get('email') || this.loginEmail;
       const requestedRole = params.get('role');
       if (requestedRole === 'buyer' || requestedRole === 'seller') {
         this.selectedRole = requestedRole;
@@ -73,6 +91,11 @@ export class LoginComponent implements OnInit {
       const code = params['code'];
       if (code) {
         this.processPayPalCallback(code);
+      }
+    });
+    this.route.fragment.subscribe(token => {
+      if (token) {
+        this.verifyEmailToken(token);
       }
     });
   }
@@ -115,15 +138,93 @@ export class LoginComponent implements OnInit {
     }).subscribe({
       next: (user) => {
         this.isAuthenticating = false;
-        this.currentUser = user;
-        localStorage.setItem('prooflens_user', JSON.stringify(user));
-        this.proceedToConsole();
+        this.completeAuthentication(user);
+      },
+      error: (err) => {
+        this.isAuthenticating = false;
+        this.errorMessage = this.extractErrorMessage(err);
+        this.isEmailVerificationPending = err.status === 403
+          && (err.error?.detail || '').toLowerCase().includes('email address is not verified');
+      }
+    });
+  }
+
+  registerWithCredentials() {
+    if (!this.registrationFullName.trim() || !this.loginEmail.trim() || !this.loginPassword.trim()) {
+      this.errorMessage = 'Please enter your name, email address, and password.';
+      return;
+    }
+
+    this.isAuthenticating = true;
+    this.errorMessage = null;
+    this.http.post<RegistrationResponse>(`${API_BASE_URL}/api/auth/register`, {
+      email: this.loginEmail.trim(),
+      password: this.loginPassword.trim(),
+      full_name: this.registrationFullName.trim(),
+      role_type: this.selectedRole
+    }).subscribe({
+      next: (response) => {
+        this.isAuthenticating = false;
+        this.loginEmail = response.email;
+        this.verificationMessage = response.message;
+        this.verificationLink = response.verification_url || null;
+        this.isEmailVerificationPending = true;
       },
       error: (err) => {
         this.isAuthenticating = false;
         this.errorMessage = this.extractErrorMessage(err);
       }
     });
+  }
+
+  resendVerificationEmail() {
+    if (!this.loginEmail.trim()) {
+      this.errorMessage = 'Enter your email address to request a verification link.';
+      return;
+    }
+
+    this.isAuthenticating = true;
+    this.errorMessage = null;
+    this.http.post<VerificationResponse>(`${API_BASE_URL}/api/auth/resend-verification`, {
+      email: this.loginEmail.trim()
+    }).subscribe({
+      next: (response) => {
+        this.isAuthenticating = false;
+        this.verificationMessage = response.message;
+        this.verificationLink = response.verification_url || null;
+      },
+      error: (err) => {
+        this.isAuthenticating = false;
+        this.errorMessage = this.extractErrorMessage(err);
+      }
+    });
+  }
+
+  private verifyEmailToken(token: string) {
+    this.isAuthenticating = true;
+    this.errorMessage = null;
+    this.http.post<VerificationResponse>(`${API_BASE_URL}/api/auth/verify-email`, { token }).subscribe({
+      next: (response) => {
+        this.isAuthenticating = false;
+        this.loginEmail = response.email;
+        this.verificationMessage = response.message;
+        this.verificationLink = null;
+        this.isEmailVerificationPending = false;
+        this.isRegistering = false;
+        this.router.navigate(['/login'], { queryParams: { email: response.email } });
+      },
+      error: (err) => {
+        this.isAuthenticating = false;
+        this.errorMessage = this.extractErrorMessage(err);
+        this.router.navigate(['/login']);
+      }
+    });
+  }
+
+  private completeAuthentication(user: CurrentUser) {
+    this.currentUser = user;
+    localStorage.setItem('prooflens_user', JSON.stringify(user));
+    this.proceedToConsole();
   }
 
   loginWithRealPayPal() {
@@ -177,7 +278,9 @@ export class LoginComponent implements OnInit {
       },
       error: (err) => {
         this.isAuthenticating = false;
-        this.errorMessage = `PayPal OAuth Error: ${this.extractErrorMessage(err)}`;
+        const detail = this.extractErrorMessage(err);
+        this.errorMessage = `PayPal OAuth Error: ${detail}`;
+        this.isEmailVerificationPending = detail.toLowerCase().includes('verify your email');
       }
     });
   }
@@ -203,5 +306,8 @@ export class LoginComponent implements OnInit {
     localStorage.removeItem('prooflens_user');
     this.currentUser = null;
     this.errorMessage = null;
+    this.verificationMessage = null;
+    this.verificationLink = null;
+    this.isEmailVerificationPending = false;
   }
 }

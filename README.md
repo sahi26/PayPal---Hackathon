@@ -130,7 +130,7 @@ flowchart TD
 |---|---|
 | **Frontend** | Angular (v19/v20 Standalone Components), TypeScript, RxJS, HTML5 Canvas Live Camera, CSS3 (PayPal Navy Corporate Palette) |
 | **Backend** | Python 3.9+, FastAPI, Uvicorn, Pydantic, HTTPX, SQLAlchemy, Python-Multipart |
-| **Database** | PostgreSQL (Render/Supabase) with automatic SQLite local fallback (`sql_app.db`) |
+| **Database** | PostgreSQL for deployments; SQLite is used only for local development unless explicitly selected |
 | **AI & Vision** | Google Gemini Multimodal Vision API (`gemini-4-argon`, `gemini-3.8-flash`), Custom Zero-Dependency Python CV Engine (Moiré & Bezel Math) |
 | **Payments** | PayPal REST API v2 (Sandbox Escrow, Orders Checkout, OAuth2) |
 
@@ -244,28 +244,11 @@ Before running ProofLens, ensure you have:
 
 ## 🔐 Environment Configuration & Security
 
-The backend requires environment variables defined in `backend/.env`. A sanitized template is provided in `backend/.env.example`:
+For local development, copy `backend/.env.example` to `backend/.env`. When `DATABASE_URL` is unset, development uses SQLite. A configured database that cannot be reached is an error; the application does not silently switch databases.
 
-```env
-# Database Configuration (PostgreSQL or local SQLite fallback)
-# If omitted or unreachable, ProofLens automatically uses local SQLite (sqlite:///./sql_app.db)
-DATABASE_URL=postgresql://your_db_user:your_db_password@your_db_host:5432/prooflens_db
+Production deployments must set `APP_ENV=production`, a reachable PostgreSQL `DATABASE_URL`, a persistent `JWT_SECRET_KEY` (at least 32 characters), a strong `ADMIN_API_TOKEN` (at least 32 characters), HTTPS `FRONTEND_URL` origin(s), and an HTTPS `PAYPAL_REDIRECT_URI`. They must also use live PayPal credentials, `PAYPAL_API_BASE=https://api-m.paypal.com`, the live `PAYPAL_WEBHOOK_ID`, and authenticated SMTP settings (`SMTP_HOST`, `SMTP_FROM_EMAIL`, plus either STARTTLS or SSL). Do not reuse sandbox credentials or secrets between environments.
 
-# Server Configuration
-PORT=8000
-HOST=0.0.0.0
-FRONTEND_URL=http://localhost:4200
-
-# PayPal REST & Identity API Configuration (Sandbox)
-# Obtain from https://developer.paypal.com/dashboard/applications/sandbox
-PAYPAL_CLIENT_ID=your_paypal_sandbox_client_id_here
-PAYPAL_CLIENT_SECRET=your_paypal_sandbox_client_secret_here
-PAYPAL_REDIRECT_URI=http://localhost:4200
-
-# Google Gemini API Key (Multimodal Vision & Contract Addenda)
-# Obtain from https://aistudio.google.com/
-GEMINI_API_KEY=your_google_gemini_api_key_here
-```
+Set `GEMINI_API_KEY` if AI-assisted analysis is enabled and configure `UPLOADS_DIR` to a persistent volume. Keep credentials in the deployment platform's secret manager, not in source control.
 
 > **Security Note**: All `.env` files are strictly excluded via `.gitignore`. Never commit API keys or production secrets to source control.
 
@@ -330,34 +313,31 @@ sequenceDiagram
 
 ## 🧪 Running Automated Tests
 
-ProofLens includes test suites covering anti-spoofing detection, digital AI watermark interception, sequential milestone gates, and scope change revisions.
-
-Run all backend unit tests:
+Run the backend unit tests:
 ```bash
 cd backend
 SKIP_GEMINI_NETWORK=1 ./venv/bin/python -m unittest discover -s . -p "test_*.py"
 ```
 
-Verify frontend TypeScript compilation with zero errors:
+The legacy backend suite currently contains tests that do not match the current authentication and payment behavior; treat failures as unresolved until the suite is reconciled and passing.
+
+Verify frontend TypeScript compilation:
 ```bash
 cd frontend
 npx tsc --noEmit
 ```
 
-### Key Test Suites:
-- `test_digital_ai_watermark.py`: Verifies SynthID/DALL-E detection and ensures photographed screens are strictly flagged on digital deliverables.
-- `test_ai_model_upgrade.py`: Verifies zero-dependency Moiré pattern recognition and screen bezel detection.
-- `test_rejection_flow.py`: Verifies buyer rejection feedback loops and sequential milestone locks.
-- `test_scope_changes.py`: Verifies Gemini Addendum drafting and deadline adjustment logic.
-
----
-
 ## 🔒 Security & Secrets Hygiene
 
-1. **No Sensitive Data Committed**: `.gitignore` prevents `.env`, `sql_app.db`, `prooflens.db`, and `uploads/*` media files from entering git history.
-2. **Deterministic Cryptographic Verification**: Every media submission is hashed using SHA-256 upon ingestion to establish an immutable audit trail.
-3. **Fail-Closed Escrow Design**: If an AI verification service is unreachable or flags suspicious indicators, the payout defaults to `HOLD ESCROW RELEASE`. Escrow funds cannot be released without passing forensic gates or manual dispute arbitration.
-4. **PayPal Basic Auth Protection**: PayPal client secrets are maintained exclusively on the FastAPI backend; the Angular frontend only ever receives ephemeral transaction tokens.
+1. `.gitignore` excludes `.env`, database files, and uploaded media from git history.
+2. Uploaded evidence is hashed with SHA-256 on ingestion.
+3. PayPal credentials remain on the backend; the frontend receives no client secret.
+
+### Production launch blockers
+
+- Configure and test the production SMTP relay and persistent, backed-up evidence volume before launch.
+- PayPal dispute submission currently sends the case notes; automated attachment of evidence files through the supported PayPal dispute API still needs implementation and sandbox/live validation.
+- Reconcile the legacy backend tests with current authentication and sequential payment behavior, then require a passing CI run before release.
 
 ---
 

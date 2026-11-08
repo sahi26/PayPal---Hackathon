@@ -5,6 +5,7 @@ import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { API_BASE_URL } from '../api.config';
+import { EvidenceFileService } from '../evidence-file.service';
 import { requiresDigitalWarrantyHold } from '../project-warranty.utils';
 import { LiveCameraComponent } from '../live-camera/live-camera.component';
 import { RevisionRoomComponent, ScopeChangeItem } from '../revision-room/revision-room.component';
@@ -41,6 +42,7 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
   activeScopeChange: ScopeChangeItem | null = null;
   isRefreshing = false;
   isApproving = false;
+  isAuthorizingMilestone = false;
 
   // Multi-Tiered Dispute State
   showDisputeRoom = false;
@@ -87,7 +89,8 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
     private route: ActivatedRoute,
     private router: Router,
     private http: HttpClient,
-    private sanitizer: DomSanitizer
+    private sanitizer: DomSanitizer,
+    private evidenceFiles: EvidenceFileService
   ) {}
 
   ngOnInit() {
@@ -114,6 +117,13 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
       const token = q['token'];
       if (token && !this.isConfirmingAuth) {
         this.confirmPayPalEscrowHold(token);
+      }
+      if (q['paypal_cancelled'] === '1') {
+        this.router.navigate([], {
+          relativeTo: this.route,
+          queryParams: { role: this.currentRole },
+          replaceUrl: true
+        });
       }
       if (q['scope_change'] === '1') {
         this.showRevisionRoom = true;
@@ -156,23 +166,25 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
 
   isEscrowAuthorized(): boolean {
     const p = this.projectData?.payment;
-    if (!p) return false;
+    if (!p || Number(p.milestone_index) !== this.selectedMilestoneIndex) return false;
     const s = (p.status || '').toLowerCase();
-    return s === 'authorized' || s === 'partially_captured' || s === 'captured';
+    return s === 'authorized' || s === 'reauthorized';
   }
 
   isScopeChangePendingEscrow(): boolean {
-    const total = Number(this.projectData?.project?.total_price || 0);
-    const captured = Number(this.projectData?.project?.captured_amount || 0);
     const paymentAmt = Number(this.projectData?.payment?.amount || 0);
     return this.activeScopeChange?.status === 'PENDING_FUNDS' ||
-           (this.projectData?.payment?.status === 'CREATED' && paymentAmt < total) ||
-           (captured > 0 && total > captured);
+           (this.projectData?.payment?.milestone_index == null &&
+             this.projectData?.payment?.status === 'CREATED' &&
+             paymentAmt < Number(this.projectData?.project?.total_price || 0));
   }
 
   getEscrowDepositAmount(): number {
     if (this.activeScopeChange?.proposed_extra_cost) {
       return Number(this.activeScopeChange.proposed_extra_cost);
+    }
+    if (this.projectData?.payment?.milestone_index != null) {
+      return Number(this.projectData.payment.amount || 0);
     }
     const total = Number(this.projectData?.project?.total_price || 0);
     const captured = Number(this.projectData?.project?.captured_amount || 0);
@@ -203,6 +215,45 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
 
   getPayPalApprovalUrl(): string | null {
     return this.projectData?.paypal_approval_url || this.projectData?.payment?.approval_url || null;
+  }
+
+  canAuthorizeSelectedMilestone(): boolean {
+    const status = (this.projectData?.project?.status || '').toLowerCase();
+    return this.currentRole === 'buyer' &&
+      !!this.projectData?.project?.seller_email &&
+      ['accepted', 'active'].includes(status) &&
+      !!this.milestones[this.selectedMilestoneIndex] &&
+      !this.isMilestoneApproved(this.selectedMilestoneIndex) &&
+      !this.isEscrowAuthorized() &&
+      !this.isProjectCanceled();
+  }
+
+  authorizeSelectedMilestone(): void {
+    if (!this.projectId || !this.canAuthorizeSelectedMilestone() || this.isAuthorizingMilestone) return;
+    const milestoneIndex = this.selectedMilestoneIndex;
+    this.isAuthorizingMilestone = true;
+    const returnUrl = `${window.location.origin}/project/${this.projectId}/fulfillment?role=buyer`;
+    const cancelUrl = `${window.location.origin}/project/${this.projectId}/fulfillment?role=buyer&paypal_cancelled=1`;
+    this.http.post<any>(`${API_BASE_URL}/api/payments/authorize`, {
+      project_id: this.projectId,
+      milestone_index: milestoneIndex,
+      currency: 'USD',
+      return_url: returnUrl,
+      cancel_url: cancelUrl
+    }).subscribe({
+      next: (res) => {
+        this.isAuthorizingMilestone = false;
+        if (!res?.approval_url) {
+          alert('PayPal did not return an approval link. Please retry milestone authorization.');
+          return;
+        }
+        window.location.href = res.approval_url;
+      },
+      error: (err) => {
+        this.isAuthorizingMilestone = false;
+        alert(err.error?.detail || err.message || 'Could not start milestone escrow authorization.');
+      }
+    });
   }
 
   isFundsAtRisk(): boolean {
@@ -894,6 +945,10 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
             this.selectedMilestoneIndex = res.next_active_milestone_index;
           }
           this.fetchProject();
+          if (this.currentRole === 'buyer' && res.next_active_milestone_index !== null && res.next_active_milestone_index !== undefined) {
+            this.selectedMilestoneIndex = res.next_active_milestone_index;
+            this.authorizeSelectedMilestone();
+          }
         },
         error: (err) => {
           this.isApproving = false;
@@ -1055,12 +1110,8 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
     return item?.ai_comparison_details?.geographic_provenance || null;
   }
 
-  getEvidenceUrl(filePath: string): string {
-    if (!filePath) return '';
-    if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
-      return filePath;
-    }
-    return `${API_BASE_URL}${filePath.startsWith('/') ? '' : '/'}${filePath}`;
+  getEvidenceUrl(filePath: string) {
+    return this.evidenceFiles.getFileUrl(filePath);
   }
 
   formatLocalDate(dateStr: string | null | undefined): string {

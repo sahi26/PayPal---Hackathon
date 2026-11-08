@@ -3,7 +3,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load backend environment defaults without overriding deployment-provided variables.
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 load_dotenv()
 
 # Get the Render database URL
@@ -13,7 +14,7 @@ SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
 if SQLALCHEMY_DATABASE_URL and SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
     SQLALCHEMY_DATABASE_URL = SQLALCHEMY_DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# Connect to Render PostgreSQL if reachable, otherwise fallback to local SQLite for robust offline/testing support
+# Use SQLite only when explicitly selected or when a local development environment has no URL.
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.abspath(os.path.join(BACKEND_DIR, ".."))
 ROOT_SQLITE = os.path.join(ROOT_DIR, "sql_app.db")
@@ -21,7 +22,15 @@ BACKEND_SQLITE = os.path.join(BACKEND_DIR, "sql_app.db")
 CANONICAL_SQLITE_PATH = ROOT_SQLITE if os.path.exists(ROOT_SQLITE) else BACKEND_SQLITE
 CANONICAL_SQLITE_URL = f"sqlite:///{CANONICAL_SQLITE_PATH.replace(os.sep, '/')}"
 
-USE_LOCAL_DB = os.getenv("USE_LOCAL_DB", "true").lower() in ("true", "1", "yes")
+APP_ENV = os.getenv("APP_ENV", "development").lower()
+USE_LOCAL_DB = os.getenv("USE_LOCAL_DB", "false").lower() in ("true", "1", "yes")
+
+if APP_ENV == "production" and (
+    USE_LOCAL_DB
+    or not SQLALCHEMY_DATABASE_URL
+    or not SQLALCHEMY_DATABASE_URL.startswith("postgresql")
+):
+    raise RuntimeError("Production requires a PostgreSQL DATABASE_URL; local SQLite is not supported.")
 
 if USE_LOCAL_DB:
     SQLALCHEMY_DATABASE_URL = CANONICAL_SQLITE_URL
@@ -33,10 +42,12 @@ elif SQLALCHEMY_DATABASE_URL and not SQLALCHEMY_DATABASE_URL.startswith("sqlite"
             pass
         engine = test_engine
     except Exception as e:
-        print(f"[WARN] Remote PostgreSQL unreachable ({e}). Falling back to local SQLite at {CANONICAL_SQLITE_PATH}.")
-        SQLALCHEMY_DATABASE_URL = CANONICAL_SQLITE_URL
-        engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+        raise RuntimeError("Configured database is unavailable; refusing to fall back to local SQLite.") from e
+elif SQLALCHEMY_DATABASE_URL and SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 else:
+    if APP_ENV == "production":
+        raise RuntimeError("DATABASE_URL is required in production unless USE_LOCAL_DB is explicitly enabled.")
     SQLALCHEMY_DATABASE_URL = CANONICAL_SQLITE_URL
     engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 
@@ -58,6 +69,34 @@ def run_migrations(target_engine):
         tables = inspector.get_table_names()
 
         with target_engine.connect() as conn:
+            if "users" in tables:
+                user_columns = [column["name"] for column in inspector.get_columns("users")]
+                if "email_verified" not in user_columns:
+                    conn.execute(text(
+                        "ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT FALSE;"
+                    ))
+                if "email_verification_token_hash" not in user_columns:
+                    conn.execute(text(
+                        "ALTER TABLE users ADD COLUMN email_verification_token_hash VARCHAR(64);"
+                    ))
+                if "email_verification_expires_at" not in user_columns:
+                    conn.execute(text(
+                        "ALTER TABLE users ADD COLUMN email_verification_expires_at TIMESTAMP WITH TIME ZONE;"
+                    ))
+                if "email_verification_sent_at" not in user_columns:
+                    conn.execute(text(
+                        "ALTER TABLE users ADD COLUMN email_verification_sent_at TIMESTAMP WITH TIME ZONE;"
+                    ))
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_email_lower "
+                    "ON users (lower(email));"
+                ))
+                conn.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email_verification_token_hash "
+                    "ON users (email_verification_token_hash);"
+                ))
+                conn.commit()
+
             if "projects" in tables:
                 columns = [c["name"] for c in inspector.get_columns("projects")]
                 if "buyer_id" not in columns:
@@ -344,7 +383,7 @@ def run_migrations(target_engine):
                 except Exception as e:
                     print(f"Notification table migration notice: {e}")
     except Exception as e:
-        print(f"Migration notice: {e}")
+        raise RuntimeError("Database schema migration failed.") from e
 
 # Dependency to get a database session per request
 def get_db():

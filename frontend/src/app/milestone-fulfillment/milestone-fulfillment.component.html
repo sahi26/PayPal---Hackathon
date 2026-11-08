@@ -1,4 +1,4 @@
-<div class="fulfillment-shell">
+<div class="fulfillment-shell premium-page">
       @if (isAnalyzing) {
         <div class="ai-analyzing-overlay">
           <div class="ai-analyzing-card">
@@ -47,7 +47,7 @@
         </div>
       } @else {
         <!-- ACCEPTED PROJECT FULFILLMENT DESK -->
-        <header class="fulfillment-header-card">
+        <header class="fulfillment-header-card premium-card">
           <!-- Row 1: Explicit Navigation Actions -->
           <div class="header-nav-row">
             <button (click)="goBackToDashboard()" class="btn-back-dashboard" title="Return to active projects dashboard">
@@ -375,10 +375,42 @@
           @if (escrowAuthSuccess) {
             <div style="margin: 0 0 16px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 12px 16px; display: flex; align-items: center; gap: 10px;">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#059669" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span style="color: #065f46; font-weight: 500; font-size: 13.5px;">PayPal Escrow Secured! Full project funds are locked safely on 29-day PayPal hold.</span>
+              <span style="color: #065f46; font-weight: 500; font-size: 13.5px;">
+                PayPal escrow secured for Milestone {{ selectedMilestoneIndex + 1 }}
+                (${{ Number(projectData?.payment?.amount || 0).toFixed(2) }} USD).
+              </span>
             </div>
           }
-          @if (!isProjectCanceled() && !isEscrowAuthorized() && currentRole === 'buyer' && (getEscrowDepositUrl() || getPayPalApprovalUrl())) {
+          @if (canAuthorizeSelectedMilestone()) {
+            <div class="milestone-authorization-card">
+              <div>
+                <strong>Authorize the next milestone</strong>
+                <p>
+                  The seller has joined. Authorize only Milestone {{ selectedMilestoneIndex + 1 }}
+                  (${{ Number(milestones[selectedMilestoneIndex]?.price_allocation || 0).toFixed(2) }} USD)
+                  before work begins. You will approve this hold in PayPal.
+                </p>
+              </div>
+              <button type="button" class="btn-fintech btn-fintech-primary"
+                [disabled]="isAuthorizingMilestone"
+                (click)="authorizeSelectedMilestone()">
+                {{ isAuthorizingMilestone ? 'Connecting to PayPal…' : 'Authorize milestone funds' }}
+              </button>
+            </div>
+          }
+          @if (!isProjectCanceled() && currentRole === 'seller' &&
+               projectData?.project?.seller_email && !isEscrowAuthorized() &&
+               milestones[selectedMilestoneIndex] &&
+               ['accepted', 'active'].includes((projectData?.project?.status || '').toLowerCase())) {
+            <div class="milestone-authorization-card seller-funding-pending">
+              <div>
+                <strong>Waiting for milestone escrow</strong>
+                <p>The buyer must authorize Milestone {{ selectedMilestoneIndex + 1 }} in PayPal before you can submit work evidence.</p>
+              </div>
+            </div>
+          }
+          @if (!isProjectCanceled() && !isEscrowAuthorized() && currentRole === 'buyer' &&
+               projectData?.payment?.milestone_index == null && (getEscrowDepositUrl() || getPayPalApprovalUrl())) {
             <div style="margin: 0 0 16px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 14px 18px; display: flex; justify-content: space-between; align-items: center;">
               <div>
                 @if (isScopeChangePendingEscrow()) {
@@ -501,7 +533,7 @@
 
         <!-- Main Section 3.0 Fulfillment Desk -->
         <main class="fulfillment-body">
-          <div class="fulfillment-desk-card">
+          <div class="fulfillment-desk-card premium-card">
             <div class="clause-heading">
               <div class="clause-num-tag">Section 3.0</div>
               <div class="clause-title-group">
@@ -857,7 +889,7 @@
                               <span class="rej-badge" style="display: inline-block; font-size: 11px; font-weight: 800; color: #c53030; text-transform: uppercase; margin-bottom: 6px;">Rejected Submission on Record:</span>
                               <div class="rej-content-row" style="display: flex; gap: 12px; align-items: flex-start;">
                                 @if (rejEv.file_path && isPreviewableImage(rejEv.file_path)) {
-                                  <img [src]="getEvidenceUrl(rejEv.file_path)" alt="Rejected evidence preview" style="width: 80px; height: 60px; object-fit: cover; border-radius: 6px; border: 1px solid #feb2b2;" />
+                                  <img [src]="getEvidenceUrl(rejEv.file_path) | async" alt="Rejected evidence preview" style="width: 80px; height: 60px; object-fit: cover; border-radius: 6px; border: 1px solid #feb2b2;" />
                                 }
                                 <div class="rej-info-block" style="font-size: 12px; color: #4a5568;">
                                   <div style="font-weight: 700; color: #2d3748;">{{ rejEv.original_filename || 'Evidence Deliverable' }}</div>
@@ -1423,7 +1455,7 @@
                         @for (ev of milestoneEvList; track ev.id; let aIdx = $index) {
                           <div class="cert-angle-card">
                             @if (ev.file_path && isPreviewableImage(ev.file_path)) {
-                              <img [src]="getEvidenceUrl(ev.file_path)" alt="Deliverable {{ aIdx + 1 }}" class="cert-thumb" />
+                              <img [src]="getEvidenceUrl(ev.file_path) | async" alt="Deliverable {{ aIdx + 1 }}" class="cert-thumb" />
                             } @else {
                               <div class="cert-doc-thumb">
                                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
@@ -1434,7 +1466,7 @@
                             @if (currentRole === 'buyer' && ev.file_path) {
                               <a
                                 class="view-evidence-link"
-                                [href]="getEvidenceUrl(ev.file_path)"
+                                [href]="getEvidenceUrl(ev.file_path) | async"
                                 target="_blank"
                                 rel="noopener noreferrer"
                               >View Original File</a>
@@ -1518,7 +1550,7 @@
                         </span>
                       </div>
                       @if (item.file_path && isPreviewableImage(item.file_path)) {
-                        <img [src]="getEvidenceUrl(item.file_path)" alt="Evidence frame" class="item-media-preview" />
+                        <img [src]="getEvidenceUrl(item.file_path) | async" alt="Evidence frame" class="item-media-preview" />
                       } @else {
                         <div class="item-doc-preview">
                           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
@@ -2036,7 +2068,7 @@
                     <span>3. Baseline Before-Evidence</span>
                   </h4>
                   <div class="modal-baseline-row">
-                    <img [src]="getEvidenceUrl(projectData.project.before_evidence_path)" alt="Baseline evidence" class="modal-baseline-thumb" />
+                    <img [src]="getEvidenceUrl(projectData.project.before_evidence_path) | async" alt="Baseline evidence" class="modal-baseline-thumb" />
                     <div class="modal-baseline-meta">
                       <div><strong>Status:</strong> Cryptographically Registered</div>
                       <div class="mono-hash">SHA-256: {{ projectData.project.before_evidence_hash || 'Not recorded' }}</div>

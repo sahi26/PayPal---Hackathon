@@ -46,7 +46,11 @@ class TestPayPalReauthorization(unittest.TestCase):
     def test_paypal_service_reauthorize(self):
         """Phase 2: paypal_service.reauthorize_payment renews authorization and returns new ID & 29-day expiration"""
         import asyncio
-        loop = asyncio.get_event_loop()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         res = loop.run_until_complete(
             paypal_service.reauthorize_payment("AUTH-ORIGINAL-999", amount=150.0, currency="USD")
         )
@@ -201,7 +205,11 @@ class TestPayPalReauthorization(unittest.TestCase):
         self.db.commit()
 
         # Run maintenance function
-        loop = asyncio.get_event_loop()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         results = loop.run_until_complete(auto_reauthorize_expiring_escrow(self.db))
 
         self.db.refresh(proj_expiring)

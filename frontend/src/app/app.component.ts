@@ -1,9 +1,10 @@
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, HostListener } from '@angular/core';
 import { RouterOutlet, RouterLink, RouterLinkActive, Router } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { API_BASE_URL } from './api.config';
+import { PROOFLENS_LOGO_BASE64 } from './assets.constants';
 
 interface CurrentUser {
   id: number;
@@ -20,6 +21,7 @@ interface CurrentUser {
   styleUrl: './app.component.scss'
 })
 export class AppComponent implements OnInit, OnDestroy {
+  readonly appLogo = PROOFLENS_LOGO_BASE64;
   currentUser: CurrentUser | null = null;
   showAuthModal = false;
   isAuthenticating = false;
@@ -151,6 +153,14 @@ export class AppComponent implements OnInit, OnDestroy {
 
   closeNotificationsPopover() {
     this.showNotificationsPopover = false;
+  }
+
+  @HostListener('document:click', ['$event'])
+  closeNotificationsOnOutsideClick(event: MouseEvent) {
+    const target = event.target;
+    if (target instanceof Element && !target.closest('.notification-bell-container')) {
+      this.closeNotificationsPopover();
+    }
   }
 
   markNotificationAsRead(notif: any, event?: Event) {
@@ -334,6 +344,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.currentUser = null;
     this.showAuthModal = false;
     this.closeMobileMenu();
+    this.router.navigate(['/login']);
     this.authNotification = {
       message: 'Signed out from PayPal session.',
       type: 'success'

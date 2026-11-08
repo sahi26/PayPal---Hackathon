@@ -27,7 +27,7 @@ class TestLocationTracking(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        Base.metadata.drop_all(bind=engine)
+        pass
 
     def setUp(self):
         self.db = TestingSessionLocal()

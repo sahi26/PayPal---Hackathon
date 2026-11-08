@@ -12,6 +12,7 @@ import { DisputeRoomComponent } from './dispute-room/dispute-room.component';
 export const routes: Routes = [
   { path: '', component: LoginComponent },
   { path: 'login', component: LoginComponent },
+  { path: 'verify-email', component: LoginComponent },
   { path: 'buyer', component: BuyerDashboardComponent },
   { path: 'seller', component: SellerDashboardComponent },
   { path: 'dashboard', redirectTo: 'buyer' },

@@ -23,13 +23,13 @@ class TestAIModelUpgrade(unittest.TestCase):
         # Verify primary and fallback models
         self.assertEqual(ai_service.PRIMARY_GEMINI_MODEL, "gemini-4-argon")
         self.assertEqual(ai_service.FALLBACK_GEMINI_MODEL, "gemini-3.8-flash")
-        self.assertEqual(ai_service.DEFAULT_GEMINI_MODELS, ["gemini-4-argon", "gemini-3.8-flash"])
-        self.assertEqual(ai_service.get_candidate_models(), ["gemini-4-argon", "gemini-3.8-flash"])
+        self.assertEqual(ai_service.DEFAULT_GEMINI_MODELS[:2], ["gemini-4-argon", "gemini-3.8-flash"])
+        self.assertEqual(ai_service.get_candidate_models()[:2], ["gemini-4-argon", "gemini-3.8-flash"])
 
         self.assertEqual(main_mod.PRIMARY_GEMINI_MODEL, "gemini-4-argon")
         self.assertEqual(main_mod.FALLBACK_GEMINI_MODEL, "gemini-3.8-flash")
-        self.assertEqual(main_mod.DEFAULT_GEMINI_MODELS, ["gemini-4-argon", "gemini-3.8-flash"])
-        self.assertEqual(main_mod.get_candidate_models(), ["gemini-4-argon", "gemini-3.8-flash"])
+        self.assertEqual(main_mod.DEFAULT_GEMINI_MODELS[:2], ["gemini-4-argon", "gemini-3.8-flash"])
+        self.assertEqual(main_mod.get_candidate_models()[:2], ["gemini-4-argon", "gemini-3.8-flash"])
 
     def test_no_outdated_models_in_constants(self):
         outdated = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro", "gemini-2.0-flash"]

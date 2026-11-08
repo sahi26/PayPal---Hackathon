@@ -2649,6 +2649,33 @@
       }
     }
 
+.milestone-authorization-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin: 0 0 1rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid #c7d2fe;
+  border-radius: 12px;
+  background: #eef2ff;
+
+  strong {
+    color: #312e81;
+  }
+
+  p {
+    margin: 0.3rem 0 0;
+    color: #475569;
+    font-size: 0.875rem;
+  }
+
+  @media (max-width: 640px) {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 /* Warranty Retainage Status Banner */
 .warranty-status-banner {
   background: #f0fdf4;
@@ -3472,6 +3499,7 @@
       line-height: 1.5;
       margin: 0;
     }
+
   }
 
   .modal-milestones-grid {

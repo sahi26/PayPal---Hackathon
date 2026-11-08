@@ -4,6 +4,7 @@ import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { API_BASE_URL } from '../api.config';
+import { EvidenceFileService } from '../evidence-file.service';
 import { requiresDigitalWarrantyHold } from '../project-warranty.utils';
 import { LiveCameraComponent } from '../live-camera/live-camera.component';
 import { RevisionRoomComponent, ScopeChangeItem } from '../revision-room/revision-room.component';
@@ -172,7 +173,8 @@ export class NegotiationRoomComponent implements OnInit {
   constructor(
     private route: ActivatedRoute,
     private router: Router,
-    private http: HttpClient
+    private http: HttpClient,
+    private evidenceFiles: EvidenceFileService
   ) {}
 
   Number = Number; // Template helper
@@ -446,10 +448,10 @@ export class NegotiationRoomComponent implements OnInit {
     this.isAccepting = true;
     this.http.post<any>(`${API_BASE_URL}/api/payments/authorize`, {
       project_id: this.projectId,
-      amount: this.projectData.project.total_price,
+      milestone_index: 0,
       currency: 'USD',
-      return_url: `${window.location.origin}/project/${this.projectId}/fulfillment`,
-      cancel_url: `${window.location.origin}/negotiate/${this.projectId}`
+      return_url: `${window.location.origin}/project/${this.projectId}/fulfillment?role=buyer`,
+      cancel_url: `${window.location.origin}/project/${this.projectId}/fulfillment?role=buyer&paypal_cancelled=1`
     }).subscribe({
       next: (res) => {
         this.isAccepting = false;
@@ -467,10 +469,16 @@ export class NegotiationRoomComponent implements OnInit {
   }
 
   isEscrowAuthorized(): boolean {
+    const projectStatus = (this.projectData?.project?.status || '').toLowerCase();
+    if (['active', 'warranty_period', 'completed'].includes(projectStatus)) return true;
     const p = this.projectData?.payment;
-    if (!p) return false;
+    if (!p || Number(p.milestone_index) !== 0) return false;
     const s = (p.status || '').toLowerCase();
-    return s === 'authorized' || s === 'partially_captured' || s === 'captured';
+    return s === 'authorized' || s === 'reauthorized';
+  }
+
+  getFirstMilestoneAmount(): number {
+    return Number(this.projectData?.agreement?.milestones?.[0]?.price_allocation || 0);
   }
 
   getPayPalApprovalUrl(): string | null {
@@ -863,12 +871,8 @@ export class NegotiationRoomComponent implements OnInit {
     this.loadProjectEvidence();
   }
 
-  getEvidenceUrl(filePath: string): string {
-    if (!filePath) return '';
-    if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
-      return filePath;
-    }
-    return `${API_BASE_URL}${filePath.startsWith('/') ? '' : '/'}${filePath}`;
+  getEvidenceUrl(filePath: string) {
+    return this.evidenceFiles.getFileUrl(filePath);
   }
 
   // Contractor Rejection Methods

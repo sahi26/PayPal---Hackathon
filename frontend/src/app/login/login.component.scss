@@ -26,8 +26,8 @@
     }
 
     .pp-badge-circle {
-      width: 52px;
-      height: 52px;
+      width: 56px;
+      height: 56px;
       border-radius: 50%;
       background: #ffffff;
       display: flex;
@@ -35,6 +35,14 @@
       justify-content: center;
       margin: 0 auto 0.85rem auto;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      overflow: hidden;
+
+      .login-logo-img, img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
     }
 
     .login-brand-header h2 {
@@ -42,6 +50,7 @@
       font-size: 1.55rem;
       font-weight: 800;
       letter-spacing: -0.01em;
+      color: #ffffff;
     }
 
     .brand-sub {
@@ -66,6 +75,41 @@
       border-left: 4px solid #dc2626;
       border-radius: 8px;
       padding: 0.85rem 1rem;
+    }
+
+    .login-success-banner {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      background: #ecfdf5;
+      border: 1.5px solid #a7f3d0;
+      border-left: 4px solid #059669;
+      border-radius: 8px;
+      padding: 0.85rem 1rem;
+      color: #065f46;
+      font-size: 0.85rem;
+    }
+
+    .login-success-banner a {
+      color: #047857;
+      font-weight: 700;
+      text-decoration: underline;
+    }
+
+    .btn-resend-verification {
+      align-self: flex-start;
+      background: none;
+      border: 0;
+      color: #005ea6;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 700;
+      padding: 0.25rem 0;
+    }
+
+    .btn-resend-verification:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
     }
 
     .error-text {

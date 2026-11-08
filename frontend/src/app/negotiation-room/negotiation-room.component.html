@@ -74,7 +74,7 @@
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
                       <polyline points="20 6 9 17 4 12"/>
                     </svg>
-                    <span>Terms Locked &amp; Escrow Funded</span>
+                    <span>Terms Locked &amp; Current Milestone Funded</span>
                   </div>
                   <button (click)="goToFulfillment()" class="btn-corporate-fulfillment">
                     <span>Go to Fulfillment Desk &rarr;</span>
@@ -84,12 +84,12 @@
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.641.641 0 0 1 .632-.544h7.521c3.155 0 5.487 1.096 5.807 4.168.32 3.072-1.745 5.568-4.664 6.27-.408.098-.795.158-1.168.188l-1.072 6.804a.641.641 0 0 1-.632.544l-3.292.187z"/>
                     </svg>
-                    <span>Authorize Escrow via PayPal (${{ Number(projectData.project.total_price).toFixed(2) }}) &rarr;&rarr;</span>
+                    <span>Authorize Milestone 1 via PayPal (${{ getFirstMilestoneAmount().toFixed(2) }}) &rarr;&rarr;</span>
                   </button>
                 } @else {
                   <div class="buyer-awaiting-badge">
                     <span class="pulse-mini-dot"></span>
-                    <span>Agreement Accepted &mdash; Awaiting Buyer Escrow Deposit</span>
+                    <span>Agreement Accepted &mdash; Awaiting Milestone 1 Funding</span>
                   </div>
                 }
               } @else if (currentRole === 'seller') {
@@ -232,7 +232,7 @@
             </div>
             <div style="flex: 1;">
               <h3>Escrow Agreement Formally Accepted &amp; Locked</h3>
-              <p>Both Buyer and Seller have formally ratified Version {{ projectData.agreement.version || 1 }}.0. PayPal escrow deposit is secured. Milestone releases will trigger upon verification of proof-of-work evidence.</p>
+              <p>Both Buyer and Seller have formally ratified Version {{ projectData.agreement.version || 1 }}.0. The buyer authorizes each milestone separately; work starts only after that milestone's escrow is secured.</p>
             </div>
             <button (click)="goToFulfillment()" class="btn-celebration-fulfillment">
               Go to Milestone Fulfillment Desk &rarr;
@@ -628,7 +628,7 @@
                                 @for (ev of milestoneEvList; track ev.id; let aIdx = $index) {
                                   <div class="cert-angle-card">
                                     @if (ev.file_path) {
-                                      <img [src]="getEvidenceUrl(ev.file_path)" alt="Angle {{ aIdx + 1 }}" class="cert-thumb" />
+                                      <img [src]="getEvidenceUrl(ev.file_path) | async" alt="Angle {{ aIdx + 1 }}" class="cert-thumb" />
                                     }
                                     <span class="angle-label">Angle {{ aIdx + 1 }}</span>
                                     <span class="cert-hash" title="{{ ev.file_hash }}">SHA: {{ ev.file_hash ? ev.file_hash.slice(0, 8) : 'Locked' }}</span>
@@ -688,7 +688,7 @@
                     </div>
                     <div class="baseline-card-body">
                       @if (beforeEv.file_path) {
-                        <img [src]="getEvidenceUrl(beforeEv.file_path)" alt="Buyer Baseline" class="baseline-preview-img" />
+                        <img [src]="getEvidenceUrl(beforeEv.file_path) | async" alt="Buyer Baseline" class="baseline-preview-img" />
                       }
                       <div class="baseline-card-meta">
                         <strong>Pre-Work Site Condition (Buyer Live Capture)</strong>
