@@ -258,7 +258,10 @@ export class NegotiationRoomComponent implements OnInit {
         },
         error: (err) => {
           this.isLoading = false;
-          alert('Could not load project details: ' + (err.error?.detail || err.message));
+          const msg = err.status === 0
+            ? 'Network or authorization error. Please check your connection or re-login.'
+            : (err.error?.detail || err.message || 'Unknown error');
+          alert('Could not load project details: ' + msg);
         }
       });
   }

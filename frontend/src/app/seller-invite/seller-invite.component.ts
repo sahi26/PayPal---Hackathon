@@ -124,10 +124,6 @@ export class SellerInviteComponent implements OnInit {
         },
         error: (err) => {
           this.isJoining = false;
-          if (err.status === 409 && this.projectData?.project?.id) {
-            this.router.navigate(['/project', this.projectData.project.id, 'negotiate'], { queryParams: { role: 'seller' } });
-            return;
-          }
           alert('Failed to join project: ' + (err.error?.detail || err.message));
         }
       });

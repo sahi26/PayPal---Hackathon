@@ -149,6 +149,46 @@ def health_check():
     return {"status": "ok", "database": db_status}
 
 
+def ensure_utc(dt: Optional[Union[datetime, str, date]]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    if isinstance(dt, datetime):
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    if isinstance(dt, date):
+        return datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc)
+    return None
+
+
+def _cors_json_response(status_code: int, content: dict, request: Optional[Request] = None) -> JSONResponse:
+    response = JSONResponse(status_code=status_code, content=content)
+    origin = request.headers.get("origin") if request else None
+    if origin:
+        if (
+            origin in FRONTEND_ORIGINS
+            or "*" in FRONTEND_ORIGINS
+            or origin.endswith(".vercel.app")
+            or "localhost" in origin
+            or "127.0.0.1" in origin
+        ):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+            response.headers["Access-Control-Allow-Headers"] = "*"
+    elif FRONTEND_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = FRONTEND_ORIGINS[0]
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
+
 def _project_id_from_path(path: str) -> Optional[int]:
     project_match = re.search(r"/api/(?:projects|escrow|disputes|payments)/(\d+)(?:/|$)", path)
     if project_match:
@@ -185,7 +225,7 @@ async def require_authenticated_project_access(request: Request, call_next):
         configured_admin_token = os.getenv("ADMIN_API_TOKEN", "")
         supplied_admin_token = request.headers.get("x-admin-token", "")
         if not configured_admin_token or not secrets.compare_digest(configured_admin_token, supplied_admin_token):
-            return JSONResponse(status_code=403, content={"detail": "Administrator access is required."})
+            return _cors_json_response(403, {"detail": "Administrator access is required."}, request)
         return await call_next(request)
 
     authorization = request.headers.get("authorization", "")
@@ -260,42 +300,43 @@ async def require_authenticated_project_access(request: Request, call_next):
                     db.refresh(user)
 
         if not user:
-            return JSONResponse(status_code=401, content={"detail": "Authentication required."})
+            return _cors_json_response(401, {"detail": "Authentication required."}, request)
 
         if not is_test_mode:
             if any(pattern.fullmatch(path) for pattern in BUYER_ONLY_ROUTES) and user.role_type != "buyer":
-                return JSONResponse(status_code=403, content={"detail": "Buyer access is required."})
+                return _cors_json_response(403, {"detail": "Buyer access is required."}, request)
             if request.method == "DELETE" and re.fullmatch(r"/api/projects/\d+", path) and user.role_type != "buyer":
-                return JSONResponse(status_code=403, content={"detail": "Buyer access is required."})
+                return _cors_json_response(403, {"detail": "Buyer access is required."}, request)
             if any(pattern.fullmatch(path) for pattern in SELLER_ONLY_ROUTES) and user.role_type != "seller":
-                return JSONResponse(status_code=403, content={"detail": "Seller access is required."})
+                return _cors_json_response(403, {"detail": "Seller access is required."}, request)
 
             project_id = _project_id_from_path(path)
             if path == "/api/escrow/confirm-authorization" and request.method == "POST":
                 order_id = request.query_params.get("order_id")
                 payment = db.query(models.Payment).filter(models.Payment.paypal_order_id == order_id).first()
                 if not payment:
-                    return JSONResponse(status_code=404, content={"detail": "Payment order not found."})
+                    return _cors_json_response(404, {"detail": "Payment order not found."}, request)
                 project_id = payment.project_id if payment else None
             elif path.startswith("/api/payments/") and path.endswith("/capture"):
                 order_id = path.split("/")[3]
                 payment = db.query(models.Payment).filter(models.Payment.paypal_order_id == order_id).first()
                 if not payment:
-                    return JSONResponse(status_code=404, content={"detail": "Payment order not found."})
+                    return _cors_json_response(404, {"detail": "Payment order not found."}, request)
                 project_id = payment.project_id if payment else None
 
             if project_id is not None:
                 project = db.query(models.Project).filter(models.Project.id == project_id).first()
                 if not project:
-                    return JSONResponse(status_code=404, content={"detail": "Project not found."})
+                    return _cors_json_response(404, {"detail": "Project not found."}, request)
                 owns_project = (
                     project.buyer_id == user.id
                     or project.seller_id == user.id
                     or (project.buyer_id is None and (project.client_email or "").lower() == user.email.lower())
                     or (project.seller_id is None and project.seller and project.seller.email.lower() == user.email.lower())
+                    or (project.seller_id is None and user.role_type == "seller" and request.method == "GET")
                 )
                 if not owns_project:
-                    return JSONResponse(status_code=404, content={"detail": "Project not found."})
+                    return _cors_json_response(404, {"detail": "Project not found."}, request)
 
         # Eagerly load scalar attributes so user object can be safely used detached
         _ = (user.id, user.email, user.role_type, user.full_name)
@@ -318,6 +359,13 @@ async def require_authenticated_project_access(request: Request, call_next):
 
     request.state.user = user
     return await call_next(request)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    import logging
+    logging.getLogger("uvicorn.error").error(f"Unhandled server error on {request.method} {request.url.path}: {exc}", exc_info=True)
+    return _cors_json_response(500, {"detail": f"Internal server error: {str(exc)}"}, request)
 
 # --- Configuration ---
 PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "")
@@ -3309,24 +3357,29 @@ def check_contractor_ghosting(project: models.Project, db: Session, timeout_hour
     if status == "SELLER_AGREED":
         return True, "Contractor agreed to cancellation"
 
+    now_utc = datetime.now(timezone.utc)
     if status == "PENDING_SELLER_CONSENT" and req_at:
-        elapsed_seconds = (datetime.utcnow() - req_at).total_seconds()
-        if elapsed_seconds >= timeout_hours * 3600:
-            hours_elapsed = int(elapsed_seconds // 3600)
-            return True, f"Contractor unresponsive to cancellation request for {hours_elapsed}h (Exceeds {timeout_hours}h threshold)"
+        req_at_utc = ensure_utc(req_at)
+        if req_at_utc:
+            elapsed_seconds = (now_utc - req_at_utc).total_seconds()
+            if elapsed_seconds >= timeout_hours * 3600:
+                hours_elapsed = int(elapsed_seconds // 3600)
+                return True, f"Contractor unresponsive to cancellation request for {hours_elapsed}h (Exceeds {timeout_hours}h threshold)"
 
     # Condition 2b: Contractor inactive for > timeout_hours with 0 milestone evidence submissions
     created_at = getattr(project, "created_at", None)
     if created_at:
-        elapsed_since_creation = (datetime.utcnow() - created_at).total_seconds()
-        if elapsed_since_creation >= timeout_hours * 3600:
-            ev_count = db.query(models.Evidence).filter(
-                models.Evidence.project_id == project.id,
-                models.Evidence.evidence_type != "before_evidence"
-            ).count()
-            if ev_count == 0:
-                hours_inactive = int(elapsed_since_creation // 3600)
-                return True, f"Contractor inactive for {hours_inactive}h with 0 milestone deliverables submitted (Exceeds {timeout_hours}h timeout)"
+        created_at_utc = ensure_utc(created_at)
+        if created_at_utc:
+            elapsed_since_creation = (now_utc - created_at_utc).total_seconds()
+            if elapsed_since_creation >= timeout_hours * 3600:
+                ev_count = db.query(models.Evidence).filter(
+                    models.Evidence.project_id == project.id,
+                    models.Evidence.evidence_type != "before_evidence"
+                ).count()
+                if ev_count == 0:
+                    hours_inactive = int(elapsed_since_creation // 3600)
+                    return True, f"Contractor inactive for {hours_inactive}h with 0 milestone deliverables submitted (Exceeds {timeout_hours}h timeout)"
 
     # Condition 3: Milestone overdue with 0 submissions
     if project.agreement:
@@ -3336,8 +3389,8 @@ def check_contractor_ghosting(project: models.Project, db: Session, timeout_hour
                 dl_str = m.get("deadline")
                 if dl_str and dl_str not in ["None", "Per Schedule", ""]:
                     try:
-                        dl_dt = datetime.strptime(str(dl_str).split("T")[0], "%Y-%m-%d")
-                        if datetime.utcnow() > dl_dt:
+                        dl_dt = datetime.strptime(str(dl_str).split("T")[0], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                        if now_utc > dl_dt:
                             ev_count = db.query(models.Evidence).filter(
                                 models.Evidence.project_id == project.id,
                                 models.Evidence.milestone_index == idx
@@ -3351,13 +3404,22 @@ def check_contractor_ghosting(project: models.Project, db: Session, timeout_hour
     return False, None
 
 @app.get("/api/projects/{project_id}")
-def get_project_by_id(project_id: int, db: Session = Depends(get_db)):
+def get_project_by_id(project_id: int, request: Request, db: Session = Depends(get_db)):
     """
     Fetch project and agreement details by project ID for negotiation room.
     """
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # If contractor visits project and seller_id is not yet saved, associate it
+    user = getattr(request.state, "user", None)
+    if not project.seller_id and user and user.role_type == "seller":
+        project.seller_id = user.id
+        if project.status in [models.ProjectStatus.INVITE_SENT, models.ProjectStatus.DRAFT, models.ProjectStatus.PENDING_CONTRACTOR]:
+            project.status = models.ProjectStatus.SELLER_JOINED
+        db.commit()
+        db.refresh(project)
 
     agreement = project.agreement
     buyer_email = project.buyer.email if project.buyer else project.client_email
@@ -3511,7 +3573,9 @@ def get_project_by_id(project_id: int, db: Session = Depends(get_db)):
         auth_expires_at = active_payment.authorization_expires_at if active_payment else None
     days_left = None
     if auth_expires_at:
-        days_left = max(0, (auth_expires_at - datetime.utcnow()).total_seconds() / 86400.0)
+        auth_expires_at_utc = ensure_utc(auth_expires_at)
+        if auth_expires_at_utc:
+            days_left = max(0.0, (auth_expires_at_utc - datetime.now(timezone.utc)).total_seconds() / 86400.0)
     is_funds_at_risk = (status_str.upper() == "FUNDS_AT_RISK")
 
     domain_computed = determine_project_domain(project.title, project.industry_type, project.description)
@@ -3620,10 +3684,10 @@ def join_project(invite_token: str, request: SellerJoinRequest, http_request: Re
     project = db.query(models.Project).filter(models.Project.invite_token == invite_token).first()
     if not project:
         raise HTTPException(status_code=404, detail="Invitation not found")
-    if project.status == models.ProjectStatus.REJECTED or project.seller_id:
-        raise HTTPException(status_code=409, detail="This project invitation is no longer available.")
+    if project.status == models.ProjectStatus.REJECTED:
+        raise HTTPException(status_code=410, detail="This project invitation was rejected and is no longer available.")
 
-    seller = http_request.state.user
+    seller = getattr(http_request.state, "user", None)
     if os.getenv("ALLOW_INSECURE_TEST_AUTH") == "1" and request.seller_email:
         seller_user = db.query(models.User).filter(func.lower(models.User.email) == request.seller_email.lower()).first()
         if not seller_user:
@@ -3639,10 +3703,26 @@ def join_project(invite_token: str, request: SellerJoinRequest, http_request: Re
             db.refresh(seller_user)
         seller = seller_user
         http_request.state.user = seller
+
+    if not seller:
+        raise HTTPException(status_code=401, detail="Authentication required.")
     if seller.role_type != "seller":
         raise HTTPException(status_code=403, detail="Only a seller can join a project invitation.")
     if request.seller_email and request.seller_email.lower() != seller.email.lower():
         raise HTTPException(status_code=403, detail="Seller identity must match the authenticated account.")
+
+    # Idempotent join: If contractor already joined this project, succeed immediately
+    if project.seller_id and project.seller_id == seller.id:
+        return {
+            "message": "Seller already joined project",
+            "project_id": project.id,
+            "seller_id": seller.id,
+            "status": project.status.value if hasattr(project.status, "value") else str(project.status)
+        }
+
+    # If already claimed by another contractor
+    if project.seller_id and project.seller_id != seller.id:
+        raise HTTPException(status_code=409, detail="This project invitation has already been accepted by another contractor.")
 
     project.seller_id = seller.id
     project.status = models.ProjectStatus.SELLER_JOINED
@@ -8664,7 +8744,9 @@ def get_project_escrow_status(project_id: int, db: Session = Depends(get_db)):
     is_funds_at_risk = (st.upper() == "FUNDS_AT_RISK")
     days_left = None
     if expires_at:
-        days_left = max(0, (expires_at - datetime.utcnow()).total_seconds() / 86400.0)
+        expires_at_utc = ensure_utc(expires_at)
+        if expires_at_utc:
+            days_left = max(0.0, (expires_at_utc - datetime.now(timezone.utc)).total_seconds() / 86400.0)
 
     return {
         "project_id": project.id,
@@ -8808,12 +8890,15 @@ async def reauthorize_payment_endpoint(
 
     # Check 5-day expiration window constraint
     if auth_expires_at and not req_force:
-        days_remaining = (auth_expires_at - now_dt).total_seconds() / 86400.0
-        if days_remaining > 5.0:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Reauthorization not required yet. Current authorization is valid for {round(days_remaining, 1)} days (expires {auth_expires_at.strftime('%Y-%m-%d %H:%M:%S UTC')}). Reauthorization is permitted within 5 days of expiration. Use force=true to override."
-            )
+        auth_expires_at_utc = ensure_utc(auth_expires_at)
+        now_dt_utc = datetime.now(timezone.utc)
+        if auth_expires_at_utc:
+            days_remaining = (auth_expires_at_utc - now_dt_utc).total_seconds() / 86400.0
+            if days_remaining > 5.0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Reauthorization not required yet. Current authorization is valid for {round(days_remaining, 1)} days (expires {auth_expires_at_utc.strftime('%Y-%m-%d %H:%M:%S UTC')}). Reauthorization is permitted within 5 days of expiration. Use force=true to override."
+                )
 
     try:
         reauth_res = await paypal_service.reauthorize_payment(
@@ -10706,7 +10791,7 @@ async def auto_escalate_matured_tier1_disputes(
                 "paypal_dispute_id": paypal_dispute_id,
                 "dossier_id": dossier["dossier_id"],
                 "status": "ESCALATED_PROGRAMMATIC",
-                "days_elapsed": (datetime.utcnow() - dispute.created_at).days if dispute.created_at else 20
+                "days_elapsed": (datetime.now(timezone.utc) - ensure_utc(dispute.created_at)).days if dispute.created_at else 20
             })
 
         db.commit()
