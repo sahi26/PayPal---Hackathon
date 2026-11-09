@@ -91,7 +91,18 @@
                     <span class="pulse-mini-dot"></span>
                     <span>Agreement Accepted &mdash; Awaiting Milestone 1 Funding</span>
                   </div>
+                  <button (click)="goToFulfillment()" class="btn-corporate-fulfillment" style="margin-left: 8px;">
+                    <span>Go to Milestone Page &rarr;</span>
+                  </button>
                 }
+              } @else if (isProjectRejected()) {
+                <div class="buyer-awaiting-badge" style="background: #fef2f2; border-color: #fecaca; color: #991b1b;">
+                  <span class="pulse-mini-dot" style="background: #ef4444;"></span>
+                  <span>Agreement Rejected &mdash; Closed</span>
+                </div>
+                <button (click)="goBack()" class="btn-corporate-fulfillment">
+                  <span>Return to Dashboard</span>
+                </button>
               } @else if (currentRole === 'seller') {
                 <button
                   type="button"

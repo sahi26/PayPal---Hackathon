@@ -918,8 +918,12 @@ export class NegotiationRoomComponent implements OnInit {
           this.projectData.agreement.rejection_reason = trimmed;
           this.projectData.agreement.latest_seller_message = `AGREEMENT REJECTED: ${trimmed}`;
         }
-        this.fetchProject();
         alert('Agreement terms rejected. Your detailed feedback was sent to the buyer.');
+        if (this.currentRole === 'seller') {
+          this.router.navigate(['/seller']);
+        } else {
+          this.router.navigate(['/buyer']);
+        }
       },
       error: (err) => {
         this.isSubmittingRejection = false;

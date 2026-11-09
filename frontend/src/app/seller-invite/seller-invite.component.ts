@@ -2,12 +2,13 @@ import { Component, OnInit } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import { API_BASE_URL } from '../api.config';
 
 @Component({
   selector: 'app-seller-invite',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, FormsModule],
   templateUrl: './seller-invite.component.html',
   styleUrl: './seller-invite.component.scss'
 })
@@ -15,6 +16,9 @@ export class SellerInviteComponent implements OnInit {
   token = '';
   isLoading = true;
   isJoining = false;
+  isRejecting = false;
+  isRejectModalOpen = false;
+  rejectionReason = '';
   errorMessage = '';
   projectData: any = null;
 
@@ -127,6 +131,74 @@ export class SellerInviteComponent implements OnInit {
           alert('Failed to join project: ' + (err.error?.detail || err.message));
         }
       });
+  }
+
+  get isProjectRejected(): boolean {
+    const st = (this.projectData?.project?.status || '').toLowerCase();
+    return st === 'rejected';
+  }
+
+  get isProjectAccepted(): boolean {
+    const st = (this.projectData?.project?.status || '').toLowerCase();
+    return ['accepted', 'active', 'in_review', 'warranty_period', 'completed'].includes(st);
+  }
+
+  openRejectModal() {
+    this.rejectionReason = '';
+    this.isRejectModalOpen = true;
+  }
+
+  closeRejectModal() {
+    this.isRejectModalOpen = false;
+  }
+
+  rejectAgreement() {
+    if (this.isRejecting) return;
+    this.isRejecting = true;
+    const reason = this.rejectionReason.trim() || 'Contractor declined agreement terms.';
+
+    const rejectUrl = `${API_BASE_URL}/api/projects/invite/${this.token}/reject`;
+    this.http.post<any>(rejectUrl, { reason, role: 'seller' })
+      .subscribe({
+        next: () => {
+          this.isRejecting = false;
+          this.isRejectModalOpen = false;
+          if (typeof window !== 'undefined') {
+            localStorage.removeItem('prooflens_return_url');
+          }
+          alert('Agreement rejected. Redirecting to contractor dashboard.');
+          this.router.navigate(['/seller']);
+        },
+        error: (err) => {
+          this.isRejecting = false;
+          if (this.projectData?.project?.id) {
+            this.http.post<any>(`${API_BASE_URL}/api/projects/${this.projectData.project.id}/reject`, { reason, role: 'seller' })
+              .subscribe({
+                next: () => {
+                  this.isRejectModalOpen = false;
+                  if (typeof window !== 'undefined') {
+                    localStorage.removeItem('prooflens_return_url');
+                  }
+                  alert('Agreement rejected. Redirecting to contractor dashboard.');
+                  this.router.navigate(['/seller']);
+                },
+                error: (e2) => alert('Failed to reject agreement: ' + (e2.error?.detail || e2.message || err.message))
+              });
+            return;
+          }
+          alert('Failed to reject agreement: ' + (err.error?.detail || err.message));
+        }
+      });
+  }
+
+  goToMilestones() {
+    if (this.projectData?.project?.id) {
+      this.router.navigate(['/project', this.projectData.project.id, 'fulfillment'], { queryParams: { role: 'seller' } });
+    }
+  }
+
+  goToSellerDashboard() {
+    this.router.navigate(['/seller']);
   }
 
   goToNegotiation() {

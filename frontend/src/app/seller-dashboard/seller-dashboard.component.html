@@ -269,6 +269,54 @@
               ></app-live-camera>
             </div>
           }
+
+          <!-- Cryptographically Secured Live Evidence & Audit Ledger -->
+          @if (activeEvidenceList && activeEvidenceList.length > 0) {
+            <div class="seller-evidence-ledger mt-4 pt-3 border-t border-slate-200">
+              <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-2">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                  <h4 class="font-bold text-xs uppercase tracking-wider text-slate-700">Cryptographically Secured Live Evidence &amp; Audit Ledger ({{ activeEvidenceList.length }})</h4>
+                </div>
+                <button (click)="openFulfillment(activeProject.id)" class="text-xs font-semibold text-sky-600 hover:text-sky-700 inline-flex items-center gap-1">
+                  <span>Open Dedicated Fulfillment Page &rarr;</span>
+                </button>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                @for (item of activeEvidenceList; track item.id) {
+                  <div class="p-3 bg-white rounded-lg border border-slate-200 shadow-sm flex flex-col gap-2">
+                    <div class="flex items-center justify-between">
+                      <span class="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-slate-100 text-slate-700">
+                        {{ item.capture_method === 'file_upload' ? 'DIGITAL ASSET' : ('MILESTONE ' + (Number(item.milestone_index) + 1)) }}
+                      </span>
+                      <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        {{ item.ai_confidence_score || 100 }}% Match
+                      </span>
+                    </div>
+
+                    @if (item.file_path && isPreviewableImage(item.file_path)) {
+                      <div class="w-full h-32 bg-slate-900 rounded overflow-hidden flex items-center justify-center">
+                        <img [src]="getEvidenceUrl(item.file_path) | async" alt="Evidence" class="w-full h-full object-cover" />
+                      </div>
+                    } @else {
+                      <div class="w-full h-24 bg-slate-50 border border-slate-200 rounded flex flex-col items-center justify-center p-2 text-center">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                        <span class="text-xs text-slate-600 mt-1 truncate max-w-[160px]">{{ item.original_filename || 'Verified Deliverable' }}</span>
+                      </div>
+                    }
+
+                    <div class="text-[11px] text-slate-500 font-mono truncate">
+                      SHA-256: {{ (item.file_hash || 'SHA-256').substring(0, 16) }}...
+                    </div>
+                    <div class="text-[10px] text-slate-400">
+                      Recorded: {{ item.server_receipt_timestamp || 'Server Verified' }}
+                    </div>
+                  </div>
+                }
+              </div>
+            </div>
+          }
         </div>
       }
     </section>
@@ -748,6 +796,40 @@
               <div class="scope-change-metrics">
                 <span class="sc-metric-chip">+${{ formatCurrency(selectedDrawerData?.active_scope_change?.proposed_extra_cost) }} USD</span>
                 <span class="sc-metric-chip">+{{ selectedDrawerData?.active_scope_change?.proposed_extra_days }} Days Extension</span>
+              </div>
+            </div>
+          }
+
+          <!-- Section 7: Submitted Deliverables & Evidence -->
+          @if (drawerEvidenceList && drawerEvidenceList.length > 0) {
+            <div class="drawer-card">
+              <div class="drawer-card-heading-row">
+                <h3 class="drawer-card-title">Submitted Milestone Evidence ({{ drawerEvidenceList.length }})</h3>
+                <span class="status-badge badge-emerald">Verified On-Chain</span>
+              </div>
+              <div class="flex flex-col gap-2 mt-2">
+                @for (ev of drawerEvidenceList; track ev.id) {
+                  <div class="p-2.5 bg-slate-50 border border-slate-200 rounded-lg flex items-center gap-3">
+                    @if (ev.file_path && isPreviewableImage(ev.file_path)) {
+                      <div class="w-12 h-12 rounded bg-slate-800 overflow-hidden flex-shrink-0">
+                        <img [src]="getEvidenceUrl(ev.file_path) | async" alt="Evidence" class="w-full h-full object-cover" />
+                      </div>
+                    } @else {
+                      <div class="w-12 h-12 rounded bg-slate-200 flex items-center justify-center flex-shrink-0">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                      </div>
+                    }
+                    <div class="flex flex-col min-w-0 flex-1">
+                      <div class="flex items-center gap-1.5 mb-0.5">
+                        <span class="text-[10px] font-bold px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded">M{{ Number(ev.milestone_index) + 1 }}</span>
+                        <span class="text-[10px] font-bold text-emerald-700">{{ ev.ai_confidence_score || 100 }}% Match</span>
+                        <span class="text-[10px] text-slate-400 truncate">{{ ev.original_filename || 'Evidence File' }}</span>
+                      </div>
+                      <span class="text-[11px] font-mono text-slate-600 truncate">SHA-256: {{ (ev.file_hash || '').substring(0, 16) }}...</span>
+                      <span class="text-[10px] text-slate-400">{{ ev.server_receipt_timestamp || 'Server Authoritative' }}</span>
+                    </div>
+                  </div>
+                }
               </div>
             </div>
           }

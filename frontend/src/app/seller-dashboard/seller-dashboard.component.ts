@@ -88,6 +88,8 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
   activeProject: any = null;
   activeMilestones: any[] = [];
   activeMilestoneIndex = 0;
+  activeEvidenceList: any[] = [];
+  drawerEvidenceList: any[] = [];
 
   columnDefs: ColDef[] = [
     {
@@ -332,6 +334,13 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
           }
         }
       });
+
+    this.drawerEvidenceList = [];
+    this.http.get<any[]>(`${API_BASE_URL}/api/projects/${projectId}/evidence`)
+      .subscribe({
+        next: (ev) => this.drawerEvidenceList = Array.isArray(ev) ? ev : [],
+        error: () => this.drawerEvidenceList = []
+      });
   }
 
   closeScopeDrawer() {
@@ -486,6 +495,23 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
         },
         error: (err) => console.warn('Could not load milestones:', err)
       });
+    this.loadActiveEvidence(projectId);
+  }
+
+  loadActiveEvidence(projectId: number) {
+    this.http.get<any[]>(`${API_BASE_URL}/api/projects/${projectId}/evidence`)
+      .subscribe({
+        next: (res) => {
+          this.activeEvidenceList = Array.isArray(res) ? res : [];
+        },
+        error: (err) => console.warn('Could not load active evidence:', err)
+      });
+  }
+
+  isPreviewableImage(path: string): boolean {
+    if (!path) return false;
+    const lower = path.toLowerCase();
+    return lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.webp') || lower.endsWith('.svg');
   }
 
   isMilestoneApproved(ms: any): boolean {
@@ -504,6 +530,9 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
   onMilestoneEvidenceSubmitted(event: any) {
     if (this.activeMilestones[this.activeMilestoneIndex]) {
       this.activeMilestones[this.activeMilestoneIndex].status = 'awaiting_buyer_review';
+    }
+    if (this.activeProject?.id) {
+      this.loadActiveEvidence(this.activeProject.id);
     }
   }
 
