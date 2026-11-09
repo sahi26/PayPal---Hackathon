@@ -87,6 +87,19 @@ def run_migrations(target_engine):
                     conn.execute(text(
                         "ALTER TABLE users ADD COLUMN email_verification_sent_at TIMESTAMP WITH TIME ZONE;"
                     ))
+                try:
+                    conn.execute(text("""
+                        UPDATE users 
+                        SET email = lower(email) || '+dup' || id 
+                        WHERE id NOT IN (
+                            SELECT min_id FROM (
+                                SELECT MIN(id) AS min_id FROM users GROUP BY lower(email)
+                            ) AS subquery
+                        );
+                    """))
+                    conn.commit()
+                except Exception:
+                    pass
                 conn.execute(text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_email_lower "
                     "ON users (lower(email));"
@@ -383,7 +396,8 @@ def run_migrations(target_engine):
                 except Exception as e:
                     print(f"Notification table migration notice: {e}")
     except Exception as e:
-        raise RuntimeError("Database schema migration failed.") from e
+        print(f"Database schema migration error: {e}")
+        raise RuntimeError(f"Database schema migration failed: {e}") from e
 
 # Dependency to get a database session per request
 def get_db():
