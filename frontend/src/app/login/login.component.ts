@@ -25,7 +25,7 @@ interface CurrentUser {
 export class LoginComponent implements OnInit {
   readonly appLogo = PROOFLENS_LOGO_BASE64;
   selectedRole: 'buyer' | 'seller' = 'buyer';
-  selectedRedirectUri: string = 'http://localhost:4200';
+  selectedRedirectUri: string = typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1' ? window.location.origin : 'http://localhost:4200';
   currentUser: CurrentUser | null = null;
   isAuthenticating: boolean = false;
   isRedirecting: boolean = false;
@@ -64,12 +64,17 @@ export class LoginComponent implements OnInit {
       return;
     }
 
-    // 2. Load stored redirect URI preference (defaults to window origin in production, or localhost in dev)
+    // 2. Determine redirect URI: In deployed/production environment, always align with the current origin unless explicitly localhost in dev
+    const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
     const storedUri = localStorage.getItem('prooflens_redirect_uri');
-    if (storedUri) {
-      this.selectedRedirectUri = storedUri;
-    } else if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    
+    if (!isLocalhost && typeof window !== 'undefined') {
       this.selectedRedirectUri = window.location.origin;
+      localStorage.setItem('prooflens_redirect_uri', this.selectedRedirectUri);
+    } else if (storedUri) {
+      this.selectedRedirectUri = storedUri;
+    } else {
+      this.selectedRedirectUri = 'http://localhost:4200';
     }
 
     // 3. Listen for PayPal OAuth Callback (?code=...)
