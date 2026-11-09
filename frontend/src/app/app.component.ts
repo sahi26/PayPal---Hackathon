@@ -73,6 +73,12 @@ export class AppComponent implements OnInit, OnDestroy {
     this.loadNotifications();
     if (typeof window !== 'undefined' && this.currentUser) {
       const path = window.location.pathname;
+      const pendingReturn = localStorage.getItem('prooflens_return_url');
+      if (pendingReturn && this.currentUser.role_type === 'seller' && (path === '/' || path === '/login')) {
+        localStorage.removeItem('prooflens_return_url');
+        this.router.navigateByUrl(pendingReturn);
+        return;
+      }
       if (path === '/' || path === '/login') {
         const targetRoute = this.currentUser.role_type === 'seller' ? '/seller' : '/buyer';
         this.router.navigate([targetRoute]);
@@ -322,6 +328,13 @@ export class AppComponent implements OnInit, OnDestroy {
         localStorage.setItem('prooflens_user', JSON.stringify(user));
         this.showAuthModal = false;
         this.loadNotifications();
+
+        const pendingReturn = localStorage.getItem('prooflens_return_url');
+        if (pendingReturn && user.role_type === 'seller') {
+          localStorage.removeItem('prooflens_return_url');
+          this.router.navigateByUrl(pendingReturn);
+          return;
+        }
 
         // Auto-navigate directly to respective dashboard
         const targetRoute = user.role_type === 'seller' ? '/seller' : '/buyer';

@@ -18,8 +18,12 @@ export class SellerInviteComponent implements OnInit {
   errorMessage = '';
   projectData: any = null;
 
+  currentUser: any = null;
+  isSeller = false;
+  isBuyer = false;
   sellerName = '';
   sellerEmail = '';
+  isAlreadyJoined = false;
 
   constructor(
     private route: ActivatedRoute,
@@ -28,18 +32,13 @@ export class SellerInviteComponent implements OnInit {
   ) {}
 
   ngOnInit() {
+    this.loadCurrentUser();
     this.route.paramMap.subscribe(params => {
       this.token = params.get('token') || '';
       if (this.token) {
-        const user = this.getSignedInSeller();
-        if (!user) {
-          this.router.navigate(['/login'], {
-            queryParams: { role: 'seller', returnUrl: this.router.url }
-          });
-          return;
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('prooflens_return_url', `/invite/${this.token}`);
         }
-        this.sellerName = user.full_name;
-        this.sellerEmail = user.email;
         this.fetchInviteDetails();
       } else {
         this.errorMessage = 'No invitation token found in URL.';
@@ -48,24 +47,40 @@ export class SellerInviteComponent implements OnInit {
     });
   }
 
-  private getSignedInSeller(): { full_name: string; email: string } | null {
+  loadCurrentUser() {
     try {
-      const user = JSON.parse(localStorage.getItem('prooflens_user') || 'null');
-      return user?.role_type === 'seller' && user.email && user.full_name
-        ? { full_name: user.full_name, email: user.email }
-        : null;
+      const stored = localStorage.getItem('prooflens_user');
+      if (stored) {
+        this.currentUser = JSON.parse(stored);
+        this.isSeller = this.currentUser?.role_type === 'seller';
+        this.isBuyer = this.currentUser?.role_type === 'buyer';
+        if (this.isSeller) {
+          this.sellerName = this.currentUser.full_name || this.currentUser.name || this.currentUser.email?.split('@')[0] || 'Contractor';
+          this.sellerEmail = this.currentUser.email || '';
+        }
+      } else {
+        this.currentUser = null;
+        this.isSeller = false;
+        this.isBuyer = false;
+      }
     } catch {
-      return null;
+      this.currentUser = null;
+      this.isSeller = false;
+      this.isBuyer = false;
     }
   }
 
   fetchInviteDetails() {
     this.isLoading = true;
+    this.errorMessage = '';
     this.http.get<any>(`${API_BASE_URL}/api/projects/invite/${this.token}`)
       .subscribe({
         next: (data) => {
           this.projectData = data;
           this.isLoading = false;
+          if (this.currentUser && data?.project?.seller_id && data.project.seller_id === this.currentUser.id) {
+            this.isAlreadyJoined = true;
+          }
         },
         error: (err) => {
           this.isLoading = false;
@@ -74,33 +89,54 @@ export class SellerInviteComponent implements OnInit {
       });
   }
 
+  signInAsSeller() {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('prooflens_return_url', `/invite/${this.token}`);
+      localStorage.setItem('prooflens_pending_role', 'seller');
+    }
+    this.router.navigate(['/login'], {
+      queryParams: { role: 'seller', returnUrl: `/invite/${this.token}` }
+    });
+  }
+
   joinProject() {
-    const seller = this.getSignedInSeller();
-    if (!seller) {
-      this.router.navigate(['/login'], {
-        queryParams: { role: 'seller', returnUrl: this.router.url }
-      });
+    this.loadCurrentUser();
+    if (!this.isSeller) {
+      this.signInAsSeller();
       return;
     }
 
     this.isJoining = true;
     const payload = {
-      seller_email: seller.email,
-      seller_name: seller.full_name
+      seller_email: this.sellerEmail,
+      seller_name: this.sellerName
     };
 
     this.http.post<any>(`${API_BASE_URL}/api/projects/invite/${this.token}/join`, payload)
       .subscribe({
         next: (res) => {
           this.isJoining = false;
+          if (typeof window !== 'undefined') {
+            localStorage.removeItem('prooflens_return_url');
+          }
           // Navigate to negotiation room as seller
           this.router.navigate(['/project', res.project_id, 'negotiate'], { queryParams: { role: 'seller' } });
         },
         error: (err) => {
           this.isJoining = false;
+          if (err.status === 409 && this.projectData?.project?.id) {
+            this.router.navigate(['/project', this.projectData.project.id, 'negotiate'], { queryParams: { role: 'seller' } });
+            return;
+          }
           alert('Failed to join project: ' + (err.error?.detail || err.message));
         }
       });
+  }
+
+  goToNegotiation() {
+    if (this.projectData?.project?.id) {
+      this.router.navigate(['/project', this.projectData.project.id, 'negotiate'], { queryParams: { role: 'seller' } });
+    }
   }
 
   goToHome() {

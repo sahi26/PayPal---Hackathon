@@ -40,7 +40,17 @@ export class LoginComponent implements OnInit {
 
   ngOnInit() {
     this.route.queryParamMap.subscribe(params => {
-      this.returnUrl = this.getSafeInviteReturnUrl(params.get('returnUrl'));
+      const rawParam = params.get('returnUrl');
+      const paramReturn = this.getSafeInviteReturnUrl(rawParam);
+      if (paramReturn) {
+        this.returnUrl = paramReturn;
+        localStorage.setItem('prooflens_return_url', paramReturn);
+      } else {
+        const stored = localStorage.getItem('prooflens_return_url');
+        if (stored) {
+          this.returnUrl = this.getSafeInviteReturnUrl(stored);
+        }
+      }
       const requestedRole = params.get('role');
       if (requestedRole === 'buyer' || requestedRole === 'seller') {
         this.selectedRole = requestedRole;
@@ -120,6 +130,9 @@ export class LoginComponent implements OnInit {
     this.selectedRedirectUri = effectiveRedirect;
     localStorage.setItem('prooflens_redirect_uri', effectiveRedirect);
     localStorage.setItem('prooflens_pending_role', this.selectedRole);
+    if (this.returnUrl) {
+      localStorage.setItem('prooflens_return_url', this.returnUrl);
+    }
 
     const redirectParam = `?redirect_uri=${encodeURIComponent(effectiveRedirect)}`;
     this.http.get<any>(`${API_BASE_URL}/api/auth/paypal-config${redirectParam}`)
@@ -186,8 +199,10 @@ export class LoginComponent implements OnInit {
       }
     }
     if (!this.currentUser) return;
-    if (this.currentUser.role_type === 'seller' && this.returnUrl) {
-      this.router.navigateByUrl(this.returnUrl);
+    const targetUrl = this.returnUrl || localStorage.getItem('prooflens_return_url');
+    if (this.currentUser.role_type === 'seller' && targetUrl) {
+      localStorage.removeItem('prooflens_return_url');
+      this.router.navigateByUrl(targetUrl);
       return;
     }
     const target = this.currentUser.role_type === 'seller' ? '/seller' : '/buyer';
