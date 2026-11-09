@@ -566,21 +566,30 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
     const p = this.projectData?.project;
     if (!p) return false;
     const domain = (p.project_domain || '').toLowerCase().trim();
-    if (domain === 'digital') return true;
+
     const ind = (p.industry_type || '').toLowerCase();
     const title = (p.title || '').toLowerCase();
     const desc = (p.description || '').toLowerCase();
-    const digitalKeywords = [
-      'digital', 'design', 'art', 'software', 'web', 'graphic', 'logo', 'brand',
-      'app', 'code', 'ui', 'ux', 'frontend', 'backend', 'api', 'saas', 'vector',
-      'illustration', 'figma', 'photoshop', 'video', 'animation', 'copywriting',
-      'content', 'seo', 'audio', 'music'
+    const fullText = `${title} ${ind} ${desc}`;
+
+    // Physical craftsmanship keywords ALWAYS take precedence (jewelry, woodworking, renovation, etc.)
+    const physicalKeywords = [
+      'jewelry', 'jewellery', 'jewel', 'gem', 'ring', 'necklace', 'pendant', 'bracelet', 'gold', 'silver', 'diamond', 'karat',
+      'renovat', 'remodel', 'plumb', 'pipe', 'drywall', 'tile', 'roof', 'flooring', 'house', 'wood', 'timber', 'carpentry', 'furniture'
     ];
-    if (digitalKeywords.some(kw => ind.includes(kw) || title.includes(kw) || desc.includes(kw))) {
-      return true;
+    if (physicalKeywords.some(kw => fullText.includes(kw))) {
+      return false;
     }
+
     if (domain === 'physical') return false;
-    return false;
+    if (domain === 'digital') return true;
+
+    // Specific digital deliverable keywords (software, web apps, SaaS, graphic logo vectors)
+    const digitalKeywords = [
+      'software', 'web', 'website', 'app', 'code', 'ui', 'ux', 'frontend', 'backend',
+      'api', 'saas', 'vector', 'figma', 'banner', 'logo', 'brand identity'
+    ];
+    return digitalKeywords.some(kw => fullText.includes(kw));
   }
 
   isSimpleDigitalProject(): boolean {

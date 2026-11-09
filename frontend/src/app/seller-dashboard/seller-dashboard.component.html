@@ -258,7 +258,7 @@
           </div>
 
           <!-- Camera Submission Desk -->
-          @if (activeProject.project_domain === 'physical' && !isMilestoneApproved(activeMilestones[activeMilestoneIndex])) {
+          @if (isPhysicalProject(activeProject) && !isMilestoneApproved(activeMilestones[activeMilestoneIndex])) {
             <div class="cam-desk-box">
               <app-live-camera
                 [projectId]="activeProject.id"

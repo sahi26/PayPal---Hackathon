@@ -887,24 +887,25 @@ def determine_project_domain(title: str = "", industry: str = "", description: s
     """
     corpus = f"{title or ''} {industry or ''} {description or ''}".lower()
     
+    # Physical indicators - tangible craftsmanship, jewelry, woodworking, renovation
+    is_physical = any(k in corpus for k in [
+        "jewelry", "jewellery", "jewel", "gem", "ring", "gold", "silver", "pendant", "necklace", "bracelet", "karat", "diamond",
+        "renovat", "remodel", "plumb", "pipe", "sink", "drywall", "tile",
+        "wood", "timber", "furniture", "chair", "table", "cabinet",
+        "brass", "construction", "roof", "flooring", "masonry", "caulk", "bathroom"
+    ])
+    if is_physical:
+        return "physical"
+
     # Digital indicators
     is_digital = any(k in corpus for k in [
         "logo", "brand", "graphic", "illustration", "vector", "identity",
         "website", "web design", "site redesign", "app", "software", "code",
-        "api", "frontend", "backend", "ui", "ux", "figma", "digital", "banner", "poster"
+        "api", "frontend", "backend", "ui", "ux", "figma", "digital", "banner", "poster", "saas"
     ])
-    # Physical indicators
-    is_physical = any(k in corpus for k in [
-        "renovat", "remodel", "plumb", "pipe", "sink", "drywall", "tile",
-        "wood", "timber", "furniture", "chair", "table", "cabinet", "jewelry", "jewellery", "jewel", "gem",
-        "ring", "gold", "silver", "brass", "construction", "roof", "flooring", "masonry", "caulk", "bathroom"
-    ])
-    if is_digital and not is_physical:
+    if is_digital:
         return "digital"
-    elif is_digital and is_physical:
-        if any(k in corpus for k in ["logo", "software", "website", "app", "ui", "ux", "figma"]):
-            return "digital"
-        return "physical"
+
     return "physical"
 
 def determine_requires_baseline_evidence(title: str = "", industry: str = "", description: str = "") -> bool:
@@ -3581,7 +3582,18 @@ def get_project_by_id(project_id: int, request: Request, db: Session = Depends(g
     is_funds_at_risk = (status_str.upper() == "FUNDS_AT_RISK")
 
     domain_computed = determine_project_domain(project.title, project.industry_type, project.description)
-    effective_domain = domain_computed if domain_computed == "digital" else (project.project_domain or "physical")
+    if domain_computed == "physical":
+        effective_domain = "physical"
+        if getattr(project, "project_domain", None) != "physical":
+            project.project_domain = "physical"
+            try:
+                db.commit()
+            except Exception:
+                pass
+    elif project.project_domain in ["physical", "digital"]:
+        effective_domain = project.project_domain
+    else:
+        effective_domain = domain_computed
     is_ghosting, ghosting_reason = check_contractor_ghosting(project, db)
     negotiation_history = [
         dict(entry) for entry in (project.drafting_history or [])

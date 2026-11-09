@@ -86,32 +86,29 @@ def determine_project_domain(title: str = "", industry: str = "", description: s
     """
     text = f"{title or ''} {industry or ''} {description or ''}".lower()
     
-    # Check digital keywords
-    digital_keywords = [
-        "website", "web design", "web app", "logo", "brand design", "branding", "graphic design",
-        "redesign", "ui/ux", "frontend", "backend", "fullstack", "saas", "mobile app",
-        "software", "api", "figma", "vector", "illustration", "seo", "digital", "copywriting",
-        "wordpress", "shopify", "cms", "database", "cloud", "script", "bot", "algorithm"
-    ]
-    # Check physical keywords
+    # Check physical keywords first: tangible craftsmanship, jewelry, woodworking, renovation
     physical_keywords = [
         "bath", "bathroom", "kitchen", "renovat", "remodel", "plumb", "drywall", "tile",
         "flooring", "paint", "roof", "house", "wood", "table", "chair", "cabinet", "shelf",
-        "furniture", "timber", "oak", "walnut", "ring", "jewelry", "jewellery", "jewel", "gem", "gold", "silver", "necklace",
-        "pendant", "metal", "weld", "concrete", "brick", "deck", "patio", "fence", "re-upholstery"
+        "furniture", "timber", "oak", "walnut", "ring", "jewelry", "jewellery", "jewel", "gem",
+        "diamond", "karat", "gold", "silver", "necklace", "bracelet", "pendant", "metal",
+        "weld", "concrete", "brick", "deck", "patio", "fence", "re-upholstery"
     ]
-    
-    digital_matches = sum(1 for k in digital_keywords if k in text)
-    physical_matches = sum(1 for k in physical_keywords if k in text)
-    
-    if digital_matches > physical_matches:
-        return "digital"
-    elif physical_matches > 0:
+    if any(k in text for k in physical_keywords):
         return "physical"
     
-    # Secondary check on industry
+    # Check digital keywords
+    digital_keywords = [
+        "website", "web design", "web app", "logo", "brand design", "branding", "graphic design",
+        "ui/ux", "frontend", "backend", "fullstack", "saas", "mobile app",
+        "software", "api", "figma", "vector", "illustration", "seo", "copywriting",
+        "wordpress", "shopify", "cms", "database", "cloud", "script", "bot", "algorithm"
+    ]
+    if any(k in text for k in digital_keywords):
+        return "digital"
+    
     ind = (industry or "").lower()
-    if any(k in ind for k in ["graphic", "design", "digital", "software", "tech", "web", "media"]):
+    if any(k in ind for k in ["software", "tech", "web", "saas", "frontend", "backend"]):
         return "digital"
     return "physical"
 

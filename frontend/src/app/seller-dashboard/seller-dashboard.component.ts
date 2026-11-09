@@ -449,6 +449,19 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
     this.router.navigate(['/project', projectId, 'fulfillment'], { queryParams: { role: 'seller' } });
   }
 
+  isPhysicalProject(proj: any): boolean {
+    if (!proj) return true;
+    const domain = (proj.project_domain || '').toLowerCase().trim();
+    const text = `${proj.title || ''} ${proj.industry_type || ''} ${proj.description || ''}`.toLowerCase();
+    const physicalKeywords = [
+      'jewelry', 'jewellery', 'jewel', 'gem', 'ring', 'necklace', 'pendant', 'bracelet', 'gold', 'silver', 'diamond', 'karat',
+      'renovat', 'remodel', 'plumb', 'pipe', 'drywall', 'tile', 'roof', 'flooring', 'house', 'wood', 'timber', 'carpentry', 'furniture'
+    ];
+    if (physicalKeywords.some(k => text.includes(k))) return true;
+    if (domain === 'digital') return false;
+    return true;
+  }
+
   loadProjects(silent = false) {
     if (!silent) this.isLoadingProjects = true;
     const start = silent ? 0 : Date.now();

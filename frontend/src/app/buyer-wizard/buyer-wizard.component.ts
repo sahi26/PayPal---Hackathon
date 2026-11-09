@@ -349,9 +349,16 @@ export class BuyerWizardComponent implements OnInit {
   }
 
   isDigitalProject(): boolean {
-    if (this.projectDomain === 'digital') return true;
     const text = `${this.title || ''} ${this.industryType || ''} ${this.description || ''}`.toLowerCase();
-    const digitalKeywords = ['digital', 'software', 'app', 'website', 'design', 'figma', 'code', 'api', 'copywriting', 'art', 'logo', 'ui', 'ux', 'frontend', 'backend'];
+    const physicalKeywords = [
+      'jewelry', 'jewellery', 'jewel', 'gem', 'ring', 'necklace', 'pendant', 'bracelet', 'gold', 'silver', 'diamond', 'karat',
+      'renovat', 'remodel', 'plumb', 'pipe', 'drywall', 'tile', 'roof', 'flooring', 'house', 'wood', 'timber', 'carpentry', 'furniture'
+    ];
+    if (physicalKeywords.some(k => text.includes(k))) return false;
+    if (this.projectDomain === 'physical') return false;
+    if (this.projectDomain === 'digital') return true;
+
+    const digitalKeywords = ['software', 'app', 'website', 'figma', 'code', 'api', 'saas', 'logo', 'brand identity'];
     return digitalKeywords.some(k => text.includes(k));
   }
 
