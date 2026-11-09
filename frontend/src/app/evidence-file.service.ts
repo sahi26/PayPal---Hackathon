@@ -30,7 +30,7 @@ export class EvidenceFileService implements OnDestroy {
       return cachedUrl;
     }
 
-    const svgFallback = 'data:image/svg+xml;utf8,' + encodeURIComponent(`
+    const svgFallback = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(`
       <svg xmlns="http://www.w3.org/2000/svg" width="400" height="280" viewBox="0 0 400 280">
         <rect width="400" height="280" fill="#0f172a" rx="8"/>
         <circle cx="200" cy="110" r="32" fill="#10b981" opacity="0.2"/>
@@ -52,7 +52,6 @@ export class EvidenceFileService implements OnDestroy {
         }),
         shareReplay({ bufferSize: 1, refCount: false }),
         catchError(() => {
-          this.fileUrls.delete(filePath);
           return of(svgFallback);
         })
       );

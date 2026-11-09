@@ -518,7 +518,7 @@
                     </div>
                     <div class="captured-content-layout">
                       @if (beforeEvidenceItem?.file_path) {
-                        <img [src]="getEvidenceUrl(beforeEvidenceItem.file_path) | async" alt="Baseline" class="before-thumb" />
+                        <img [src]="getEvidenceUrl(beforeEvidenceItem.file_path) | async" alt="Baseline" class="before-thumb" (error)="onImageError($event)" />
                       }
                       <div class="meta-texts">
                         <span class="font-mono text-xs">SHA-256: {{ beforeEvidenceItem?.file_hash ? beforeEvidenceItem.file_hash.slice(0, 20) + '...' : 'Locked' }}</span>

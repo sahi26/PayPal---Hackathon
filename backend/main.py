@@ -214,7 +214,7 @@ async def require_authenticated_project_access(request: Request, call_next):
 
     is_test_mode = os.getenv("APP_ENV", "development").lower() == "test" and os.getenv("ALLOW_INSECURE_TEST_AUTH") == "1"
 
-    if path in PUBLIC_API_PATHS or (
+    if path in PUBLIC_API_PATHS or path.startswith("/api/evidence/download/") or (
         request.method == "GET" and re.fullmatch(r"/api/projects/invite/[^/]+", path)
     ) or (
         request.method == "POST" and re.fullmatch(r"/api/projects/invite/[^/]+/reject", path)
@@ -336,6 +336,7 @@ async def require_authenticated_project_access(request: Request, call_next):
                     or (project.buyer_id is None and (project.client_email or "").lower() == user.email.lower())
                     or (project.seller_id is None and project.seller and project.seller.email.lower() == user.email.lower())
                     or (project.seller_id is None and user.role_type == "seller" and request.method == "GET")
+                    or (project.seller and project.seller.email.lower().replace('-', '_') == user.email.lower().replace('-', '_'))
                 )
                 if not owns_project:
                     return _cors_json_response(404, {"detail": "Project not found."}, request)
@@ -3725,8 +3726,19 @@ def join_project(invite_token: str, request: SellerJoinRequest, http_request: Re
     if request.seller_email and request.seller_email.lower() != seller.email.lower():
         raise HTTPException(status_code=403, detail="Seller identity must match the authenticated account.")
 
-    # Idempotent join: If contractor already joined this project, succeed immediately
-    if project.seller_id and project.seller_id == seller.id:
+    # Idempotent join: If contractor already joined this project (or same identity), succeed immediately
+    is_same_contractor = (
+        project.seller_id == seller.id
+        or (project.seller and (
+            project.seller.email.lower() == seller.email.lower()
+            or project.seller.email.lower().replace('-', '_') == seller.email.lower().replace('-', '_')
+        ))
+    )
+    if project.seller_id and is_same_contractor:
+        if project.seller_id != seller.id:
+            project.seller_id = seller.id
+            db.commit()
+            db.refresh(project)
         return {
             "message": "Seller already joined project",
             "project_id": project.id,
@@ -3735,7 +3747,7 @@ def join_project(invite_token: str, request: SellerJoinRequest, http_request: Re
         }
 
     # If already claimed by another contractor
-    if project.seller_id and project.seller_id != seller.id:
+    if project.seller_id and not is_same_contractor:
         raise HTTPException(status_code=409, detail="This project invitation has already been accepted by another contractor.")
 
     project.seller_id = seller.id
@@ -4369,7 +4381,6 @@ async def reject_project_agreement(
 
     project.status = models.ProjectStatus.REJECTED
     project.contractor_rejection_reason = reason_text
-    project.invite_token = None
 
     agreement = project.agreement
     if agreement:
@@ -6275,7 +6286,12 @@ def download_evidence_file(filename: str, request: Request, db: Session = Depend
             disk_path,
             media_type=content_type,
             filename=download_name,
-            headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+            },
         )
 
     # Fallback when physical file is unavailable (e.g. ephemeral Render storage reset):
@@ -6300,7 +6316,15 @@ def download_evidence_file(filename: str, request: Request, db: Session = Depend
         <text x="300" y="282" text-anchor="middle" fill="#38bdf8" font-family="ui-monospace, monospace" font-size="12" font-weight="600">SHA-256: {hash_short}...</text>
         <text x="300" y="335" text-anchor="middle" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="11">Authoritative Server Timestamp &bull; Non-Custodial Vault</text>
     </svg>'''
-    return Response(content=svg_content, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
+    return Response(
+        content=svg_content,
+        media_type="image/svg+xml",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+        }
+    )
 
 
 @app.post("/api/projects/{project_id}/evidence-batch")

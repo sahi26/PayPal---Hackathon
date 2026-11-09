@@ -386,7 +386,7 @@
               <div>
                 <strong>Authorize the next milestone</strong>
                 <p>
-                  The seller has joined. Authorize only Milestone {{ selectedMilestoneIndex + 1 }}
+                  {{ selectedMilestoneIndex === 0 ? 'The seller has joined. Authorize only Milestone 1' : ('Authorize Milestone ' + (selectedMilestoneIndex + 1)) }}
                   (${{ Number(milestones[selectedMilestoneIndex]?.price_allocation || 0).toFixed(2) }} USD)
                   before work begins. You will approve this hold in PayPal.
                 </p>
@@ -870,7 +870,7 @@
                               <span class="rej-badge" style="display: inline-block; font-size: 11px; font-weight: 800; color: #c53030; text-transform: uppercase; margin-bottom: 6px;">Rejected Submission on Record:</span>
                               <div class="rej-content-row" style="display: flex; gap: 12px; align-items: flex-start;">
                                 @if (rejEv.file_path && isPreviewableImage(rejEv.file_path)) {
-                                  <img [src]="getEvidenceUrl(rejEv.file_path) | async" alt="Rejected evidence preview" style="width: 80px; height: 60px; object-fit: cover; border-radius: 6px; border: 1px solid #feb2b2;" />
+                                  <img [src]="getEvidenceUrl(rejEv.file_path) | async" alt="Rejected evidence preview" style="width: 80px; height: 60px; object-fit: cover; border-radius: 6px; border: 1px solid #feb2b2;" (error)="onImageError($event)" />
                                 }
                                 <div class="rej-info-block" style="font-size: 12px; color: #4a5568;">
                                   <div style="font-weight: 700; color: #2d3748;">{{ rejEv.original_filename || 'Evidence Deliverable' }}</div>
@@ -1436,7 +1436,7 @@
                         @for (ev of milestoneEvList; track ev.id; let aIdx = $index) {
                           <div class="cert-angle-card">
                             @if (ev.file_path && isPreviewableImage(ev.file_path)) {
-                              <img [src]="getEvidenceUrl(ev.file_path) | async" alt="Deliverable {{ aIdx + 1 }}" class="cert-thumb" />
+                              <img [src]="getEvidenceUrl(ev.file_path) | async" alt="Deliverable {{ aIdx + 1 }}" class="cert-thumb" (error)="onImageError($event)" />
                             } @else {
                               <div class="cert-doc-thumb">
                                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
@@ -1531,7 +1531,7 @@
                         </span>
                       </div>
                       @if (item.file_path && isPreviewableImage(item.file_path)) {
-                        <img [src]="getEvidenceUrl(item.file_path) | async" alt="Evidence frame" class="item-media-preview" />
+                        <img [src]="getEvidenceUrl(item.file_path) | async" alt="Deliverable proof" class="item-media-preview" (error)="onImageError($event)" />
                       } @else {
                         <div class="item-doc-preview">
                           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
@@ -2049,7 +2049,7 @@
                     <span>3. Baseline Before-Evidence</span>
                   </h4>
                   <div class="modal-baseline-row">
-                    <img [src]="getEvidenceUrl(projectData.project.before_evidence_path) | async" alt="Baseline evidence" class="modal-baseline-thumb" />
+                    <img [src]="getEvidenceUrl(projectData.project.before_evidence_path) | async" alt="Baseline evidence" class="modal-baseline-thumb" (error)="onImageError($event)" />
                     <div class="modal-baseline-meta">
                       <div><strong>Status:</strong> Cryptographically Registered</div>
                       <div class="mono-hash">SHA-256: {{ projectData.project.before_evidence_hash || 'Not recorded' }}</div>

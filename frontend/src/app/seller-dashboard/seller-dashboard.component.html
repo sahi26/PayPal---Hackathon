@@ -297,7 +297,8 @@
 
                     @if (item.file_path && isPreviewableImage(item.file_path)) {
                       <div class="w-full h-32 bg-slate-900 rounded overflow-hidden flex items-center justify-center">
-                        <img [src]="getEvidenceUrl(item.file_path) | async" alt="Evidence" class="w-full h-full object-cover" />
+
+                        <img [src]="getEvidenceUrl(item.file_path) | async" alt="Evidence" class="w-full h-full object-cover" (error)="onImageError($event)" />
                       </div>
                     } @else {
                       <div class="w-full h-24 bg-slate-50 border border-slate-200 rounded flex flex-col items-center justify-center p-2 text-center">
@@ -812,7 +813,7 @@
                   <div class="p-2.5 bg-slate-50 border border-slate-200 rounded-lg flex items-center gap-3">
                     @if (ev.file_path && isPreviewableImage(ev.file_path)) {
                       <div class="w-12 h-12 rounded bg-slate-800 overflow-hidden flex-shrink-0">
-                        <img [src]="getEvidenceUrl(ev.file_path) | async" alt="Evidence" class="w-full h-full object-cover" />
+                        <img [src]="getEvidenceUrl(ev.file_path) | async" alt="Evidence" class="w-full h-full object-cover" (error)="onImageError($event)" />
                       </div>
                     } @else {
                       <div class="w-12 h-12 rounded bg-slate-200 flex items-center justify-center flex-shrink-0">

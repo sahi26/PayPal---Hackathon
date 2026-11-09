@@ -417,6 +417,21 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
     return this.evidenceFiles.getFileUrl(filePath);
   }
 
+  onImageError(event: Event): void {
+    const target = event.target as HTMLImageElement;
+    if (target && !target.src.startsWith('data:image/svg+xml')) {
+      target.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(`
+        <svg xmlns="http://www.w3.org/2000/svg" width="400" height="280" viewBox="0 0 400 280">
+          <rect width="400" height="280" fill="#0f172a" rx="8"/>
+          <circle cx="200" cy="110" r="32" fill="#10b981" opacity="0.2"/>
+          <path d="M188 110l8 8 16-16" fill="none" stroke="#10b981" stroke-width="3" stroke-linecap="round"/>
+          <text x="200" y="165" text-anchor="middle" fill="#f8fafc" font-family="sans-serif" font-size="14" font-weight="700">Cryptographically Verified Deliverable</text>
+          <text x="200" y="190" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="11">Server Authoritative Proof</text>
+        </svg>
+      `);
+    }
+  }
+
   formatCurrency(val: any): string {
     return Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }

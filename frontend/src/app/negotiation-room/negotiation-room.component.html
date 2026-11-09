@@ -126,7 +126,7 @@
                 >
                   @if (isAccepting) {
                     <span class="btn-spinner"></span>
-                    <span>Locking Terms &amp; Generating Agreement...</span>
+                    <span>Locking Terms...</span>
                   } @else {
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
                       <polyline points="20 6 9 17 4 12"/>
@@ -639,7 +639,7 @@
                                 @for (ev of milestoneEvList; track ev.id; let aIdx = $index) {
                                   <div class="cert-angle-card">
                                     @if (ev.file_path) {
-                                      <img [src]="getEvidenceUrl(ev.file_path) | async" alt="Angle {{ aIdx + 1 }}" class="cert-thumb" />
+                                      <img [src]="getEvidenceUrl(ev.file_path) | async" alt="Angle {{ aIdx + 1 }}" class="cert-thumb" (error)="onImageError($event)" />
                                     }
                                     <span class="angle-label">Angle {{ aIdx + 1 }}</span>
                                     <span class="cert-hash" title="{{ ev.file_hash }}">SHA: {{ ev.file_hash ? ev.file_hash.slice(0, 8) : 'Locked' }}</span>
@@ -699,7 +699,7 @@
                     </div>
                     <div class="baseline-card-body">
                       @if (beforeEv.file_path) {
-                        <img [src]="getEvidenceUrl(beforeEv.file_path) | async" alt="Buyer Baseline" class="baseline-preview-img" />
+                        <img [src]="getEvidenceUrl(beforeEv.file_path) | async" alt="Buyer Baseline" class="baseline-preview-img" (error)="onImageError($event)" />
                       }
                       <div class="baseline-card-meta">
                         <strong>Pre-Work Site Condition (Buyer Live Capture)</strong>
