@@ -1,5 +1,4 @@
 {
-  "cleanUrls": true,
   "outputDirectory": "dist/proofflow-frontend/browser",
   "rewrites": [
     {

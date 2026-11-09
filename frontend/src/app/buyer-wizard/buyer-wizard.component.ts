@@ -102,6 +102,16 @@ export class BuyerWizardComponent implements OnInit {
   }
 
   ngOnInit(): void {
+    try {
+      const stored = localStorage.getItem('prooflens_user');
+      if (stored) {
+        const u = JSON.parse(stored);
+        if (u.email && !this.buyerEmail) {
+          this.buyerEmail = u.email.trim();
+        }
+      }
+    } catch (_) {}
+
     this.route.queryParamMap.subscribe(params => {
       const projectId = Number(params.get('project_id'));
       if (!Number.isInteger(projectId) || projectId <= 0) return;

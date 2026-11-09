@@ -308,8 +308,8 @@ export class BuyerDashboardComponent implements OnInit, OnDestroy {
         const id = params.data?.id;
         const token = params.data?.invite_token;
         const status = (params.data?.status || '').toLowerCase();
-        const canDelete = status === 'draft';
-        const disabledReason = canDelete ? '' : 'Cannot delete: Only projects strictly in DRAFT status can be deleted.';
+        const canDelete = this.canDeleteProject(params.data);
+        const disabledReason = canDelete ? '' : 'Cannot delete: Projects with active escrow cannot be deleted.';
         const isAccepted = !!params.data?.is_accepted ||
           ['accepted', 'active', 'in_review', 'warranty_period', 'completed', 'pending_funds'].includes(status);
         const hasInvite = status === 'invite_sent' || !!token;
@@ -397,6 +397,11 @@ export class BuyerDashboardComponent implements OnInit, OnDestroy {
   ) {}
 
   ngOnInit() {
+    const userEmail = this.getLoggedInEmail();
+    if (userEmail && !this.newProject.buyer_email) {
+      this.newProject.buyer_email = userEmail;
+    }
+
     this.loadProjects();
     this.projectRefreshInterval = setInterval(() => this.loadProjects(true), 15000);
 
@@ -408,7 +413,8 @@ export class BuyerDashboardComponent implements OnInit, OnDestroy {
       this.enterFulfillment(event.detail);
     });
     window.addEventListener('copyToken', (event: any) => {
-      const url = `http://localhost:4200/invite/${event.detail}`;
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'https://pay-pal-hackathon-phi.vercel.app';
+      const url = `${origin}/invite/${event.detail}`;
       navigator.clipboard.writeText(url);
       alert('Invite link copied to clipboard:\n' + url);
     });
@@ -480,19 +486,30 @@ export class BuyerDashboardComponent implements OnInit, OnDestroy {
     this.drawerError = '';
   }
 
+  getLoggedInEmail(): string {
+    try {
+      const stored = localStorage.getItem('prooflens_user');
+      if (stored) {
+        const u = JSON.parse(stored);
+        return (u.email || '').trim();
+      }
+    } catch (_) {}
+    return '';
+  }
+
   canDeleteProject(p: any): boolean {
     if (!p) return false;
     const st = (p.status || '').toLowerCase();
-    return st === 'draft';
+    // Allow deleting projects that have not locked active escrow funds
+    return ['draft', 'pending_contractor', 'waiting_for_contractor', 'invite_sent', 'rejected', 'cancelled'].includes(st);
   }
 
   getDeleteDisabledReason(p: any): string {
     if (!p) return 'Cannot delete project.';
-    const st = (p.status || '').toLowerCase();
-    if (st !== 'draft') {
-      return 'Delete is strictly permitted only for projects in DRAFT status.';
+    if (!this.canDeleteProject(p)) {
+      return 'Delete is only permitted for pre-funded or cancelled projects without active escrow.';
     }
-    return 'Cannot delete project.';
+    return '';
   }
 
   promptDeleteProject(projectId: number) {
@@ -648,13 +665,13 @@ export class BuyerDashboardComponent implements OnInit, OnDestroy {
   }
 
   openCreateProject() {
-    // Reset to pure empty values
+    const userEmail = this.getLoggedInEmail();
     this.newProject = {
       title: '',
       industry_type: '',
       total_price: null,
       deadline: '',
-      buyer_email: '',
+      buyer_email: userEmail,
       description: ''
     };
     this.wizardStep = 1;
