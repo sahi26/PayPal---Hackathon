@@ -70,6 +70,15 @@ export class AppComponent implements OnInit, OnDestroy {
     this.loadOAuthConfig();
     this.checkForOAuthCallback();
     this.loadNotifications();
+
+    if (typeof window !== 'undefined' && this.currentUser) {
+      const path = window.location.pathname;
+      if (path === '/' || path === '/login') {
+        const targetRoute = this.currentUser.role_type === 'seller' ? '/seller' : '/buyer';
+        this.router.navigate([targetRoute]);
+      }
+    }
+
     // Poll notifications every 5 seconds for active updates when user is logged in
     if (typeof window !== 'undefined') {
       this.notifPollInterval = setInterval(() => {
@@ -272,9 +281,6 @@ export class AppComponent implements OnInit, OnDestroy {
     const code = urlParams.get('code');
     if (code) {
       this.loginWithCode(code);
-      // Clean query parameter from URL
-      const cleanUrl = window.location.origin + window.location.pathname;
-      window.history.replaceState({}, document.title, cleanUrl);
     }
   }
 
@@ -289,22 +295,25 @@ export class AppComponent implements OnInit, OnDestroy {
   loginWithCode(code: string) {
     if (!code) return;
     this.isAuthenticating = true;
+    const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    const redirectUri = isLocalhost ? 'http://localhost:4200' : 'https://pay-pal-hackathon-phi.vercel.app';
+    const role = localStorage.getItem('prooflens_pending_role') || 'buyer';
+
     this.http.post<CurrentUser>(`${API_BASE_URL}/api/auth/paypal-login`, {
       code: code.trim(),
-      redirect_uri: 'http://localhost:4200'
+      redirect_uri: redirectUri,
+      role
     }).subscribe({
       next: (user) => {
         this.isAuthenticating = false;
         this.currentUser = user;
         localStorage.setItem('prooflens_user', JSON.stringify(user));
         this.showAuthModal = false;
-        this.authNotification = {
-          message: `Successfully authenticated via PayPal Identity as ${user.full_name} (${user.email})!`,
-          type: 'success'
-        };
-        setTimeout(() => {
-          this.authNotification = null;
-        }, 5000);
+        this.loadNotifications();
+
+        // Auto-navigate directly to respective dashboard
+        const targetRoute = user.role_type === 'seller' ? '/seller' : '/buyer';
+        this.router.navigate([targetRoute]);
       },
       error: (err) => {
         this.isAuthenticating = false;

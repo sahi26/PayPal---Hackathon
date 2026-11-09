@@ -59,8 +59,9 @@ export class LoginComponent implements OnInit {
       }
     }
 
-    // If already authenticated, immediately route to the respective dashboard
-    if (this.currentUser) {
+    // If already authenticated and not currently exchanging an OAuth code, immediately route to dashboard
+    const hasOAuthCode = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('code');
+    if (this.currentUser && !hasOAuthCode) {
       this.proceedToConsole();
       return;
     }
@@ -176,16 +177,21 @@ export class LoginComponent implements OnInit {
   }
 
   proceedToConsole() {
+    if (!this.currentUser) {
+      const saved = localStorage.getItem('prooflens_user');
+      if (saved) {
+        try {
+          this.currentUser = JSON.parse(saved);
+        } catch (_) {}
+      }
+    }
     if (!this.currentUser) return;
     if (this.currentUser.role_type === 'seller' && this.returnUrl) {
       this.router.navigateByUrl(this.returnUrl);
       return;
     }
-    if (this.currentUser.role_type === 'seller') {
-      this.router.navigate(['/seller']);
-    } else {
-      this.router.navigate(['/buyer']);
-    }
+    const target = this.currentUser.role_type === 'seller' ? '/seller' : '/buyer';
+    this.router.navigate([target]);
   }
 
   private getSafeInviteReturnUrl(value: string | null): string | null {
