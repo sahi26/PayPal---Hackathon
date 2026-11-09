@@ -8047,7 +8047,7 @@ def get_paypal_oauth_config(redirect_uri: Optional[str] = None):
     client_id = PAYPAL_CLIENT_ID or ""
     if not client_id:
         raise HTTPException(status_code=503, detail="PayPal sign-in is not configured.")
-    scope = "openid profile email"
+    scope = "openid%20profile%20email"
     paypal_web_base = "https://www.paypal.com" if paypal_service.PAYPAL_API_BASE == "https://api-m.paypal.com" else "https://www.sandbox.paypal.com"
     oauth_url = f"{paypal_web_base}/connect?flowEntry=static&client_id={client_id}&response_type=code&scope={scope}&redirect_uri={target_redirect}"
     return {
@@ -8094,29 +8094,28 @@ async def paypal_oauth_login(request: PayPalLoginRequest, db: Session = Depends(
         if "&" in auth_code:
             auth_code = auth_code.split("&")[0]
 
-        # Collect candidate redirect URIs
+        # Collect candidate redirect URIs in order of priority:
         req_redirect = (request.redirect_uri or "").strip()
+        candidates = []
 
-        # When running on Render / production, prioritize the live domain over any accidental localhost from browser cache
-        is_render_or_prod = bool(os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL") or os.getenv("APP_ENV", "").lower() == "production")
+        if req_redirect:
+            for u in [req_redirect, req_redirect.rstrip('/'), req_redirect.rstrip('/') + '/']:
+                if u and u not in candidates:
+                    candidates.append(u)
 
-        if not is_render_or_prod and req_redirect and "localhost" in req_redirect:
-            candidates = ["http://localhost:4200", "http://localhost:4200/"]
-        else:
-            candidates = [
-                "https://pay-pal-hackathon-phi.vercel.app",
-                "https://pay-pal-hackathon-phi.vercel.app/",
-            ]
-            if req_redirect and "localhost" not in req_redirect:
-                clean_req = req_redirect.rstrip('/')
-                for u in [clean_req, clean_req + '/']:
-                    if u not in candidates:
-                        candidates.insert(0, u)
+        for u in [
+            "https://pay-pal-hackathon-phi.vercel.app",
+            "https://pay-pal-hackathon-phi.vercel.app/",
+            "http://localhost:4200",
+            "http://localhost:4200/",
+        ]:
+            if u not in candidates:
+                candidates.append(u)
 
         if PAYPAL_REDIRECT_URI:
             clean_env = PAYPAL_REDIRECT_URI.rstrip('/')
-            for u in [clean_env, clean_env + '/']:
-                if u not in candidates and "localhost" not in u:
+            for u in [PAYPAL_REDIRECT_URI.strip(), clean_env, clean_env + '/']:
+                if u and u not in candidates:
                     candidates.append(u)
 
         token_url = f"{paypal_service.PAYPAL_API_BASE}/v1/oauth2/token"

@@ -261,15 +261,17 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   loadOAuthConfig() {
-    this.http.get<any>(`${API_BASE_URL}/api/auth/paypal-config`).subscribe({
+    const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    const effectiveRedirect = isLocalhost ? 'http://localhost:4200' : 'https://pay-pal-hackathon-phi.vercel.app';
+
+    this.http.get<any>(`${API_BASE_URL}/api/auth/paypal-config?redirect_uri=${encodeURIComponent(effectiveRedirect)}`).subscribe({
       next: (cfg) => {
         this.oauthConfig = cfg;
       },
       error: () => {
-        // Fallback config for localhost:4200
         this.oauthConfig = {
-          redirect_uri: 'http://localhost:4200',
-          oauth_url: 'https://www.sandbox.paypal.com/connect?flowEntry=static&client_id=AXTjsjnN-jp1XjvX8PI-eE46ycgGDn6rZFvvIpoQGGpVQqj4PnlEqQ185sfTdsir_IbDx4CM7xdhZikc&response_type=code&scope=openid%20profile%20email&redirect_uri=http://localhost:4200'
+          redirect_uri: effectiveRedirect,
+          oauth_url: `https://www.sandbox.paypal.com/connect?flowEntry=static&client_id=AXTjsjnN-jp1XjvX8PI-eE46ycgGDn6rZFvvIpoQGGpVQqj4PnlEqQ185sfTdsir_IbDx4CM7xdhZikc&response_type=code&scope=openid%20profile%20email&redirect_uri=${encodeURIComponent(effectiveRedirect)}`
         };
       }
     });
