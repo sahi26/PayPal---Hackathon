@@ -140,12 +140,13 @@ SELLER_ONLY_ROUTES = (
 
 @app.get("/api/health")
 def health_check():
+    db_status = "ok"
     try:
         with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="Database is unavailable.") from exc
-    return {"status": "ok"}
+            connection.execution_options(timeout=3).execute(text("SELECT 1"))
+    except Exception:
+        db_status = "degraded"
+    return {"status": "ok", "database": db_status}
 
 
 def _project_id_from_path(path: str) -> Optional[int]:
@@ -309,6 +310,10 @@ async def require_authenticated_project_access(request: Request, call_next):
             except StopIteration:
                 pass
         else:
+            try:
+                db.rollback()
+            except Exception:
+                pass
             db.close()
 
     request.state.user = user

@@ -223,11 +223,14 @@ def run_migrations(target_engine):
                     """))
                 except Exception:
                     pass
-                # Enlarge status column to VARCHAR(50) if postgres
-                try:
-                    conn.execute(text("ALTER TABLE projects ALTER COLUMN status TYPE VARCHAR(50);"))
-                except Exception:
-                    pass
+                # Enlarge status column to VARCHAR(50) if postgres and not already >= 50
+                status_col = next((c for c in inspector.get_columns("projects") if c["name"] == "status"), None)
+                if status_col and (not hasattr(status_col.get("type"), "length") or (status_col["type"].length or 0) < 50):
+                    try:
+                        conn.execute(text("SET LOCAL lock_timeout = '2s';"))
+                        conn.execute(text("ALTER TABLE projects ALTER COLUMN status TYPE VARCHAR(50);"))
+                    except Exception:
+                        pass
                 conn.commit()
 
             if "agreements" in tables:
@@ -413,4 +416,8 @@ def get_db():
     try:
         yield db
     finally:
+        try:
+            db.rollback()
+        except Exception:
+            pass
         db.close()
