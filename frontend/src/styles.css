@@ -1639,16 +1639,23 @@ button svg,
   .buyer-shell .filter-tab-pills,
   .seller-shell .filter-tab-pills {
     max-width: 100%;
+    width: 100%;
     overflow-x: auto;
+    overflow-y: hidden;
     overscroll-behavior-x: contain;
     scroll-snap-type: x proximity;
     scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 6px;
   }
 
   .buyer-shell .filter-pill,
   .seller-shell .filter-pill {
+    flex-shrink: 0;
     min-height: 40px;
+    white-space: nowrap;
     scroll-snap-align: start;
+    box-sizing: border-box;
   }
 
   .buyer-shell .ag-grid-fintech-container,

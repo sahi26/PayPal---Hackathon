@@ -65,7 +65,7 @@ def has_network_connection() -> bool:
                 pass
 
 
-async def get_paypal_access_token() -> str:
+async def get_paypal_access_token(force_refresh: bool = False) -> str:
     """
     Fetches or returns cached PayPal OAuth2 Access Token using Client ID and Secret.
     Uses Client Credentials grant flow on Sandbox base URL.
@@ -73,7 +73,7 @@ async def get_paypal_access_token() -> str:
     global _cached_token, _token_expires_at, _cached_token_type
 
     now = datetime.datetime.utcnow()
-    if _cached_token and _token_expires_at and now < _token_expires_at:
+    if not force_refresh and _cached_token and _token_expires_at and now < _token_expires_at:
         return _cached_token
 
     if not PAYPAL_CLIENT_ID or not PAYPAL_CLIENT_SECRET:
@@ -112,18 +112,16 @@ async def get_paypal_access_token() -> str:
         raise HTTPException(status_code=502, detail=f"PayPal API Error: OAuth token request failed: {ex}") from ex
 
 
-async def get_paypal_headers() -> Dict[str, str]:
+async def get_paypal_headers(force_refresh: bool = False) -> Dict[str, str]:
     """
     Returns standard HTTP headers with Bearer authorization for PayPal REST APIs.
     """
-    token = await get_paypal_access_token()
+    token = await get_paypal_access_token(force_refresh=force_refresh)
     headers = {
-        "Authorization": f"Bearer {token}",
+        "Authorization": f"{_cached_token_type} {token}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
-    headers["Authorization"] = f"Bearer {token}"
-    headers["Authorization"] = f"{_cached_token_type} {token}"
     return headers
 
 
@@ -187,6 +185,10 @@ async def create_order_for_authorize(
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(url, json=payload, headers=headers)
+            if response.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                fresh_headers["PayPal-Request-Id"] = str(uuid.uuid4())
+                response = await client.post(url, json=payload, headers=fresh_headers)
             if response.status_code in (200, 201):
                 return response.json()
             raise HTTPException(
@@ -247,6 +249,10 @@ async def authorize_order(order_id: str) -> Dict[str, Any]:
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(url, headers=headers, json={})
+            if response.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                fresh_headers["PayPal-Request-Id"] = str(uuid.uuid4())
+                response = await client.post(url, headers=fresh_headers, json={})
             if response.status_code in (200, 201):
                 return response.json()
             raise HTTPException(
@@ -308,6 +314,10 @@ async def capture_payment(
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(url, json=payload, headers=headers)
+            if response.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                fresh_headers["PayPal-Request-Id"] = request_id or str(uuid.uuid4())
+                response = await client.post(url, json=payload, headers=fresh_headers)
             if response.status_code in (200, 201):
                 data = response.json()
                 if not data.get("id"):
@@ -380,6 +390,10 @@ async def reauthorize_payment(
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(url, json=payload, headers=headers)
+            if response.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                fresh_headers["PayPal-Request-Id"] = str(uuid.uuid4())
+                response = await client.post(url, json=payload, headers=fresh_headers)
             if response.status_code not in (200, 201):
                 raise HTTPException(status_code=502, detail="PayPal authorization renewal failed.")
             data = response.json()
