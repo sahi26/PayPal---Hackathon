@@ -113,10 +113,13 @@ export class LoginComponent implements OnInit {
     this.isRedirecting = true;
     this.errorMessage = null;
 
+    const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    const effectiveRedirect = isLocalhost ? 'http://localhost:4200' : 'https://pay-pal-hackathon-phi.vercel.app';
+    this.selectedRedirectUri = effectiveRedirect;
+    localStorage.setItem('prooflens_redirect_uri', effectiveRedirect);
     localStorage.setItem('prooflens_pending_role', this.selectedRole);
-    localStorage.setItem('prooflens_redirect_uri', this.selectedRedirectUri);
 
-    const redirectParam = this.selectedRedirectUri ? `?redirect_uri=${encodeURIComponent(this.selectedRedirectUri)}` : '';
+    const redirectParam = `?redirect_uri=${encodeURIComponent(effectiveRedirect)}`;
     this.http.get<any>(`${API_BASE_URL}/api/auth/paypal-config${redirectParam}`)
       .subscribe({
         next: (config) => {
@@ -143,7 +146,12 @@ export class LoginComponent implements OnInit {
     this.errorMessage = null;
 
     const role = localStorage.getItem('prooflens_pending_role') || this.selectedRole || 'buyer';
-    const redirectUri = (localStorage.getItem('prooflens_redirect_uri') || this.selectedRedirectUri || '').trim();
+    const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    let redirectUri = isLocalhost ? 'http://localhost:4200' : 'https://pay-pal-hackathon-phi.vercel.app';
+    const storedUri = localStorage.getItem('prooflens_redirect_uri');
+    if (storedUri && (isLocalhost || !storedUri.includes('localhost'))) {
+      redirectUri = storedUri.trim();
+    }
 
     this.http.post<CurrentUser>(`${API_BASE_URL}/api/auth/paypal-login`, {
       code,

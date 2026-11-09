@@ -8094,27 +8094,30 @@ async def paypal_oauth_login(request: PayPalLoginRequest, db: Session = Depends(
         if "&" in auth_code:
             auth_code = auth_code.split("&")[0]
 
-        # Collect candidate redirect URIs (exact requested, with/without trailing slash, production, localhost)
+        # Collect candidate redirect URIs
         req_redirect = (request.redirect_uri or "").strip()
-        candidates = []
-        if req_redirect:
-            candidates.append(req_redirect)
-            if req_redirect.endswith('/'):
-                candidates.append(req_redirect[:-1])
-            else:
-                candidates.append(req_redirect + '/')
 
-        for default_uri in [
-            "https://pay-pal-hackathon-phi.vercel.app",
-            "https://pay-pal-hackathon-phi.vercel.app/",
-            PAYPAL_REDIRECT_URI,
-            PAYPAL_REDIRECT_URI.rstrip('/') if PAYPAL_REDIRECT_URI else "",
-            (PAYPAL_REDIRECT_URI.rstrip('/') + '/') if PAYPAL_REDIRECT_URI else "",
-            "http://localhost:4200",
-            "http://localhost:4200/",
-        ]:
-            if default_uri and default_uri not in candidates:
-                candidates.append(default_uri)
+        # When running on Render / production, prioritize the live domain over any accidental localhost from browser cache
+        is_render_or_prod = bool(os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL") or os.getenv("APP_ENV", "").lower() == "production")
+
+        if not is_render_or_prod and req_redirect and "localhost" in req_redirect:
+            candidates = ["http://localhost:4200", "http://localhost:4200/"]
+        else:
+            candidates = [
+                "https://pay-pal-hackathon-phi.vercel.app",
+                "https://pay-pal-hackathon-phi.vercel.app/",
+            ]
+            if req_redirect and "localhost" not in req_redirect:
+                clean_req = req_redirect.rstrip('/')
+                for u in [clean_req, clean_req + '/']:
+                    if u not in candidates:
+                        candidates.insert(0, u)
+
+        if PAYPAL_REDIRECT_URI:
+            clean_env = PAYPAL_REDIRECT_URI.rstrip('/')
+            for u in [clean_env, clean_env + '/']:
+                if u not in candidates and "localhost" not in u:
+                    candidates.append(u)
 
         token_url = f"{paypal_service.PAYPAL_API_BASE}/v1/oauth2/token"
         access_token = None
