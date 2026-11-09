@@ -37,7 +37,15 @@ if USE_LOCAL_DB:
     engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 elif SQLALCHEMY_DATABASE_URL and not SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
     try:
-        test_engine = create_engine(SQLALCHEMY_DATABASE_URL, pool_pre_ping=True, connect_args={"connect_timeout": 3})
+        test_engine = create_engine(
+            SQLALCHEMY_DATABASE_URL,
+            pool_size=15,
+            max_overflow=20,
+            pool_timeout=10,
+            pool_recycle=300,
+            pool_pre_ping=True,
+            connect_args={"connect_timeout": 5}
+        )
         with test_engine.connect() as conn:
             pass
         engine = test_engine

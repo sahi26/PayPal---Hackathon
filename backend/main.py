@@ -296,8 +296,12 @@ async def require_authenticated_project_access(request: Request, call_next):
                 if not owns_project:
                     return JSONResponse(status_code=404, content={"detail": "Project not found."})
 
-        request.state.user = user
-        return await call_next(request)
+        # Eagerly load scalar attributes so user object can be safely used detached
+        _ = (user.id, user.email, user.role_type, user.full_name)
+        try:
+            db.expunge(user)
+        except Exception:
+            pass
     finally:
         if db_gen:
             try:
@@ -306,6 +310,9 @@ async def require_authenticated_project_access(request: Request, call_next):
                 pass
         else:
             db.close()
+
+    request.state.user = user
+    return await call_next(request)
 
 # --- Configuration ---
 PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "")

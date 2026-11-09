@@ -34,6 +34,7 @@ export class AppComponent implements OnInit, OnDestroy {
   unreadNotificationCount = 0;
   showNotificationsPopover = false;
   private notifPollInterval: any = null;
+  private isFetchingNotifications = false;
 
   // Floating Toast Notification System
   activeToast: {
@@ -70,7 +71,6 @@ export class AppComponent implements OnInit, OnDestroy {
     this.loadOAuthConfig();
     this.checkForOAuthCallback();
     this.loadNotifications();
-
     if (typeof window !== 'undefined' && this.currentUser) {
       const path = window.location.pathname;
       if (path === '/' || path === '/login') {
@@ -79,13 +79,16 @@ export class AppComponent implements OnInit, OnDestroy {
       }
     }
 
-    // Poll notifications every 5 seconds for active updates when user is logged in
+    // Poll notifications every 30 seconds for active updates when user is logged in
     if (typeof window !== 'undefined') {
       this.notifPollInterval = setInterval(() => {
-        if (this.currentUser) {
+        if (typeof document !== 'undefined' && document.hidden) {
+          return;
+        }
+        if (this.currentUser && !this.isFetchingNotifications) {
           this.loadNotifications();
         }
-      }, 5000);
+      }, 30000);
     }
   }
 
@@ -145,6 +148,11 @@ export class AppComponent implements OnInit, OnDestroy {
       this.unreadNotificationCount = 0;
       return;
     }
+    if (this.isFetchingNotifications) {
+      return;
+    }
+    this.isFetchingNotifications = true;
+
     const role = this.currentUser.role_type || 'buyer';
     const email = this.currentUser.email || '';
     let url = `${API_BASE_URL}/api/notifications?role=${role}`;
@@ -154,10 +162,12 @@ export class AppComponent implements OnInit, OnDestroy {
     
     this.http.get<any>(url).subscribe({
       next: (res) => {
+        this.isFetchingNotifications = false;
         this.notifications = res.notifications || [];
         this.unreadNotificationCount = res.unread_count || 0;
       },
       error: () => {
+        this.isFetchingNotifications = false;
         // Silently handle offline/mock state
       }
     });
