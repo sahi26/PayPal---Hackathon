@@ -1,8 +1,8 @@
-# ProofFlow 🛡️ (formerly ProofLens)
+# ProofLens 🛡️
 > **Intelligent Milestone Escrow & AI Forensic Verification Engine**  
 > *Engineered for the PayPal Hackathon 2026*
 
-ProofFlow is an enterprise-grade escrow and milestone fulfillment platform designed for high-value contractor agreements, custom artisan fabrication (bespoke carpentry, fine jewelry, architectural renovation), and digital agency deliverables. ProofFlow bridges **PayPal Escrow Checkout & Milestone Disbursements** with **Zero-Dependency Anti-Spoofing Computer Vision**, **Google Gemini Multimodal Vision**, and **Generative AI Watermark Forensics**.
+ProofLens is an enterprise-grade escrow and milestone fulfillment platform designed for high-value contractor agreements, custom artisan fabrication (bespoke carpentry, fine jewelry, architectural renovation), and digital agency deliverables. ProofLens bridges **PayPal Escrow Checkout & Milestone Disbursements** with **Zero-Dependency Anti-Spoofing Computer Vision**, **Google Gemini Multimodal Vision**, and **Generative AI Watermark Forensics**.
 
 ---
 
@@ -37,7 +37,7 @@ ProofFlow is an enterprise-grade escrow and milestone fulfillment platform desig
 ## 🌟 Executive Overview
 In modern high-trust contracting, payment disputes occur when deliverables cannot be verified reliably. Contractors face arbitrary payment delays and unilateral chargebacks, while buyers face fraudulent submissions—such as photos taken of phone screens, recycled internet assets, unverified locations, or unauthorized synthetic AI generations passed off as handmade craft or custom digital design.
 
-**ProofFlow resolves this impasse with cryptographic escrow gates:**
+**ProofLens resolves this impasse with cryptographic escrow gates:**
 1. **Financial Security via PayPal**: Escrow funds are secured upfront using PayPal Orders (`intent: AUTHORIZE`). Funds are released on a strictly milestone-by-milestone basis via PayPal Payments Captures (`final_capture = False` for intermediate stages, `final_capture = True` for the conclusion).
 2. **Anti-Spoofing CV Engine**: Zero-dependency Python computer vision analyzes camera captures for high-frequency Moiré wave interference patterns, rainbow subpixel chromatic shifts, and visible phone/monitor bezels to guarantee evidence was never a re-photographed screen.
 3. **AI Watermark Forensics**: Digital deliverables are inspected for synthetic generative signatures, including Google SynthID, OpenAI DALL-E, Midjourney, Stable Diffusion, and Adobe Firefly metadata.
@@ -169,7 +169,7 @@ flowchart TD
 ## 📂 Project Structure
 
 ```
-ProofFlow/
+ProofLens/
 ├── backend/
 │   ├── main.py                     # Primary FastAPI application & REST endpoints
 │   ├── auth_service.py             # Bcrypt hashing (12 rounds) & JWT HS256 auth
@@ -209,7 +209,7 @@ ProofFlow/
 ---
 
 ## 📋 Prerequisites
-Before running ProofFlow, ensure you have:
+Before running ProofLens, ensure you have:
 - **Node.js**: `v18.x` or `v20.x`
 - **npm**: `v9.x` or higher
 - **Python**: `v3.9` to `v3.12`
@@ -309,7 +309,7 @@ sequenceDiagram
     autonumber
     actor Buyer as Client / Buyer
     actor Seller as Contractor / Seller
-    participant Web as ProofFlow UI
+    participant Web as ProofLens UI
     participant API as FastAPI Backend
     participant Auth as Auth & Email Service
     participant AI as Gemini & CV Engine
@@ -401,7 +401,7 @@ sequenceDiagram
 
 ## 🛡️ Recent Hardening & Architecture Remediation
 
-In the most recent update, ProofFlow underwent a complete production readiness overhaul:
+In the most recent update, ProofLens underwent a complete production readiness overhaul:
 
 1. **Authentication Overhaul**:
    - Replaced prototype authentication with industry-standard **Bcrypt (12 rounds)** and **JWT HS256** access tokens.
@@ -483,6 +483,6 @@ npx tsc --noEmit
 ---
 
 ## 👥 License & Acknowledgements
-- **Engineered by**: ProofFlow Engineering Team
+- **Engineered by**: ProofLens Engineering Team
 - **Competition**: PayPal Hackathon 2026
 - **License**: [MIT License](LICENSE)
