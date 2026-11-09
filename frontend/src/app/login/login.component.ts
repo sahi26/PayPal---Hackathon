@@ -59,8 +59,9 @@ export class LoginComponent implements OnInit {
       }
     }
 
-    if (this.returnUrl && this.currentUser?.role_type === 'seller') {
-      this.router.navigateByUrl(this.returnUrl);
+    // If already authenticated, immediately route to the respective dashboard
+    if (this.currentUser) {
+      this.proceedToConsole();
       return;
     }
 
@@ -163,11 +164,6 @@ export class LoginComponent implements OnInit {
         this.currentUser = user;
         localStorage.setItem('prooflens_user', JSON.stringify(user));
         localStorage.removeItem('prooflens_pending_role');
-
-        this.router.navigate([], {
-          queryParams: { code: null },
-          queryParamsHandling: 'merge'
-        });
 
         this.proceedToConsole();
       },
