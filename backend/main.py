@@ -896,7 +896,7 @@ def determine_project_domain(title: str = "", industry: str = "", description: s
     # Physical indicators
     is_physical = any(k in corpus for k in [
         "renovat", "remodel", "plumb", "pipe", "sink", "drywall", "tile",
-        "wood", "timber", "furniture", "chair", "table", "cabinet", "jewelry",
+        "wood", "timber", "furniture", "chair", "table", "cabinet", "jewelry", "jewellery", "jewel", "gem",
         "ring", "gold", "silver", "brass", "construction", "roof", "flooring", "masonry", "caulk", "bathroom"
     ])
     if is_digital and not is_physical:
@@ -966,7 +966,7 @@ def enrich_milestone_scope_and_proof(milestones: list, project: Any) -> Tuple[li
         "table", "desk", "chair", "wood", "timber", "cabinet", "shelf", "furniture", "walnut", "oak", "carpentry"
     ])
     is_jewelry = any(k in full_corpus for k in [
-        "ring", "jewelry", "gold", "silver", "necklace", "pendant", "bracelet", "karat", "diamond"
+        "ring", "jewelry", "jewellery", "jewel", "gold", "silver", "necklace", "pendant", "bracelet", "karat", "diamond", "gem"
     ])
 
     changed = False
@@ -2079,7 +2079,7 @@ def synthesize_draft_chat_fallback(project: models.Project, history: list) -> di
         "wood", "table", "chair", "desk", "cabinet", "shelf", "furniture", "timber", "oak", "walnut", "joinery", "bench", "carpentry"
     ])
     is_jewelry = any(k in full_corpus for k in [
-        "ring", "jewelry", "gold", "silver", "necklace", "pendant", "bracelet", "karat", "18k", "24k", "brass", "diamond"
+        "ring", "jewelry", "jewellery", "jewel", "gold", "silver", "necklace", "pendant", "bracelet", "karat", "18k", "24k", "brass", "diamond", "gem"
     ])
     is_graphic_design = any(k in full_corpus for k in [
         "logo", "brand", "graphic", "illustration", "vector", "typography", "identity", "icon", "mascot", "badge", "packaging", "banner", "poster"
@@ -5821,7 +5821,7 @@ def synthesize_ai_evidence_fallback(
 
     is_renovation = is_home_renovation_project(title, ind, desc)
     is_wood = any(k in f"{title} {ind} {desc}" for k in ["wood", "table", "chair", "cabinet", "furniture", "timber", "joinery"])
-    is_jewelry = any(k in f"{title} {ind} {desc}" for k in ["ring", "jewelry", "gold", "silver", "pendant", "necklace", "karat"])
+    is_jewelry = any(k in f"{title} {ind} {desc}" for k in ["ring", "jewelry", "jewellery", "jewel", "gold", "silver", "pendant", "necklace", "karat", "diamond", "gem"])
     
     has_before = before_evidence_item is not None
     

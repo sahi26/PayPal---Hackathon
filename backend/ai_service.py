@@ -97,7 +97,7 @@ def determine_project_domain(title: str = "", industry: str = "", description: s
     physical_keywords = [
         "bath", "bathroom", "kitchen", "renovat", "remodel", "plumb", "drywall", "tile",
         "flooring", "paint", "roof", "house", "wood", "table", "chair", "cabinet", "shelf",
-        "furniture", "timber", "oak", "walnut", "ring", "jewelry", "gold", "silver", "necklace",
+        "furniture", "timber", "oak", "walnut", "ring", "jewelry", "jewellery", "jewel", "gem", "gold", "silver", "necklace",
         "pendant", "metal", "weld", "concrete", "brick", "deck", "patio", "fence", "re-upholstery"
     ]
     
