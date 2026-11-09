@@ -143,7 +143,7 @@ export class LoginComponent implements OnInit {
     this.errorMessage = null;
 
     const role = localStorage.getItem('prooflens_pending_role') || this.selectedRole || 'buyer';
-    const redirectUri = (localStorage.getItem('prooflens_redirect_uri') || this.selectedRedirectUri || '').trim().replace(/\/+$/, '');
+    const redirectUri = (localStorage.getItem('prooflens_redirect_uri') || this.selectedRedirectUri || '').trim();
 
     this.http.post<CurrentUser>(`${API_BASE_URL}/api/auth/paypal-login`, {
       code,

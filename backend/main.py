@@ -8036,9 +8036,11 @@ def get_paypal_oauth_config(redirect_uri: Optional[str] = None):
     """
     Returns PayPal OAuth parameters and official sandbox authorize URL for localhost and live use.
     """
-    req_redirect = (redirect_uri or "").strip().rstrip('/')
-    if req_redirect in {"http://localhost:4200", "http://127.0.0.1:4200"}:
+    req_redirect = (redirect_uri or "").strip()
+    if req_redirect in {"http://localhost:4200", "http://127.0.0.1:4200", "http://localhost:4200/", "http://127.0.0.1:4200/"}:
         target_redirect = "http://localhost:4200"
+    elif req_redirect:
+        target_redirect = req_redirect
     else:
         target_redirect = "https://pay-pal-hackathon-phi.vercel.app"
 
@@ -8092,31 +8094,57 @@ async def paypal_oauth_login(request: PayPalLoginRequest, db: Session = Depends(
         if "&" in auth_code:
             auth_code = auth_code.split("&")[0]
 
-        # Strict exact match for payload redirect_uri (no trailing slashes)
-        req_redirect = (request.redirect_uri or "").strip().rstrip('/')
-        if req_redirect in {"http://localhost:4200", "http://127.0.0.1:4200"}:
-            redirect_uri = "http://localhost:4200"
-        else:
-            redirect_uri = "https://pay-pal-hackathon-phi.vercel.app"
+        # Collect candidate redirect URIs (exact requested, with/without trailing slash, production, localhost)
+        req_redirect = (request.redirect_uri or "").strip()
+        candidates = []
+        if req_redirect:
+            candidates.append(req_redirect)
+            if req_redirect.endswith('/'):
+                candidates.append(req_redirect[:-1])
+            else:
+                candidates.append(req_redirect + '/')
+
+        for default_uri in [
+            "https://pay-pal-hackathon-phi.vercel.app",
+            "https://pay-pal-hackathon-phi.vercel.app/",
+            PAYPAL_REDIRECT_URI,
+            PAYPAL_REDIRECT_URI.rstrip('/') if PAYPAL_REDIRECT_URI else "",
+            (PAYPAL_REDIRECT_URI.rstrip('/') + '/') if PAYPAL_REDIRECT_URI else "",
+            "http://localhost:4200",
+            "http://localhost:4200/",
+        ]:
+            if default_uri and default_uri not in candidates:
+                candidates.append(default_uri)
 
         token_url = f"{paypal_service.PAYPAL_API_BASE}/v1/oauth2/token"
+        access_token = None
+        last_error_detail = None
 
         async with httpx.AsyncClient() as client:
-            token_response = await client.post(
-                token_url,
-                auth=(PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET),
-                data={
-                    "grant_type": "authorization_code",
-                    "code": auth_code,
-                    "redirect_uri": redirect_uri,
-                },
-                headers={"Accept": "application/json", "Accept-Language": "en_US"},
-            )
+            for cand_redirect in candidates:
+                token_response = await client.post(
+                    token_url,
+                    auth=(PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET),
+                    data={
+                        "grant_type": "authorization_code",
+                        "code": auth_code,
+                        "redirect_uri": cand_redirect,
+                    },
+                    headers={"Accept": "application/json", "Accept-Language": "en_US"},
+                )
 
-            if token_response.status_code != 200:
-                error_data = token_response.json() if token_response.headers.get("content-type", "").startswith("application/json") else {}
-                detail = error_data.get("error_description", f"Failed to exchange authorization code with PayPal (HTTP {token_response.status_code})")
-                raise HTTPException(status_code=400, detail=detail)
+                if token_response.status_code == 200:
+                    access_token = token_response.json().get("access_token")
+                    break
+                else:
+                    error_data = token_response.json() if token_response.headers.get("content-type", "").startswith("application/json") else {}
+                    err_desc = error_data.get("error_description", f"HTTP {token_response.status_code}")
+                    last_error_detail = f"{err_desc} (tried redirect_uri: {cand_redirect})"
+                    if "redirect" not in err_desc.lower():
+                        break
+
+            if not access_token:
+                raise HTTPException(status_code=400, detail=last_error_detail or "Failed to exchange authorization code with PayPal")
 
             access_token = token_response.json().get("access_token")
 
