@@ -972,27 +972,11 @@ export class BuyerDashboardComponent implements OnInit, OnDestroy {
     this.http.post<any>(`${API_BASE_URL}/api/projects/${this.createdProjectId}/finalize-draft`, payload)
       .subscribe({
         next: (res) => {
-          const projectId = res.project_id || this.createdProjectId;
-          this.http.post<any>(`${API_BASE_URL}/api/payments/authorize`, {
-            project_id: projectId,
-            amount: Number(this.newProject?.total_price) || undefined,
-            currency: 'USD',
-            return_url: `${window.location.origin}/wizard?project_id=${projectId}&paypal_return=1`,
-            cancel_url: `${window.location.origin}/wizard?project_id=${projectId}&paypal_cancelled=1`
-          }).subscribe({
-            next: (paymentRes) => {
-              this.isSubmitting = false;
-              if (!paymentRes?.approval_url) {
-                alert('PayPal did not return an approval link. Please retry escrow authorization from the project.');
-                return;
-              }
-              window.location.href = paymentRes.approval_url;
-            },
-            error: (err) => {
-              this.isSubmitting = false;
-              alert('Failed to start PayPal escrow authorization: ' + (err.error?.detail || err.message));
-            }
-          });
+          this.isSubmitting = false;
+          this.createdInviteUrl = res.seller_invite_link || '';
+          this.createdInviteToken = this.createdInviteUrl.split('/').pop() || '';
+          this.wizardStep = 3;
+          this.loadProjects();
         },
         error: (err) => {
           this.isSubmitting = false;
