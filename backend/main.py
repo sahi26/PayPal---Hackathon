@@ -71,7 +71,7 @@ FRONTEND_ORIGINS = list(dict.fromkeys(
 FRONTEND_URL = FRONTEND_ORIGINS[0] if FRONTEND_ORIGINS else "http://localhost:4200"
 APP_ENV = os.getenv("APP_ENV", "development").lower()
 ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "")
-PAYPAL_REDIRECT_URI = os.getenv("PAYPAL_REDIRECT_URI", "http://localhost:4200")
+PAYPAL_REDIRECT_URI = os.getenv("PAYPAL_REDIRECT_URI", "https://pay-pal-hackathon-phi.vercel.app").rstrip('/')
 
 if APP_ENV == "production":
     if not FRONTEND_ORIGINS or any(
@@ -338,7 +338,7 @@ class EscrowNotificationManager:
 
 escrow_notifier = EscrowNotificationManager()
 PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET", "")
-PAYPAL_REDIRECT_URI = os.getenv("PAYPAL_REDIRECT_URI", "https://prooflens-auth.loca.lt")
+PAYPAL_REDIRECT_URI = os.getenv("PAYPAL_REDIRECT_URI", "https://pay-pal-hackathon-phi.vercel.app").rstrip('/')
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 if GEMINI_API_KEY:
@@ -8036,23 +8036,11 @@ def get_paypal_oauth_config(redirect_uri: Optional[str] = None):
     """
     Returns PayPal OAuth parameters and official sandbox authorize URL for localhost and live use.
     """
-    allowed_redirects = {
-        PAYPAL_REDIRECT_URI,
-        FRONTEND_URL,
-        *FRONTEND_ORIGINS,
-        "http://localhost:4200",
-        "http://127.0.0.1:4200",
-        "https://pay-pal-hackathon-phi.vercel.app",
-        "https://prooflens-auth.loca.lt",
-    }
-    allowed_clean = {u.rstrip('/') for u in allowed_redirects if u}
-
-    target_redirect = PAYPAL_REDIRECT_URI
-    if redirect_uri:
-        if redirect_uri.rstrip('/') in allowed_clean:
-            target_redirect = redirect_uri
-        else:
-            raise HTTPException(status_code=400, detail="The requested PayPal redirect URI is not configured.")
+    req_redirect = (redirect_uri or "").strip().rstrip('/')
+    if req_redirect in {"http://localhost:4200", "http://127.0.0.1:4200"}:
+        target_redirect = "http://localhost:4200"
+    else:
+        target_redirect = "https://pay-pal-hackathon-phi.vercel.app"
 
     client_id = PAYPAL_CLIENT_ID or ""
     if not client_id:
@@ -8104,19 +8092,13 @@ async def paypal_oauth_login(request: PayPalLoginRequest, db: Session = Depends(
         if "&" in auth_code:
             auth_code = auth_code.split("&")[0]
 
-        allowed_redirects = {
-            PAYPAL_REDIRECT_URI,
-            FRONTEND_URL,
-            *FRONTEND_ORIGINS,
-            "http://localhost:4200",
-            "http://127.0.0.1:4200",
-            "https://pay-pal-hackathon-phi.vercel.app",
-            "https://prooflens-auth.loca.lt",
-        }
-        allowed_clean = {u.rstrip('/') for u in allowed_redirects if u}
-        redirect_uri = request.redirect_uri or PAYPAL_REDIRECT_URI
-        if redirect_uri.rstrip('/') not in allowed_clean:
-            raise HTTPException(status_code=400, detail="The requested PayPal redirect URI is not configured.")
+        # Strict exact match for payload redirect_uri (no trailing slashes)
+        req_redirect = (request.redirect_uri or "").strip().rstrip('/')
+        if req_redirect in {"http://localhost:4200", "http://127.0.0.1:4200"}:
+            redirect_uri = "http://localhost:4200"
+        else:
+            redirect_uri = "https://pay-pal-hackathon-phi.vercel.app"
+
         token_url = f"{paypal_service.PAYPAL_API_BASE}/v1/oauth2/token"
 
         async with httpx.AsyncClient() as client:
