@@ -166,42 +166,23 @@
             <button (click)="goToMilestones()" class="btn-secondary">
               <span>Go to Milestone Page</span>
             </button>
-            <button type="button" (click)="openRejectModal()" [disabled]="isJoining || isRejecting" class="btn-reject-invite">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
-              </svg>
-              <span>Reject Agreement</span>
-            </button>
           </div>
         } @else if (isSeller) {
-          <h3>Accept Agreement &amp; Enter Negotiation Room</h3>
+          <h3>Enter Negotiation Room</h3>
           <p class="join-desc">
             You are signing in as verified contractor <strong>{{ sellerName }}</strong> ({{ sellerEmail }}).
-            Once you accept, you will enter the ProofLens Negotiation Room where you can confirm these terms or negotiate adjustments.
+            Enter the ProofLens Negotiation Room to discuss terms, request adjustments, and review milestones with the buyer.
           </p>
 
           <div class="action-buttons-row">
-            <button (click)="joinProject()" [disabled]="isJoining || isRejecting" class="btn-join" [class.is-loading]="isJoining">
+            <button (click)="joinProject()" [disabled]="isJoining" class="btn-join" [class.is-loading]="isJoining">
               @if (isJoining) {
                 <span class="btn-spinner"></span>
-                <span>Connecting to Project...</span>
+                <span>Entering Room...</span>
               } @else {
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <polyline points="20 6 9 17 4 12"/>
-                </svg>
-                <span>Accept Agreement &amp; Enter Negotiation Room</span>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+                <span>Enter Negotiation Room</span>
               }
-            </button>
-            <button type="button" (click)="openRejectModal()" [disabled]="isJoining || isRejecting" class="btn-reject-invite">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <circle cx="12" cy="12" r="10"/>
-                <line x1="15" y1="9" x2="9" y2="15"/>
-                <line x1="9" y1="9" x2="15" y2="15"/>
-              </svg>
-              <span>Reject Agreement</span>
-            </button>
-            <button (click)="joinProject()" [disabled]="isJoining || isRejecting" class="btn-secondary">
-              Request Scope / Price Adjustments
             </button>
           </div>
         } @else if (isBuyer) {
@@ -215,55 +196,13 @@
         } @else {
           <div class="guest-auth-box">
             <h3>Contractor Identity Verification</h3>
-            <p>Review the agreement above. Please connect with your Contractor PayPal account to accept this project and activate automated escrow settlement.</p>
+            <p>Review the agreement above. Please connect with your Contractor PayPal account to enter this project and activate automated escrow settlement.</p>
             <button (click)="signInAsSeller()" class="btn-join btn-paypal-connect">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-              <span>Sign In with PayPal to Accept Agreement</span>
+              <span>Sign In with PayPal to Enter Project</span>
             </button>
           </div>
         }
-      </div>
-    </div>
-  }
-
-  <!-- Contractor Rejection Modal -->
-  @if (isRejectModalOpen) {
-    <div class="reject-modal-backdrop" (click)="closeRejectModal()">
-      <div class="reject-modal-window" (click)="$event.stopPropagation()">
-        <div class="reject-modal-header">
-          <div class="reject-header-left">
-            <div class="reject-icon-box">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
-            </div>
-            <h3>Reject Agreement Terms</h3>
-          </div>
-          <button type="button" (click)="closeRejectModal()" class="btn-close-modal">&times;</button>
-        </div>
-        <div class="reject-modal-body">
-          <p class="reject-modal-sub">
-            Declining will reject this agreement, notify the buyer with your feedback, and redirect you to your contractor dashboard.
-          </p>
-          <label class="reject-field-label" for="inviteRejectionReason">Detailed Rejection Reason for Buyer:</label>
-          <textarea
-            id="inviteRejectionReason"
-            [(ngModel)]="rejectionReason"
-            rows="4"
-            placeholder="e.g. Milestone timeline is too aggressive, or scope requires materials budget adjustments..."
-            class="reject-textarea"
-          ></textarea>
-        </div>
-        <div class="reject-modal-footer">
-          <button type="button" (click)="closeRejectModal()" class="btn-reject-cancel">Cancel</button>
-          <button
-            type="button"
-            (click)="rejectAgreement()"
-            [disabled]="isRejecting || !rejectionReason.trim()"
-            class="btn-reject-confirm"
-            [class.is-loading]="isRejecting"
-          >
-            <span>{{ isRejecting ? 'Submitting Rejection...' : 'Confirm Rejection &amp; Return to Dashboard' }}</span>
-          </button>
-        </div>
       </div>
     </div>
   }

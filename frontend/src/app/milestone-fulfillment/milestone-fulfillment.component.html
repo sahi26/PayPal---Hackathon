@@ -409,25 +409,6 @@
               </div>
             </div>
           }
-          @if (!isProjectCanceled() && !isEscrowAuthorized() && currentRole === 'buyer' &&
-               projectData?.payment?.milestone_index == null && (getEscrowDepositUrl() || getPayPalApprovalUrl())) {
-            <div style="margin: 0 0 16px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 14px 18px; display: flex; justify-content: space-between; align-items: center;">
-              <div>
-                @if (isScopeChangePendingEscrow()) {
-                  <strong style="color: #92400e; font-size: 14px;">PayPal Supplemental Escrow Deposit Required</strong>
-                  <p style="margin: 4px 0 0; color: #b45309; font-size: 13px;">
-                    The initial project escrow hold (${{ Number(getInitialSettledAmount()).toFixed(2) }} USD) is already settled. Please authorize only the incremental delta of <strong>${{ Number(getEscrowDepositAmount()).toFixed(2) }} USD</strong> in PayPal Escrow to fund the approved scope revision.
-                  </p>
-                } @else {
-                  <strong style="color: #92400e; font-size: 14px;">PayPal Escrow Deposit Required</strong>
-                  <p style="margin: 4px 0 0; color: #b45309; font-size: 13px;">Please authorize the ${{ Number(getEscrowDepositAmount()).toFixed(2) }} USD escrow hold to fund this project.</p>
-                }
-              </div>
-              <a [href]="getEscrowDepositUrl() || getPayPalApprovalUrl()" style="text-decoration: none; background: #0070ba; color: #fff; padding: 8px 16px; border-radius: 6px; font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;">
-                <span>Authorize ${{ Number(getEscrowDepositAmount()).toFixed(2) }} via PayPal &rarr;</span>
-              </a>
-            </div>
-          }
 
           <!-- Warranty Lock-In (Retainage Vault) Active Banner -->
           @if (isWarrantyPeriodActive() && getRetainageAmount() > 0 && getRetainageDays() > 0) {
