@@ -290,36 +290,13 @@ Production deployments (`APP_ENV=production`) enforce strict operational rules:
 - **Security Tokens**: `JWT_SECRET_KEY` and `ADMIN_API_TOKEN` must be at least 32 characters in length.
 - **Email Delivery**: Authenticated SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`) with STARTTLS/SSL is required for real user email verification.
 
-### Key Environment Variables
-```ini
-# Core Environment
-APP_ENV=development              # Set to 'production' for live deployments
-DATABASE_URL=sqlite:///./test.db # Use postgresql://user:pass@host/db in production
-USE_LOCAL_DB=true                # Strictly ignored when APP_ENV=production
-
-# Security & Authentication
-JWT_SECRET_KEY=change_me_to_at_least_32_characters_random_secret
-ADMIN_API_TOKEN=change_me_to_at_least_32_characters_admin_token
-JWT_EXPIRATION_MINUTES=1440
-
-# PayPal REST API
-PAYPAL_MODE=sandbox
-PAYPAL_CLIENT_ID=your_sandbox_client_id
-PAYPAL_CLIENT_SECRET=your_sandbox_client_secret
-PAYPAL_WEBHOOK_ID=your_registered_webhook_id
-PAYPAL_API_BASE=https://api-m.sandbox.paypal.com
-
-# Google Gemini AI
-GEMINI_API_KEY=your_gemini_api_key
-
-# Email Verification (SMTP)
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your-email@example.com
-SMTP_PASSWORD=your-app-password
-SMTP_FROM_EMAIL=noreply@proofflow.io
-SMTP_USE_TLS=true
-```
+### Environment Variables Reference
+All configuration variables are centralized in [`backend/.env.example`](backend/.env.example). Copy this template to `backend/.env` and supply your environment-specific credentials:
+- **PayPal Sandbox**: Obtain `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, and `PAYPAL_WEBHOOK_ID` from the [PayPal Developer Dashboard](https://developer.paypal.com/).
+- **AI Vision**: Generate a `GEMINI_API_KEY` from [Google AI Studio](https://aistudio.google.com/).
+- **Database**: Set `DATABASE_URL` (PostgreSQL is required in production; SQLite is used automatically for local testing).
+- **Authentication**: Set a 32+ character random `JWT_SECRET_KEY` and `ADMIN_API_TOKEN`.
+- **Email Verification**: Configure SMTP credentials (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`).
 
 ---
 
