@@ -49,7 +49,6 @@ if os.path.exists(_env_backend):
     load_dotenv(_env_backend)
 
 import auth_service
-import email_service
 
 # Create all database tables on startup & run schema migrations
 models.Base.metadata.create_all(bind=engine)
@@ -86,7 +85,6 @@ if APP_ENV == "production":
         raise RuntimeError("ADMIN_API_TOKEN must contain at least 32 characters in production.")
     if not PAYPAL_REDIRECT_URI.startswith("https://"):
         raise RuntimeError("PAYPAL_REDIRECT_URI must use HTTPS in production.")
-    email_service.validate_production_config()
 
 app.add_middleware(
     CORSMiddleware,
@@ -97,10 +95,6 @@ app.add_middleware(
 )
 
 PUBLIC_API_PATHS = {
-    "/api/auth/register",
-    "/api/auth/login",
-    "/api/auth/verify-email",
-    "/api/auth/resend-verification",
     "/api/auth/paypal-config",
     "/api/auth/paypal-login",
     "/api/health",
@@ -266,12 +260,6 @@ async def require_authenticated_project_access(request: Request, call_next):
 
         if not user:
             return JSONResponse(status_code=401, content={"detail": "Authentication required."})
-
-        if not user.email_verified and not is_test_mode:
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "Email address is not verified. Check your email or request a new verification link."},
-            )
 
         if not is_test_mode:
             if any(pattern.fullmatch(path) for pattern in BUYER_ONLY_ROUTES) and user.role_type != "buyer":
@@ -4130,7 +4118,7 @@ async def accept_project(project_id: int, db: Session = Depends(get_db)):
     if not payment and project.total_price and float(project.total_price) > 0:
         try:
             return_url = f"{FRONTEND_URL}/project/{project.id}/fulfillment"
-            cancel_url = f"{FRONTEND_URL}/negotiate/{project.id}"
+            cancel_url = f"{FRONTEND_URL}/project/{project.id}/negotiate"
             order_data = await paypal_service.create_order_for_authorize(
                 amount=float(project.total_price),
                 currency="USD",
@@ -8183,21 +8171,12 @@ async def paypal_oauth_login(request: PayPalLoginRequest, db: Session = Depends(
             detail="This PayPal account is registered with a different ProofLens role."
         )
 
-    if provider_email_verified and not db_user.email_verified:
+    if not db_user.email_verified:
         db_user.email_verified = True
         db_user.email_verification_token_hash = None
         db_user.email_verification_expires_at = None
         db_user.email_verification_sent_at = None
         db.commit()
-
-    if not db_user.email_verified:
-        verification_url = None
-        if not db_user.email_verification_token_hash:
-            verification_url = issue_email_verification(db_user, db)
-        detail = "Verify your email address before signing in."
-        if verification_url:
-            detail = f"{detail} Local development verification link: {verification_url}"
-        raise HTTPException(status_code=403, detail=detail)
 
     return authenticated_user_response(db_user)
 
@@ -8263,150 +8242,6 @@ def authenticated_user_response(user: models.User) -> Dict[str, Any]:
         "token_type": "bearer",
     }
 
-def issue_email_verification(user: models.User, db: Session) -> Optional[str]:
-    token = secrets.token_urlsafe(32)
-    now = datetime.now(timezone.utc)
-    user.email_verified = False
-    user.email_verification_token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    user.email_verification_expires_at = now + timedelta(hours=24)
-    user.email_verification_sent_at = now
-    db.commit()
-
-    verification_url = (
-        f"{FRONTEND_ORIGINS[0].rstrip('/')}/verify-email#{quote(token, safe='')}"
-    )
-    if email_service.is_configured():
-        try:
-            email_service.send_verification_email(user.email, verification_url)
-        except email_service.EmailDeliveryError as exc:
-            user.email_verification_sent_at = now - timedelta(seconds=60)
-            db.commit()
-            raise HTTPException(
-                status_code=503,
-                detail="Your account was created, but the verification email could not be delivered. Request a new link.",
-            ) from exc
-        return None
-
-    if APP_ENV == "production":
-        raise HTTPException(status_code=503, detail="Email verification delivery is unavailable.")
-    return verification_url
-
-
-@app.post("/api/auth/register", response_model=RegistrationResponse)
-def register(request: RegisterRequest, db: Session = Depends(get_db)):
-    clean_email = request.email.strip().lower()
-    role_type = request.role_type.strip().lower()
-    if role_type not in {"buyer", "seller"}:
-        raise HTTPException(status_code=400, detail="A valid buyer or seller role is required.")
-    if len(request.password.encode("utf-8")) < 12 or len(request.password.encode("utf-8")) > 72:
-        raise HTTPException(status_code=400, detail="Password must be between 12 and 72 UTF-8 bytes.")
-    full_name = request.full_name.strip()
-    if not full_name or len(full_name) > 100:
-        raise HTTPException(status_code=400, detail="Name must be between 1 and 100 characters.")
-
-    existing_user = db.query(models.User).filter(func.lower(models.User.email) == clean_email).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-
-    new_user = models.User(
-        email=clean_email,
-        password_hash=auth_service.hash_password(request.password),
-        full_name=full_name,
-        role_type=role_type,
-        email_verified=False,
-    )
-    db.add(new_user)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="Email already registered.")
-    db.refresh(new_user)
-    verification_url = issue_email_verification(new_user, db)
-    return {
-        "email": new_user.email,
-        "message": "Verification email sent." if verification_url is None else "Verify your email address to activate your account.",
-        "verification_url": verification_url,
-    }
-
-
-@app.post("/api/auth/verify-email", response_model=VerificationResponse)
-def verify_email(request: VerifyEmailRequest, db: Session = Depends(get_db)):
-    token_hash = hashlib.sha256(request.token.encode("utf-8")).hexdigest()
-    user = db.query(models.User).filter(
-        models.User.email_verification_token_hash == token_hash
-    ).first()
-    if not user or not user.email_verification_expires_at:
-        raise HTTPException(status_code=400, detail="Verification link is invalid or expired.")
-
-    expires_at = user.email_verification_expires_at
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at <= datetime.now(timezone.utc):
-        raise HTTPException(status_code=400, detail="Verification link is invalid or expired.")
-
-    user.email_verified = True
-    user.email_verification_token_hash = None
-    user.email_verification_expires_at = None
-    user.email_verification_sent_at = None
-    db.commit()
-    return {"email": user.email, "message": "Email verified. You can now sign in."}
-
-
-@app.post("/api/auth/resend-verification", response_model=VerificationResponse)
-def resend_email_verification(request: ResendVerificationRequest, db: Session = Depends(get_db)):
-    clean_email = request.email.strip().lower()
-    user = db.query(models.User).filter(func.lower(models.User.email) == clean_email).first()
-    response = {
-        "email": clean_email,
-        "message": "If the account needs verification, a new link will be sent.",
-        "verification_url": None,
-    }
-    if not user or user.email_verified:
-        return response
-
-    if user.email_verification_sent_at:
-        last_sent = user.email_verification_sent_at
-        if last_sent.tzinfo is None:
-            last_sent = last_sent.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) - last_sent < timedelta(seconds=60):
-            return response
-
-    response["verification_url"] = issue_email_verification(user, db)
-    return response
-
-
-@app.post("/api/auth/login", response_model=UserResponse)
-def login(request: LoginRequest, db: Session = Depends(get_db)):
-    clean_email = request.email.strip().lower()
-    if len(request.password.encode("utf-8")) > 72:
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
-    user = db.query(models.User).filter(func.lower(models.User.email) == clean_email).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
-    if user.role_type != (request.role or user.role_type).lower():
-        raise HTTPException(status_code=403, detail="This account is registered with a different role.")
-
-    valid_password = auth_service.verify_password(request.password, user.password_hash)
-    stored_password = user.password_hash or ""
-    if not valid_password and not stored_password.startswith(("$2a$", "$2b$", "$2y$", "OAUTH_MANAGED")):
-        # Migrate existing prototype accounts only after their stored password matches.
-        valid_password = secrets.compare_digest(stored_password, request.password)
-        if valid_password:
-            user.password_hash = auth_service.hash_password(request.password)
-            db.commit()
-            db.refresh(user)
-    if not valid_password:
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
-    if not user.email_verified:
-        raise HTTPException(
-            status_code=403,
-            detail="Email address is not verified. Check your email or request a new verification link.",
-        )
-
-    return authenticated_user_response(user)
-
-# ==============================================================================
 # Phase 2: PayPal Orders API (2-Step Auth & Capture)
 # ==============================================================================
 

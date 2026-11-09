@@ -1,191 +1,132 @@
 <div class="login-shell">
-      <div class="login-card">
-        <!-- Top PayPal Brand Ribbon -->
-        <div class="login-brand-header">
-          <div class="pp-badge-circle">
-            <img [src]="appLogo" alt="ProofLens Logo" class="login-logo-img">
+  <div class="login-card">
+    <!-- Top PayPal Brand Ribbon -->
+    <div class="login-brand-header">
+      <div class="pp-badge-circle">
+        <img [src]="appLogo" alt="ProofFlow Logo" class="login-logo-img">
+      </div>
+      <h2>ProofFlow Escrow Login</h2>
+      <p class="brand-sub">PayPal-Backed Cryptographic Milestone & Contract Identity</p>
+    </div>
+
+    @if (isAuthenticating) {
+      <!-- Real-time OAuth Token Exchange State -->
+      <div class="auth-loading-state">
+        <div class="spinner"></div>
+        <h4>Connecting to PayPal...</h4>
+        <p>Exchanging authoritative OAuth grant code and verifying user profile token.</p>
+      </div>
+    } @else if (currentUser) {
+      <!-- Already Authenticated State -->
+      <div class="active-session-box">
+        <div class="session-head">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+          <span>Authenticated PayPal Session Active</span>
+        </div>
+        <div class="user-row">
+          <div class="user-avatar-lg">
+            {{ currentUser.full_name.charAt(0) || 'P' }}
           </div>
-          <h2>ProofLens Escrow Login</h2>
-          <p class="brand-sub">PayPal-Backed Cryptographic Milestone & Contract Identity</p>
+          <div class="user-details">
+            <strong>{{ currentUser.full_name }}</strong>
+            <span class="user-email">{{ currentUser.email }}</span>
+            <span class="role-chip">ACTIVE ROLE: {{ currentUser.role_type | uppercase }}</span>
+          </div>
         </div>
 
-        @if (isAuthenticating) {
-          <!-- Real-time OAuth Token Exchange State -->
-          <div class="auth-loading-state">
-            <div class="spinner"></div>
-            <h4>Completing secure account request...</h4>
-            <p>Verifying your account details.</p>
-          </div>
-        } @else if (currentUser) {
-          <!-- Already Authenticated State -->
-          <div class="active-session-box">
-            @if (verificationMessage) {
-              <div class="login-success-banner">{{ verificationMessage }}</div>
-            }
-            <div class="session-head">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-              </svg>
-              <span>Authenticated PayPal Session Active</span>
-            </div>
-            <div class="user-row">
-              <div class="user-avatar-lg">
-                {{ currentUser.full_name.charAt(0) || 'P' }}
-              </div>
-              <div class="user-details">
-                <strong>{{ currentUser.full_name }}</strong>
-                <span class="user-email">{{ currentUser.email }}</span>
-                <span class="role-chip">ACTIVE ROLE: {{ currentUser.role_type | uppercase }}</span>
-              </div>
-            </div>
-
-            <div class="session-actions">
-              <button (click)="proceedToConsole()" class="btn-proceed-portal">
-                <span>Enter Dashboard</span>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                  <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
-                </svg>
-              </button>
-              <button (click)="logout()" class="btn-logout-link">
-                Sign out / Log in with different account
-              </button>
-            </div>
-          </div>
-        } @else {
-          <!-- Primary Login Body -->
-          <div class="login-body">
-            @if (verificationMessage) {
-              <div class="login-success-banner">
-                <strong>{{ verificationMessage }}</strong>
-                @if (verificationLink) {
-                  <a [href]="verificationLink">Complete local development verification</a>
-                }
-              </div>
-            }
-
-            @if (errorMessage) {
-              <div class="login-error-banner">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5">
-                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-                </svg>
-                <div class="error-text">
-                  <strong>Authentication Notice:</strong>
-                  <span>{{ errorMessage }}</span>
-                </div>
-              </div>
-            }
-
-            @if (isEmailVerificationPending) {
-              <button
-                type="button"
-                class="btn-resend-verification"
-                (click)="resendVerificationEmail()"
-                [disabled]="isAuthenticating || !loginEmail"
-              >
-                Resend verification email
-              </button>
-            }
-
-            <!-- Primary Live PayPal Sandbox OAuth Connect -->
-            <div class="oauth-section">
-              <button
-                type="button"
-                (click)="loginWithRealPayPal()"
-                class="btn-paypal-primary"
-                [disabled]="isRedirecting"
-                [class.is-loading]="isRedirecting"
-              >
-                @if (isRedirecting) {
-                  <span class="btn-spinner"></span>
-                  <span>Connecting to PayPal Sandbox...</span>
-                } @else {
-                  <div class="pp-icon-embed">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                      <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
-                      <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
-                    </svg>
-                  </div>
-                  <span>Log in with Live PayPal Sandbox</span>
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                    <polyline points="9 18 15 12 9 6"/>
-                  </svg>
-                }
-              </button>
-            </div>
-
-            <!-- Standard Credentials Login or Registration Form -->
-            <div class="credentials-section">
-              <div class="credentials-divider">
-                <span>{{ isRegistering ? 'CREATE AN ACCOUNT WITH EMAIL' : 'OR SIGN IN WITH ACCOUNT EMAIL' }}</span>
-              </div>
-
-              <form (ngSubmit)="isRegistering ? registerWithCredentials() : loginWithCredentials()" class="credentials-form">
-                @if (isRegistering) {
-                  <div class="form-group">
-                    <label class="input-label" for="registrationFullName">Full Name</label>
-                    <input
-                      id="registrationFullName"
-                      type="text"
-                      [(ngModel)]="registrationFullName"
-                      name="registrationFullName"
-                      placeholder="Enter your full name"
-                      class="auth-input-field"
-                      required
-                    />
-                  </div>
-                }
-                <div class="form-group">
-                  <label class="input-label" for="loginEmail">Email Address</label>
-                  <input
-                    id="loginEmail"
-                    type="email"
-                    [(ngModel)]="loginEmail"
-                    name="loginEmail"
-                    placeholder="Enter your email address"
-                    class="auth-input-field"
-                    required
-                  />
-                </div>
-
-                <div class="form-group">
-                  <label class="input-label" for="loginPassword">Password</label>
-                  <input
-                    id="loginPassword"
-                    type="password"
-                    [(ngModel)]="loginPassword"
-                    name="loginPassword"
-                    placeholder="Enter your password"
-                    class="auth-input-field"
-                    required
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  class="btn-credentials-submit"
-                  [disabled]="isAuthenticating || !loginEmail || !loginPassword"
-                  [class.is-loading]="isAuthenticating"
-                >
-                  @if (isAuthenticating) {
-                    <span class="btn-spinner"></span>
-                    <span>{{ isRegistering ? 'Creating account...' : 'Signing in...' }}</span>
-                  } @else {
-                    <span>{{ isRegistering ? 'Create Account' : 'Sign In to Dashboard' }}</span>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                      <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
-                    </svg>
-                  }
-                </button>
-              </form>
-              <button
-                type="button"
-                class="btn-logout-link"
-                (click)="isRegistering = !isRegistering; errorMessage = null"
-              >
-                {{ isRegistering ? 'Already have an account? Sign in' : 'Need an account? Register' }}
-              </button>
+        <div class="session-actions">
+          <button (click)="proceedToConsole()" class="btn-proceed-portal">
+            <span>Enter Dashboard</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+            </svg>
+          </button>
+          <button (click)="logout()" class="btn-logout-link">
+            Sign out / Log in with different account
+          </button>
+        </div>
+      </div>
+    } @else {
+      <!-- Primary Login Body -->
+      <div class="login-body">
+        @if (errorMessage) {
+          <div class="login-error-banner">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <div class="error-text">
+              <strong>Authentication Notice:</strong>
+              <span>{{ errorMessage }}</span>
             </div>
           </div>
         }
+
+        <!-- Role Selection -->
+        <div class="role-selection-box">
+          <span class="role-label">I am connecting as:</span>
+          <div class="role-options-row">
+            <button
+              type="button"
+              class="role-option-card"
+              [class.is-selected]="selectedRole === 'buyer'"
+              (click)="selectedRole = 'buyer'"
+            >
+              <div class="role-title">Buyer / Client</div>
+              <div class="role-desc">Fund escrow & approve milestones</div>
+            </button>
+            <button
+              type="button"
+              class="role-option-card"
+              [class.is-selected]="selectedRole === 'seller'"
+              (click)="selectedRole = 'seller'"
+            >
+              <div class="role-title">Contractor / Seller</div>
+              <div class="role-desc">Submit evidence & receive payouts</div>
+            </button>
+          </div>
+        </div>
+
+        <!-- Primary Live PayPal Sandbox OAuth Connect -->
+        <div class="oauth-section">
+          <button
+            type="button"
+            (click)="loginWithRealPayPal()"
+            class="btn-paypal-primary"
+            [disabled]="isRedirecting"
+            [class.is-loading]="isRedirecting"
+          >
+            @if (isRedirecting) {
+              <span class="btn-spinner"></span>
+              <span>Redirecting to PayPal...</span>
+            } @else {
+              <div class="pp-icon-embed">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                  <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.784.784 0 0 1 .773-.654h6.398c2.936 0 5.093.633 6.411 1.882 1.258 1.192 1.666 2.87 1.213 4.989-.66 3.08-2.613 5.228-5.805 6.385-1.026.372-2.22.56-3.548.56H7.954a.784.784 0 0 0-.773.654l-.105.546z" fill="#0079C1"/>
+                  <path d="M9.13 16.882l.983-6.23a.784.784 0 0 1 .773-.654h3.63c2.722 0 4.707.575 5.905 1.708 1.144 1.082 1.492 2.607 1.034 4.53-.615 2.578-2.316 4.398-5.056 5.41a10.03 10.03 0 0 1-3.606.636H10.12a.784.784 0 0 1-.773-.654l-.217-1.126z" fill="#00457C"/>
+                </svg>
+              </div>
+              <span>Sign in / Sign up with PayPal</span>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+            }
+          </button>
+
+          <div class="dashboard-tip-card">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2.2">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+            <div class="tip-text">
+              <strong>PayPal Identity & Security:</strong>
+              <span>
+                Account registration, authentication, email verification, and two-factor authorization are managed directly by PayPal.
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
+    }
+  </div>
+</div>
