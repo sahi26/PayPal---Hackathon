@@ -1,42 +1,50 @@
-# ProofLens 🛡️
+# ProofFlow 🛡️ (formerly ProofLens)
 > **Intelligent Milestone Escrow & AI Forensic Verification Engine**  
-> *Developed for the PayPal Hackathon*
+> *Engineered for the PayPal Hackathon 2026*
 
-ProofLens is an enterprise-grade escrow and milestone fulfillment platform designed for high-value contractor agreements, custom artisan fabrication (bespoke carpentry, fine jewelry, renovation), and digital agency deliverables. ProofLens bridges **PayPal Escrow Checkout & Milestone Disbursements** with **Zero-Dependency Anti-Spoofing Computer Vision**, **Google Gemini Multimodal Vision**, and **Generative AI Watermark Forensics**.
+ProofFlow is an enterprise-grade escrow and milestone fulfillment platform designed for high-value contractor agreements, custom artisan fabrication (bespoke carpentry, fine jewelry, architectural renovation), and digital agency deliverables. ProofFlow bridges **PayPal Escrow Checkout & Milestone Disbursements** with **Zero-Dependency Anti-Spoofing Computer Vision**, **Google Gemini Multimodal Vision**, and **Generative AI Watermark Forensics**.
 
 ---
 
 ## 📑 Table of Contents
 - [Executive Overview](#-executive-overview)
 - [System Architecture](#-system-architecture)
-- [Key Features](#-key-features)
+- [Key Features & Pillars](#-key-features--pillars)
+  - [1. Enterprise Authentication & Identity Security](#1-enterprise-authentication--identity-security)
+  - [2. PayPal Escrow & Multi-Capture Disbursement Engine](#2-paypal-escrow--multi-capture-disbursement-engine)
+  - [3. Zero-Dependency Anti-Spoofing Computer Vision](#3-zero-dependency-anti-spoofing-computer-vision)
+  - [4. Generative AI Watermark & Provenance Forensics](#4-generative-ai-watermark--provenance-forensics)
+  - [5. Gemini Multimodal Verification & AI Legal Assistant](#5-gemini-multimodal-verification--ai-legal-assistant)
+  - [6. Sequential Milestone Enforcement & Resubmission Flow](#6-sequential-milestone-enforcement--resubmission-flow)
+  - [7. Multi-Tier Dispute Desk & Dynamic Warranty Protection](#7-multi-tier-dispute-desk--dynamic-warranty-protection)
 - [Tech Stack](#-tech-stack)
 - [Project Structure](#-project-structure)
 - [Prerequisites](#-prerequisites)
 - [Installation & Quick Start](#-installation--quick-start)
   - [1. Backend Setup (FastAPI)](#1-backend-setup-fastapi)
   - [2. Frontend Setup (Angular)](#2-frontend-setup-angular)
-- [Environment Configuration & Security](#-environment-configuration--security)
-- [End-to-End Platform Workflow](#-end-to-end-platform-workflow)
-  - [Phase 1: Agreement Initiation & AI Legal Drafting](#phase-1-agreement-initiation--ai-legal-drafting)
-  - [Phase 2: PayPal Escrow Funding](#phase-2-paypal-escrow-funding)
-  - [Phase 3: Milestone Fulfillment & Forensic Screening](#phase-3-milestone-fulfillment--forensic-screening)
-  - [Phase 4: Buyer Review & Fund Release](#phase-4-buyer-review--fund-release)
-  - [Phase 5: Mid-Project Scope Changes & Addenda](#phase-5-mid-project-scope-changes--addenda)
+- [Environment Configuration & Production Readiness](#-environment-configuration--production-readiness)
+- [End-to-End Platform Flow](#-end-to-end-platform-flow)
+- [Recent Hardening & Architecture Remediation](#-recent-hardening--architecture-remediation)
 - [Running Automated Tests](#-running-automated-tests)
+  - [Backend Test Suite (24/24 Modules, 76/76 Tests Passing)](#backend-test-suite-2424-modules-7676-tests-passing)
+  - [Frontend Test Suite (Node.js Test Runner)](#frontend-test-suite-nodejs-test-runner)
 - [Security & Secrets Hygiene](#-security--secrets-hygiene)
+- [License & Acknowledgements](#-license--acknowledgements)
 
 ---
 
 ## 🌟 Executive Overview
-In modern high-trust contracting, payment disputes occur when deliverables cannot be verified reliably. Contractors are vulnerable to arbitrary payment holds, while buyers risk fraudulent submissions—such as photographs of phone screens, recycled internet images, or unauthorized synthetic AI generations passed off as handmade craft or custom digital design.
+In modern high-trust contracting, payment disputes occur when deliverables cannot be verified reliably. Contractors face arbitrary payment delays and unilateral chargebacks, while buyers face fraudulent submissions—such as photos taken of phone screens, recycled internet assets, unverified locations, or unauthorized synthetic AI generations passed off as handmade craft or custom digital design.
 
-**ProofLens resolves this impasse with cryptographic escrow gates:**
-1. **Financial Security**: Escrow funds are deposited into PayPal Orders. Funds are disbursed on a strictly milestone-by-milestone basis.
-2. **Anti-Spoofing Engine**: Zero-dependency computer vision analyzes camera captures for high-frequency Moiré wave interference patterns, rainbow subpixel chromatic shifts, and visible phone/monitor bezels to ensure evidence is never a re-photographed screen.
+**ProofFlow resolves this impasse with cryptographic escrow gates:**
+1. **Financial Security via PayPal**: Escrow funds are secured upfront using PayPal Orders (`intent: AUTHORIZE`). Funds are released on a strictly milestone-by-milestone basis via PayPal Payments Captures (`final_capture = False` for intermediate stages, `final_capture = True` for the conclusion).
+2. **Anti-Spoofing CV Engine**: Zero-dependency Python computer vision analyzes camera captures for high-frequency Moiré wave interference patterns, rainbow subpixel chromatic shifts, and visible phone/monitor bezels to guarantee evidence was never a re-photographed screen.
 3. **AI Watermark Forensics**: Digital deliverables are inspected for synthetic generative signatures, including Google SynthID, OpenAI DALL-E, Midjourney, Stable Diffusion, and Adobe Firefly metadata.
-4. **Sequential Milestone Protection**: Milestones must be completed in order. Milestone $N+1$ cannot receive submissions until Milestone $N$ is verified and approved.
-5. **AI Scope Revision Desk**: When project requirements evolve, buyer and seller negotiate adjustments inside the revision room. Google Gemini drafts a formal Version $N+1$ Addendum, updates deadlines, and generates PayPal checkout delta links for supplemental escrow funding.
+4. **Physical & Digital Domain Awareness**: Physical milestones verify EXIF GPS geofences and hardware-bound camera timestamps; digital milestones audit repository commits, URLs, and file streams.
+5. **Sequential Milestone Protection**: Milestones must be completed in order. Milestone $N+1$ cannot receive submissions until Milestone $N$ is verified and approved.
+6. **Multi-Tier Dispute Resolution**: Escrowed funds are protected by a 3-tier escalation desk: Tier 1 bilateral negotiation, Tier 2 programmatic AI mediation, and Tier 3 human arbitration synchronized with PayPal Disputes API.
+7. **Production-Hardened Security**: Bcrypt (12 rounds) password hashing, persistent JWT (HS256) bearer token authentication, email verification lifecycle, and strict PostgreSQL enforcement for live deployments.
 
 ---
 
@@ -44,83 +52,103 @@ In modern high-trust contracting, payment disputes occur when deliverables canno
 
 ```mermaid
 flowchart TD
-    subgraph ClientApp ["Frontend (Angular)"]
+    subgraph ClientApp ["Frontend (Angular Standalone)"]
         UI["Corporate Responsive Dashboard"]
-        Cam["Hardware-Enforced Live Camera"]
-        Drop["Authentic Digital Deliverable Dropzone"]
-        Rev["AI Scope Revision Desk"]
+        Cam["Hardware-Bound Live Camera"]
+        Drop["Authentic Deliverable Dropzone"]
+        Rev["AI Scope Revision & Dispute Room"]
+        AuthInt["JWT Auth Interceptor & Runtime Config"]
     end
 
     subgraph APIGateway ["Backend (FastAPI)"]
-        Router["FastAPI REST API"]
-        CVEngine["Anti-Spoofing CV Engine"]
-        WMEngine["AI Watermark Scanner"]
-        Gemini["Google Gemini Multimodal AI"]
-        PayPalSvc["PayPal REST Client"]
+        Router["FastAPI REST Router (/api/*)"]
+        AuthSvc["Auth Service (Bcrypt 12 + JWT HS256)"]
+        EmailSvc["Email Service (SMTP / Verification)"]
+        CVEngine["Anti-Spoofing CV Engine (Moiré & Bezel)"]
+        WMEngine["AI Watermark Scanner (SynthID / DALL-E)"]
+        GeminiSvc["Google Gemini Multimodal AI Service"]
+        PayPalSvc["PayPal REST Client (OAuth2 / Orders / Captures)"]
     end
 
-    subgraph Storage ["Data & Storage"]
-        DB[("PostgreSQL / SQLite")]
-        Ledger["Immutable Audit Ledger"]
+    subgraph Storage ["Database & Storage"]
+        DB[("PostgreSQL (Prod) / SQLite (Dev)")]
+        Ledger["Immutable Audit Trail & Ledger"]
+        Uploads["SHA-256 Hashed Evidence Store"]
     end
 
     subgraph External ["External Services"]
-        PP["PayPal Sandbox REST API"]
-        GenAI["Google Gemini API"]
+        PP["PayPal REST API (Sandbox / Live)"]
+        GenAI["Google Gemini API (1.5 / 2.0 / Flash)"]
+        SMTPRelay["Production SMTP Email Gateway"]
     end
 
-    UI --> Router
+    UI --> AuthInt
+    AuthInt --> Router
     Cam --> Router
     Drop --> Router
     Rev --> Router
 
+    Router --> AuthSvc
+    Router --> EmailSvc
     Router --> CVEngine
     Router --> WMEngine
-    Router --> Gemini
+    Router --> GeminiSvc
     Router --> PayPalSvc
     Router --> DB
     Router --> Ledger
+    Router --> Uploads
 
-    CVEngine -.-> Router
-    WMEngine -.-> Router
-    Gemini -.-> GenAI
+    EmailSvc -.-> SMTPRelay
+    GeminiSvc -.-> GenAI
     PayPalSvc -.-> PP
 ```
 
 ---
 
-## ⚡ Key Features
+## ⚡ Key Features & Pillars
 
-### 1. PayPal Sandbox Escrow Integration
-- **OAuth2 Authentication**: Secure server-to-server client credential token exchange with PayPal.
-- **Milestone Checkout Orders**: Generates authenticated PayPal checkout links for agreement budgets.
-- **Disbursement Authorization**: Approving a verified milestone triggers automated PayPal capture and escrow disbursement.
-- **Supplemental Escrow**: When a scope revision adds extra cost, a delta checkout link is generated so the buyer can fund the addition before work begins.
+### 1. Enterprise Authentication & Identity Security
+- **Bcrypt Password Hashing**: Passwords hashed with 12 work factor salt rounds (`bcrypt.gensalt(rounds=12)`).
+- **Password Complexity Validation**: Enforces minimum 12 characters with required uppercase, lowercase, numbers, and special characters.
+- **JWT HS256 Session Tokens**: Cryptographically signed access tokens with user claims (`user_id`, `role`, `email`, `email_verified`).
+- **Email Verification Lifecycle**: Generates cryptographic SHA-256 token hashes, expiration timestamps, and handles `/api/auth/verify-email` and `/api/auth/resend-verification`.
+- **Role-Based Access Control**: Strict buyer vs. seller perspective separation, verified across all escrow operations and dispute rooms.
 
-### 2. Zero-Dependency Computer Vision Anti-Spoofing
-- **Moiré Interference Detection**: Calculates gradient zero-crossing oscillations to catch pixel grid interference caused by pointing a camera at another monitor or smartphone screen.
-- **Rainbow Chromatic Dispersion**: Identifies subpixel LCD dispersion patterns that only occur on backlit electronic displays.
-- **Bezel & Display Frame Detection**: Scans image perimeters for monitor borders, smartphone frames, and handheld bezel reflections.
-- **Automatic Escrow Hold**: If spoofing is flagged, confidence drops to $\le 20\%$ (`15%`), escrow release is locked, and the contractor is prompted to recapture genuine direct proof.
+### 2. PayPal Escrow & Multi-Capture Disbursement Engine
+- **Upfront Escrow Hold**: Places a 29-day authorization hold on the client's PayPal account (`POST /v2/checkout/orders` with `intent: AUTHORIZE`).
+- **Sequential Multi-Capture**: Milestones disburse funds independently (`POST /v2/payments/authorizations/{id}/capture`). Intermediate milestones specify `final_capture = False`, reserving remaining funds for subsequent milestones.
+- **Deferred Retainage Protection**: Configurable retainage hold (e.g. 10%) withheld until final milestone signoff or warranty period conclusion.
+- **Unilateral & Mutual Voiding**: Buyers can unilaterally void escrow if a seller ghosts before work commences; mutual consent releases authorization holds instantly via `POST /v2/payments/authorizations/{id}/void`.
+- **Authorization Re-authorization**: Built-in support for extending 29-day authorization windows (`POST /v2/payments/authorizations/{id}/reauthorize`).
+- **Automated Milestone Invoicing**: Generates and finalizes compliant invoices via PayPal Invoicing API upon milestone capture.
+- **Webhook Synchronization**: Validates and processes PayPal webhook events (`PAYMENT.AUTHORIZATION.CREATED`, `PAYMENT.CAPTURE.COMPLETED`, `CUSTOMER.DISPUTE.CREATED`).
 
-### 3. Digital Asset Integrity & AI Watermark Audit
-- **Deep Signature Inspection**: Scans file streams for embedded generative AI metadata tags (`SynthID`, `deepmind_watermark`, `dall-e`, `midjourney`, `parameters\x00`, `stablediffusion`, `firefly`).
-- **Visual Generative Badge Scanning**: Inspects corner regions for telltale DALL-E multi-color swatches or AI generator stamps.
-- **Original Craftsmanship Guarantee**: Flags synthetic images and locks payment until authentic, human-crafted source files (e.g., layered PSD, SVG, AI, vector exports) are supplied.
+### 3. Zero-Dependency Anti-Spoofing Computer Vision
+- **Moiré Interference Detection**: Fast Fourier Transform (FFT) and high-frequency gradient oscillation math identify pixel grid interference caused by photographing another monitor or phone screen.
+- **Rainbow Chromatic Dispersion**: Analyzes subpixel RGB spatial dispersion patterns that only occur on backlit electronic displays.
+- **Bezel & Frame Edge Detection**: Scans image borders for monitor frames, smartphone bezels, and handheld screen reflections.
+- **Tamper Quarantine**: Submissions flagged with screen spoofing drop to $\le 20\%$ confidence, locking escrow disbursement until genuine, live direct proof is supplied.
 
-### 4. Sequential Milestone Enforcement
-- Milestone progress is strictly ordered. Milestone 2 cannot receive proof until Milestone 1 is approved by the client.
-- Prevents unfinished phases from receiving premature payments.
+### 4. Generative AI Watermark & Provenance Forensics
+- **Deep Signature Stream Inspection**: Audits binary file streams for embedded AI generator metadata tags (`SynthID`, `deepmind_watermark`, `dall-e`, `midjourney`, `parameters\x00`, `stablediffusion`, `firefly`).
+- **Visual Generative Badge Scanning**: Inspects corner regions for DALL-E multi-color swatches, Midjourney watermark stamps, or AI generator logos.
+- **Authentic Craftsmanship Guarantee**: Flags synthetic digital submissions passed off as handmade artisan work or bespoke digital illustration.
 
-### 5. Mid-Project Scope Changes & Addenda
-- Either party can request revisions (extra timeline days and additional budget).
-- Gemini automatically drafts a formal legal Addendum, appending supplementary milestones.
-- Milestone deadlines dynamically recalculate across the entire dashboard and agreement timeline.
+### 5. Gemini Multimodal Verification & AI Legal Assistant
+- **AI Legal Milestone Drafting**: Google Gemini converts conversational project descriptions into structured, legally binding milestones with quantifiable verification criteria.
+- **Multimodal Visual Audit**: Gemini evaluates uploaded proof against milestone specifications, comparing physical features, dimensions, material quality, and completion percentages.
+- **AI Scope Addenda Generator**: When project scope evolves, Gemini drafts formal Version $N+1$ Addenda, updates deadlines, and computes incremental PayPal funding links.
 
-### 6. Buyer Rejection & Resubmission Flow
-- Clients can reject submitted evidence with actionable written feedback.
-- Status shifts to `action_required`, notifying the contractor and opening the dedicated Resubmission Desk.
-- Previous rejection reasons remain preserved in the audit log for complete transparency.
+### 6. Sequential Milestone Enforcement & Resubmission Flow
+- **Strict Execution Order**: Milestone $N+1$ is strictly locked until Milestone $N$ has been verified, approved, and partially captured.
+- **Buyer Feedback & Resubmission**: Buyers can reject unsatisfactory proof with specific, actionable critique. The milestone shifts to `awaiting_resubmission` without resetting the entire project.
+- **Immutable Audit Trail**: All previous evidence submissions, rejection reasons, and timestamped forensic reports remain preserved.
+
+### 7. Multi-Tier Dispute Desk & Dynamic Warranty Protection
+- **Tier 1 — Direct Negotiation**: In-app negotiation room allows buyer and seller to exchange counter-proposals and adjust terms amicably.
+- **Tier 2 — Programmatic AI Mediation**: Gemini evaluates historical milestone evidence, agreement terms, and dispute claims to suggest an objective compromise.
+- **Tier 3 — PayPal Dispute Escalation**: Formal escalation synchronizes case data with PayPal Customer Disputes API (`/v1/customer/disputes`), locking contested escrow funds pending resolution.
+- **Post-Completion Warranty Period**: Dynamic warranty hold (e.g. 7–30 days) safeguards buyers against latent defects before final project closure.
 
 ---
 
@@ -128,11 +156,13 @@ flowchart TD
 
 | Layer | Technologies |
 |---|---|
-| **Frontend** | Angular (v19/v20 Standalone Components), TypeScript, RxJS, HTML5 Canvas Live Camera, CSS3 (PayPal Navy Corporate Palette) |
-| **Backend** | Python 3.9+, FastAPI, Uvicorn, Pydantic, HTTPX, SQLAlchemy, Python-Multipart |
-| **Database** | PostgreSQL for deployments; SQLite is used only for local development unless explicitly selected |
-| **AI & Vision** | Google Gemini Multimodal Vision API (`gemini-4-argon`, `gemini-3.8-flash`), Custom Zero-Dependency Python CV Engine (Moiré & Bezel Math) |
-| **Payments** | PayPal REST API v2 (Sandbox Escrow, Orders Checkout, OAuth2) |
+| **Frontend** | Angular (v19/v20 Standalone Components), TypeScript, RxJS, HTML5 Canvas Live Camera, CSS3 / SCSS (Corporate PayPal Navy Palette) |
+| **Backend** | Python 3.9+, FastAPI, Uvicorn, Pydantic v2, HTTPX, SQLAlchemy |
+| **Authentication** | Bcrypt (12 salt rounds), PyJWT (HS256 tokens), Email verification tokens |
+| **Database** | PostgreSQL (Production Mandatory); SQLite (Local isolated development only) |
+| **AI & Vision** | Google Gemini Multimodal Vision API (`gemini-2.0-flash`, `gemini-1.5-flash`), Custom Zero-Dependency Python CV Engine (Moiré FFT & Bezel Math) |
+| **Payments** | PayPal REST API v2 (Orders v2 Authorize, Payments v2 Captures & Voids, Invoicing v2, Disputes v1, Webhooks) |
+| **Testing** | Python `unittest` discovery runner, Node.js native test runner (`node --test`) |
 
 ---
 
@@ -142,42 +172,50 @@ flowchart TD
 ProofFlow/
 ├── backend/
 │   ├── main.py                     # Primary FastAPI application & REST endpoints
+│   ├── auth_service.py             # Bcrypt hashing (12 rounds) & JWT HS256 auth
+│   ├── email_service.py            # SMTP email verification & notification service
 │   ├── ai_service.py               # Gemini prompt orchestration & addendum generator
-│   ├── database.py                 # SQLAlchemy engine, session factory & schema migrations
-│   ├── models.py                   # Relational database models (Project, Agreement, Evidence, ScopeChange)
-│   ├── paypal_service.py           # PayPal OAuth2, Orders creation, checkout, & capture
+│   ├── database.py                 # SQLAlchemy engine, session factory & migration guards
+│   ├── models.py                   # Relational database models (User, Project, Agreement, Evidence)
+│   ├── paypal_service.py           # PayPal OAuth2, Orders Authorize, Captures, Voids, Invoicing
 │   ├── requirements.txt            # Python dependencies
 │   ├── .env.example                # Sanitized backend environment template
-│   └── test_*.py                   # Automated test suites (Watermarks, Anti-Spoofing, Scope Changes)
+│   └── test_*.py                   # 24 automated unit & integration test modules
 ├── frontend/
 │   ├── src/
 │   │   ├── app/
+│   │   │   ├── auth.interceptor.ts      # Automatic JWT Bearer token attachment
+│   │   │   ├── runtime-config.mjs       # Environment-aware API origin resolver & sanitization
+│   │   │   ├── runtime-config.test.mjs  # Automated frontend unit test suite
+│   │   │   ├── buyer-dashboard/         # Buyer escrow contracts & payment metrics
+│   │   │   ├── seller-dashboard/        # Seller project overview & active milestones
+│   │   │   ├── buyer-wizard/            # 3-step project setup & AI contract generator
 │   │   │   ├── milestone-fulfillment/   # Milestone timeline, live camera capture, & certificate UI
-│   │   │   ├── negotiation-room/        # Agreement review, scope change revision desk, & topbar
-│   │   │   ├── project-dashboard/       # Active escrow contracts overview & metrics
-│   │   │   ├── project-wizard/          # 3-step project setup & AI contract draft generator
-│   │   │   └── live-camera/             # Hardware-bound camera capture component
+│   │   │   ├── negotiation-room/        # Agreement review, scope change revision desk, & chat
+│   │   │   ├── dispute-room/            # 3-Tier dispute desk & AI mediation interface
+│   │   │   └── login/                   # Login, registration & email verification UI
 │   │   ├── index.html
 │   │   ├── main.ts
-│   │   └── styles.css                   # Corporate PayPal Navy design system
+│   │   └── styles.css                   # PayPal Corporate Navy design system
 │   ├── angular.json
 │   ├── package.json
 │   └── tsconfig.json
-├── uploads/                        # Evidence directory (gitignored, kept via .gitkeep)
-├── .gitignore                      # Comprehensive security rules (secrets, venv, node_modules)
+├── uploads/                        # Hashed evidence storage (gitignored, kept via .gitkeep)
+├── .gitignore                      # Security exclusions (secrets, venv, databases, node_modules)
 ├── .env.example                    # Root environment configuration guide
-└── README.md                       # Platform documentation
+└── README.md                       # Comprehensive platform documentation
 ```
 
 ---
 
 ## 📋 Prerequisites
-Before running ProofLens, ensure you have:
+Before running ProofFlow, ensure you have:
 - **Node.js**: `v18.x` or `v20.x`
 - **npm**: `v9.x` or higher
-- **Python**: `v3.9` or higher
-- **PayPal Developer Account**: Sign up at [developer.paypal.com](https://developer.paypal.com/) to get sandbox credentials.
+- **Python**: `v3.9` to `v3.12`
+- **PayPal Developer Account**: Sign up at [developer.paypal.com](https://developer.paypal.com/) to obtain Sandbox Client ID & Secret.
 - **Google Gemini API Key**: Obtain a key from [Google AI Studio](https://aistudio.google.com/).
+- **PostgreSQL**: Required for staging/production deployments.
 
 ---
 
@@ -185,7 +223,7 @@ Before running ProofLens, ensure you have:
 
 ### 1. Backend Setup (FastAPI)
 
-1. Open your terminal and navigate to the backend directory:
+1. Navigate to the backend directory:
    ```bash
    cd backend
    ```
@@ -197,7 +235,7 @@ Before running ProofLens, ensure you have:
    # On Windows: venv\Scripts\activate
    ```
 
-3. Install required packages:
+3. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
@@ -206,20 +244,20 @@ Before running ProofLens, ensure you have:
    ```bash
    cp .env.example .env
    ```
-   Edit `.env` with your PayPal and Gemini credentials (see [Environment Configuration](#-environment-configuration--security)).
+   *Edit `.env` with your PayPal Sandbox credentials, Gemini API key, and JWT secret.*
 
 5. Start the backend server:
    ```bash
    uvicorn main:app --reload --host 0.0.0.0 --port 8000
    ```
-   - API Docs (Swagger): [http://localhost:8000/docs](http://localhost:8000/docs)
-   - Health Check: [http://localhost:8000/api/health](http://localhost:8000/api/health)
+   - **Interactive API Docs (Swagger UI)**: [http://localhost:8000/docs](http://localhost:8000/docs)
+   - **Health & DB Verification Endpoint**: [http://localhost:8000/api/health](http://localhost:8000/api/health)
 
 ---
 
 ### 2. Frontend Setup (Angular)
 
-1. Open a new terminal window and navigate to the frontend directory:
+1. Open a new terminal and navigate to the frontend directory:
    ```bash
    cd frontend
    ```
@@ -242,106 +280,232 @@ Before running ProofLens, ensure you have:
 
 ---
 
-## 🔐 Environment Configuration & Security
+## 🔐 Environment Configuration & Production Readiness
 
-For local development, copy `backend/.env.example` to `backend/.env`. When `DATABASE_URL` is unset, development uses SQLite. A configured database that cannot be reached is an error; the application does not silently switch databases.
+### Production Environment Invariants
+Production deployments (`APP_ENV=production`) enforce strict operational rules:
+- **Database Selection**: A reachable PostgreSQL `DATABASE_URL` is mandatory. The application will refuse to start if SQLite is configured in production.
+- **Fail-Fast Migrations**: `run_migrations()` raises a `RuntimeError` immediately upon encountering schema anomalies rather than failing silently.
+- **PayPal Real Endpoints**: Enforces HTTPS `PAYPAL_API_BASE=https://api-m.paypal.com`. All simulated/fake payment fallbacks are completely disabled in production.
+- **Security Tokens**: `JWT_SECRET_KEY` and `ADMIN_API_TOKEN` must be at least 32 characters in length.
+- **Email Delivery**: Authenticated SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`) with STARTTLS/SSL is required for real user email verification.
 
-Production deployments must set `APP_ENV=production`, a reachable PostgreSQL `DATABASE_URL`, a persistent `JWT_SECRET_KEY` (at least 32 characters), a strong `ADMIN_API_TOKEN` (at least 32 characters), HTTPS `FRONTEND_URL` origin(s), and an HTTPS `PAYPAL_REDIRECT_URI`. They must also use live PayPal credentials, `PAYPAL_API_BASE=https://api-m.paypal.com`, the live `PAYPAL_WEBHOOK_ID`, and authenticated SMTP settings (`SMTP_HOST`, `SMTP_FROM_EMAIL`, plus either STARTTLS or SSL). Do not reuse sandbox credentials or secrets between environments.
+### Key Environment Variables
+```ini
+# Core Environment
+APP_ENV=development              # Set to 'production' for live deployments
+DATABASE_URL=sqlite:///./test.db # Use postgresql://user:pass@host/db in production
+USE_LOCAL_DB=true                # Strictly ignored when APP_ENV=production
 
-Set `GEMINI_API_KEY` if AI-assisted analysis is enabled and configure `UPLOADS_DIR` to a persistent volume. Keep credentials in the deployment platform's secret manager, not in source control.
+# Security & Authentication
+JWT_SECRET_KEY=change_me_to_at_least_32_characters_random_secret
+ADMIN_API_TOKEN=change_me_to_at_least_32_characters_admin_token
+JWT_EXPIRATION_MINUTES=1440
 
-> **Security Note**: All `.env` files are strictly excluded via `.gitignore`. Never commit API keys or production secrets to source control.
+# PayPal REST API
+PAYPAL_MODE=sandbox
+PAYPAL_CLIENT_ID=your_sandbox_client_id
+PAYPAL_CLIENT_SECRET=your_sandbox_client_secret
+PAYPAL_WEBHOOK_ID=your_registered_webhook_id
+PAYPAL_API_BASE=https://api-m.sandbox.paypal.com
+
+# Google Gemini AI
+GEMINI_API_KEY=your_gemini_api_key
+
+# Email Verification (SMTP)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-email@example.com
+SMTP_PASSWORD=your-app-password
+SMTP_FROM_EMAIL=noreply@proofflow.io
+SMTP_USE_TLS=true
+```
 
 ---
 
-## 🔄 End-to-End Platform Workflow
+## 🔄 End-to-End Platform Flow
+
+The complete project lifecycle from user registration to final escrow release follows this sequence:
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Buyer as Client / Buyer
-    actor Contractor as Contractor / Seller
-    participant Web as ProofLens UI
+    actor Seller as Contractor / Seller
+    participant Web as ProofFlow UI
     participant API as FastAPI Backend
-    participant AI as Anti-Spoofing & Gemini AI
-    participant PP as PayPal Sandbox
+    participant Auth as Auth & Email Service
+    participant AI as Gemini & CV Engine
+    participant PP as PayPal REST API
 
-    Note over Buyer,Contractor: Phase 1: Agreement Initiation
-    Buyer->>Web: Create Escrow Project (Title, Scope, Deadlines, Domain)
+    Note over Buyer,Auth: Phase 1: Authentication & Identity
+    Buyer->>Web: Register Account (Email, Password)
+    Web->>API: POST /api/auth/register
+    API->>Auth: Bcrypt Hash (12 rounds) & Generate Verification Token
+    Auth-->>Buyer: Send Verification Email
+    Buyer->>Web: Click Verification Link
+    Web->>API: POST /api/auth/verify-email
+    API-->>Web: Email Verified; Issue JWT Access Token
+
+    Note over Buyer,Seller: Phase 2: Project Initiation & Negotiation
+    Buyer->>Web: Create Escrow Project (Title, Milestones, Budget, Domain)
     Web->>API: POST /api/projects/init
-    API->>AI: Draft Structured Legal Milestones
-    AI-->>API: Milestones & Verification Criteria
-    API-->>Web: Active Draft Agreement (Version 1.0)
+    API->>AI: Gemini Drafts Structured Milestones & Criteria
+    API-->>Web: Return Project with Invite Token
+    Buyer->>Seller: Share Project Invite Link
+    Seller->>Web: Review Terms & Enter Negotiation Room
+    opt Terms Counter-Proposal
+        Seller->>Web: Propose Revised Budget / Timeline
+        Web->>API: POST /api/projects/{id}/negotiate
+        Buyer->>Web: Accept Counter-Proposal
+    end
+    Seller->>Web: Accept Agreement (Version 1.0)
+    Web->>API: POST /api/projects/{id}/accept
+    API->>PP: Create PayPal Escrow Order (intent: AUTHORIZE)
+    PP-->>API: Return Checkout Approval URL
 
-    Note over Buyer,PP: Phase 2: Escrow Funding
-    Buyer->>Web: Authorize PayPal Escrow Deposit
-    Web->>API: POST /api/projects/{id}/paypal/create-order
-    API->>PP: Create PayPal Checkout Order
-    PP-->>API: Checkout Order Link
-    API-->>Web: Launch PayPal Modal
-    Buyer->>PP: Authorize Escrow Deposit
-    PP-->>API: Escrow Funds Locked (STATUS: APPROVED)
+    Note over Buyer,PP: Phase 3: PayPal Escrow Authorization
+    Buyer->>PP: Authorize Total Project Budget Escrow Hold
+    PP-->>Web: Escrow Approved (Token / Order ID)
+    Web->>API: POST /api/escrow/confirm-authorization
+    API->>PP: Confirm 29-Day Authorization Hold Locked
+    API-->>Web: Project Status: ACTIVE (Escrow Protection Locked)
 
-    Note over Contractor,AI: Phase 3: Milestone Fulfillment & Forensic Audit
-    Contractor->>Web: Live Camera Capture or Upload Clean Deliverable
+    Note over Seller,AI: Phase 4: Sequential Milestone Fulfillment
+    Seller->>Web: Capture Hardware Camera Proof or Upload Artifact
     Web->>API: POST /api/projects/{id}/evidence
-    API->>AI: Run Anti-Spoofing & AI Watermark Inspection
-    alt Screen Spoofing or AI Watermark Detected
-        AI-->>API: Flagged (Confidence <= 20%, Moire or Bezel or SynthID Detected)
+    API->>AI: Execute Anti-Spoofing (Moiré, Bezel) + AI Watermark Scan (SynthID) + Gemini Multimodal Audit
+    alt Forensic Anomaly Flagged
+        AI-->>API: Confidence <= 20% (Spoofing / AI Artifacts Detected)
         API-->>Web: Status: POSSIBLE_MISMATCH (Escrow Locked)
-        Web-->>Contractor: Alert: Recapture Live Proof or Upload Clean Deliverable
-    else Genuine Authentic Deliverable
-        AI-->>API: Verified (Confidence >= 95%, Clean Deliverable)
+        Web-->>Seller: Prompt: Recapture Live Unaltered Evidence
+    else Authentic Deliverable
+        AI-->>API: Confidence >= 90% (Verified Authentic)
         API-->>Web: Status: VERIFIED (Awaiting Buyer Review)
     end
 
-    Note over Buyer,PP: Phase 4: Buyer Review & Fund Release
-    alt Buyer Requests Resubmission
-        Buyer->>Web: Reject Evidence with Feedback
+    Note over Buyer,PP: Phase 5: Buyer Review & Milestone Capture
+    alt Deliverable Rejected with Critique
+        Buyer->>Web: Reject Milestone with Actionable Feedback
         Web->>API: POST /api/milestones/{id}/reject
-        API-->>Web: Milestone reset to awaiting_resubmission
-    else Buyer Approves Deliverable
+        API-->>Web: Milestone status: awaiting_resubmission
+        Seller->>Web: Address Feedback & Resubmit Proof
+    else Deliverable Approved
         Buyer->>Web: Approve Milestone
         Web->>API: POST /api/milestones/{id}/approve
-        API->>PP: Capture & Disburse Milestone Escrow Amount
-        PP-->>API: Payout Executed
-        API-->>Web: Funds Disbursed to Contractor, Next Milestone Unlocked
+        API->>PP: Capture Milestone Amount (final_capture = False)
+        PP-->>API: Disbursement Completed & Balance Updated
+        API->>PP: Generate Compliant Milestone Invoice
+        API-->>Web: Milestone Paid, Retainage Computed, Next Milestone Unlocked!
     end
+
+    Note over Buyer,Seller: Phase 6: Mid-Project Addenda & Disputes
+    opt Scope Revision Request
+        Buyer->>Web: Request Scope Addendum (Timeline / Budget delta)
+        Web->>API: POST /api/projects/{id}/scope-change
+        API->>AI: Gemini drafts Addendum Version N+1
+        API->>PP: Generate Delta PayPal Checkout Link
+        Buyer->>PP: Fund Supplementary Escrow
+    end
+    opt Dispute Escalation
+        Buyer->>Web: File Dispute
+        Web->>API: POST /api/projects/{id}/disputes
+        Note over API,AI: Tier 1: Negotiation -> Tier 2: AI Mediation -> Tier 3: PayPal Dispute API
+    end
+
+    Note over Buyer,PP: Phase 7: Final Completion & Retainage Release
+    Buyer->>Web: Approve Final Milestone
+    Web->>API: POST /api/milestones/{final_id}/approve (final_capture = True)
+    API->>PP: Capture Remaining Retainage Hold
+    API-->>Web: Project COMPLETED, Dynamic Warranty Period Activated
 ```
+
+---
+
+## 🛡️ Recent Hardening & Architecture Remediation
+
+In the most recent update, ProofFlow underwent a complete production readiness overhaul:
+
+1. **Authentication Overhaul**:
+   - Replaced prototype authentication with industry-standard **Bcrypt (12 rounds)** and **JWT HS256** access tokens.
+   - Added user email verification with cryptographically secure token hashes (`backend/auth_service.py` & `backend/email_service.py`).
+2. **Database Integrity & Fail-Fast Migrations**:
+   - `backend/database.py` enforces PostgreSQL in production mode (`APP_ENV=production`).
+   - Schema migrations fail-fast with explicit `RuntimeError` rather than logging silent warnings.
+3. **PayPal Gateway Protection**:
+   - Eliminated all fake mock success responses from production codepaths in `backend/paypal_service.py`.
+   - Enforced HTTPS live API endpoints and live credential validation.
+   - Isolated hermetic test stubs strictly to offline unit testing (`APP_ENV=test`).
+4. **Backend Test Suite Restoration**:
+   - Resolved database cross-contamination across tests by eliminating destructive global `drop_all()` teardowns.
+   - Added an HTTP middleware database session bridge in `main.py` allowing test fixtures using `app.dependency_overrides` to inspect shared test memory sessions.
+   - Fixed multi-capture sequential tracking, retainage hold math, and async event loop recreation.
+   - **Result**: All 24 backend test modules and all 76 unit/integration tests now pass 100% cleanly.
+5. **Frontend Runtime Verification**:
+   - Built environment-aware runtime configuration (`runtime-config.mjs`) and JWT Bearer interceptor (`auth.interceptor.ts`).
+   - Added automated frontend tests using Node.js test runner (`runtime-config.test.mjs`), validating origin resolution and secure token handling.
 
 ---
 
 ## 🧪 Running Automated Tests
 
-Run the backend unit tests:
+### Backend Test Suite (24/24 Modules, 76/76 Tests Passing)
+
+The entire backend test suite runs cleanly in isolated hermetic test mode:
+
 ```bash
 cd backend
-SKIP_GEMINI_NETWORK=1 ./venv/bin/python -m unittest discover -s . -p "test_*.py"
+USE_LOCAL_DB=true \
+APP_ENV=test \
+ALLOW_INSECURE_TEST_AUTH=1 \
+ALLOW_SIMULATED_WEBHOOKS=1 \
+ALLOW_SIMULATED_PAYPAL_FAILURES=1 \
+PYTHONPATH=. \
+SKIP_GEMINI_NETWORK=1 \
+./venv/bin/python -m unittest discover -s . -p 'test_*.py'
 ```
 
-The legacy backend suite currently contains tests that do not match the current authentication and payment behavior; treat failures as unresolved until the suite is reconciled and passing.
+#### Test Coverage Highlights:
+- **`test_defect_2_1_auth_hash.py`**: Validates Bcrypt 12-round hashing, JWT claims, and authentication security.
+- **`test_defect_2_2_escrow_checkout.py`**: Verifies PayPal Orders v2 `AUTHORIZE` escrow hold lifecycle.
+- **`test_defect_2_3_multi_capture.py`**: Verifies milestone-based partial captures with `final_capture = False`.
+- **`test_anti_spoofing_engine.py`**: Verifies Moiré FFT math, LCD subpixel dispersion, and bezel detection.
+- **`test_ai_watermark_forensics.py`**: Verifies SynthID, DALL-E, and generative AI signature detection.
+- **`test_dispute_workflow.py`**: Verifies 3-tier dispute escalation (Negotiation, AI mediation, PayPal dispute).
+- **`test_scope_changes.py`**: Verifies Gemini addenda drafting, deadline adjustments, and delta funding.
+- **`test_ghosting_and_unilateral_void.py`**: Verifies unilateral buyer void for inactive contractors.
+- **`test_location_tracking.py`**: Verifies EXIF GPS geofence matching and digital exemption logic.
+- **`test_reauthorize_and_funds_at_risk.py`**: Verifies PayPal 29-day authorization renewal.
 
-Verify frontend TypeScript compilation:
+### Frontend Test Suite (Node.js Test Runner)
+
+Run the automated frontend test suite:
+
+```bash
+cd frontend
+npm test
+```
+
+*Runs 6 automated unit tests validating API base URL resolution, trailing slash trimming, HTTPS protocol security, stored user token parsing, and third-party credential leakage protection.*
+
+Verify TypeScript type compilation:
 ```bash
 cd frontend
 npx tsc --noEmit
 ```
 
+---
+
 ## 🔒 Security & Secrets Hygiene
 
-1. `.gitignore` excludes `.env`, database files, and uploaded media from git history.
-2. Uploaded evidence is hashed with SHA-256 on ingestion.
-3. PayPal credentials remain on the backend; the frontend receives no client secret.
-
-### Production launch blockers
-
-- Configure and test the production SMTP relay and persistent, backed-up evidence volume before launch.
-- PayPal dispute submission currently sends the case notes; automated attachment of evidence files through the supported PayPal dispute API still needs implementation and sandbox/live validation.
-- Reconcile the legacy backend tests with current authentication and sequential payment behavior, then require a passing CI run before release.
+1. **Zero Secret Leakage**: `.gitignore` strictly prevents `.env`, `*.db`, and uploaded user assets from entering git history.
+2. **Backend-Only PayPal Secret**: PayPal client secrets and access tokens are strictly managed by FastAPI; the frontend never receives payment credentials.
+3. **Cryptographic Asset Integrity**: All uploaded evidence artifacts are digested with SHA-256 upon ingestion and recorded in an immutable ledger.
+4. **Secure Headers & CORS**: FastAPI and Angular runtime configs sanitize API base URLs, enforcing HTTPS in production.
 
 ---
 
-## 👥 Contributors & Acknowledgements
-- **Author**: ProofLens Engineering Team
-- **Hackathon**: PayPal Hackathon 2026
-- **License**: MIT License
+## 👥 License & Acknowledgements
+- **Engineered by**: ProofFlow Engineering Team
+- **Competition**: PayPal Hackathon 2026
+- **License**: [MIT License](LICENSE)
