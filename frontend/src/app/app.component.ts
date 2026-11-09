@@ -70,11 +70,13 @@ export class AppComponent implements OnInit, OnDestroy {
     this.loadOAuthConfig();
     this.checkForOAuthCallback();
     this.loadNotifications();
-    // Fast poll notifications every 3 seconds for active updates (e.g. negotiation, scope change, releases)
+    // Poll notifications every 5 seconds for active updates when user is logged in
     if (typeof window !== 'undefined') {
       this.notifPollInterval = setInterval(() => {
-        this.loadNotifications();
-      }, 3000);
+        if (this.currentUser) {
+          this.loadNotifications();
+        }
+      }, 5000);
     }
   }
 
@@ -129,8 +131,13 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   loadNotifications() {
-    const role = this.currentUser?.role_type || 'buyer';
-    const email = this.currentUser?.email || '';
+    if (!this.currentUser) {
+      this.notifications = [];
+      this.unreadNotificationCount = 0;
+      return;
+    }
+    const role = this.currentUser.role_type || 'buyer';
+    const email = this.currentUser.email || '';
     let url = `${API_BASE_URL}/api/notifications?role=${role}`;
     if (email) {
       url += `&email=${encodeURIComponent(email)}`;

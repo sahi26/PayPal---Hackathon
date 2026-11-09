@@ -64,10 +64,12 @@ export class LoginComponent implements OnInit {
       return;
     }
 
-    // 2. Load stored redirect URI preference (defaults to configured http://localhost:4200)
+    // 2. Load stored redirect URI preference (defaults to window origin in production, or localhost in dev)
     const storedUri = localStorage.getItem('prooflens_redirect_uri');
     if (storedUri) {
       this.selectedRedirectUri = storedUri;
+    } else if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      this.selectedRedirectUri = window.location.origin;
     }
 
     // 3. Listen for PayPal OAuth Callback (?code=...)
@@ -109,9 +111,14 @@ export class LoginComponent implements OnInit {
     localStorage.setItem('prooflens_pending_role', this.selectedRole);
     localStorage.setItem('prooflens_redirect_uri', this.selectedRedirectUri);
 
-    this.http.get<any>(`${API_BASE_URL}/api/auth/paypal-config?redirect_uri=${encodeURIComponent(this.selectedRedirectUri)}`)
+    const redirectParam = this.selectedRedirectUri ? `?redirect_uri=${encodeURIComponent(this.selectedRedirectUri)}` : '';
+    this.http.get<any>(`${API_BASE_URL}/api/auth/paypal-config${redirectParam}`)
       .subscribe({
         next: (config) => {
+          if (config && config.redirect_uri) {
+            this.selectedRedirectUri = config.redirect_uri;
+            localStorage.setItem('prooflens_redirect_uri', config.redirect_uri);
+          }
           if (config && config.oauth_url) {
             window.location.href = config.oauth_url;
           } else {

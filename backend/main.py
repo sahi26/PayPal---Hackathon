@@ -8036,18 +8036,33 @@ def get_paypal_oauth_config(redirect_uri: Optional[str] = None):
     """
     Returns PayPal OAuth parameters and official sandbox authorize URL for localhost and live use.
     """
-    configured_redirect = PAYPAL_REDIRECT_URI
-    if redirect_uri and redirect_uri != configured_redirect:
-        raise HTTPException(status_code=400, detail="The requested PayPal redirect URI is not configured.")
+    allowed_redirects = {
+        PAYPAL_REDIRECT_URI,
+        FRONTEND_URL,
+        *FRONTEND_ORIGINS,
+        "http://localhost:4200",
+        "http://127.0.0.1:4200",
+        "https://pay-pal-hackathon-phi.vercel.app",
+        "https://prooflens-auth.loca.lt",
+    }
+    allowed_clean = {u.rstrip('/') for u in allowed_redirects if u}
+
+    target_redirect = PAYPAL_REDIRECT_URI
+    if redirect_uri:
+        if redirect_uri.rstrip('/') in allowed_clean:
+            target_redirect = redirect_uri
+        else:
+            raise HTTPException(status_code=400, detail="The requested PayPal redirect URI is not configured.")
+
     client_id = PAYPAL_CLIENT_ID or ""
     if not client_id:
         raise HTTPException(status_code=503, detail="PayPal sign-in is not configured.")
     scope = "openid profile email"
     paypal_web_base = "https://www.paypal.com" if paypal_service.PAYPAL_API_BASE == "https://api-m.paypal.com" else "https://www.sandbox.paypal.com"
-    oauth_url = f"{paypal_web_base}/connect?flowEntry=static&client_id={client_id}&response_type=code&scope={scope}&redirect_uri={configured_redirect}"
+    oauth_url = f"{paypal_web_base}/connect?flowEntry=static&client_id={client_id}&response_type=code&scope={scope}&redirect_uri={target_redirect}"
     return {
         "client_id": client_id,
-        "redirect_uri": configured_redirect,
+        "redirect_uri": target_redirect,
         "oauth_url": oauth_url,
         "mode": "live" if paypal_web_base == "https://www.paypal.com" else "sandbox"
     }
@@ -8089,8 +8104,18 @@ async def paypal_oauth_login(request: PayPalLoginRequest, db: Session = Depends(
         if "&" in auth_code:
             auth_code = auth_code.split("&")[0]
 
+        allowed_redirects = {
+            PAYPAL_REDIRECT_URI,
+            FRONTEND_URL,
+            *FRONTEND_ORIGINS,
+            "http://localhost:4200",
+            "http://127.0.0.1:4200",
+            "https://pay-pal-hackathon-phi.vercel.app",
+            "https://prooflens-auth.loca.lt",
+        }
+        allowed_clean = {u.rstrip('/') for u in allowed_redirects if u}
         redirect_uri = request.redirect_uri or PAYPAL_REDIRECT_URI
-        if redirect_uri != PAYPAL_REDIRECT_URI:
+        if redirect_uri.rstrip('/') not in allowed_clean:
             raise HTTPException(status_code=400, detail="The requested PayPal redirect URI is not configured.")
         token_url = f"{paypal_service.PAYPAL_API_BASE}/v1/oauth2/token"
 
