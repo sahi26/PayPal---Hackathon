@@ -1056,7 +1056,10 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
                             403,
                             json={"name": "NOT_AUTHORIZED", "message": "Legacy schema not enabled"},
                         )
-                    if request.url.path.endswith("/v1/identity/openidconnect/userinfo"):
+                    if (
+                        request.url.path.endswith("/v1/identity/openidconnect/userinfo")
+                        and "schema=openid" in str(request.url.query)
+                    ):
                         return httpx.Response(
                             200,
                             json={
@@ -1067,6 +1070,46 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
                                 "family_name": "Buyer",
                             },
                         )
+                elif mode["scenario"] == "token_userinfo_fallback":
+                    if request.url.path.endswith("/v1/oauth2/token/userinfo") and "schema=openid" in str(request.url.query):
+                        return httpx.Response(
+                            200,
+                            json={
+                                "sub": "user-tok-456",
+                                "email_address": "legacy_token_seller@example.com",
+                                "verified_account": True,
+                                "name": "Legacy Token Seller",
+                            },
+                        )
+                    return httpx.Response(
+                        400,
+                        json={"error": "invalid_request", "error_description": "Unable to fetch details to serve the request"},
+                    )
+                elif mode["scenario"] == "sandbox_business_400":
+                    if "oauth2/userinfo" in full_url:
+                        return httpx.Response(
+                            400,
+                            headers={"PayPal-Debug-Id": "dbg-biz-400"},
+                            json={"error": "invalid_request", "error_description": "Unable to fetch details to serve the request"},
+                        )
+                    return httpx.Response(404, json={"message": "Not found"})
+                elif mode["scenario"] == "retry_415_json":
+                    if (
+                        request.url.path.endswith("/v1/identity/openidconnect/userinfo")
+                        and "schema=openid" in str(request.url.query)
+                    ):
+                        if request.headers.get("content-type") == "application/json":
+                            return httpx.Response(
+                                200,
+                                json={
+                                    "sub": "user-415",
+                                    "email": "header_retry_seller@example.com",
+                                    "email_verified": True,
+                                    "name": "Header Retry Seller",
+                                },
+                            )
+                        return httpx.Response(415, json={"message": "Unsupported Media Type"})
+                    return httpx.Response(404, json={"message": "Not found"})
                 elif mode["scenario"] in {"id_token_fallback", "all_fail"}:
                     return httpx.Response(
                         403,
@@ -1084,7 +1127,7 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
         with patch.object(main, "PAYPAL_CLIENT_ID", "test-pp-client"), patch.object(
             main, "PAYPAL_CLIENT_SECRET", "test-pp-secret"
         ), patch("main.httpx.AsyncClient", side_effect=_mock_client_factory):
-            # 1) Legacy ?schema=paypalv1.1 returns 403 -> OIDC userinfo endpoint succeeds
+            # 1) Legacy ?schema=paypalv1.1 returns 403 -> OIDC userinfo ?schema=openid succeeds
             mode["scenario"] = "oidc_fallback"
             res_oidc = self.client.post(
                 "/api/auth/paypal-login",
@@ -1100,7 +1143,18 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
             for hdrs in captured_get_headers:
                 self.assertNotIn("content-type", hdrs)
 
-            # 2) All userinfo endpoints return 403 -> id_token JWT from /token response succeeds
+            # 2) Legacy /v1/oauth2/token/userinfo?schema=openid fallback + email_address field succeeds
+            mode["scenario"] = "token_userinfo_fallback"
+            res_legacy = self.client.post(
+                "/api/auth/paypal-login",
+                json={"code": "AUTH_CODE_LEGACY", "redirect_uri": "http://localhost:4200", "role": "seller"},
+            )
+            self.assertEqual(res_legacy.status_code, 200, res_legacy.text)
+            legacy_user = res_legacy.json()
+            self.assertEqual(legacy_user["email"], "legacy_token_seller@example.com")
+            self.assertEqual(legacy_user["role_type"], "seller")
+
+            # 3) All userinfo endpoints return 403 -> id_token JWT from /token response succeeds
             mode["scenario"] = "id_token_fallback"
             res_idtok = self.client.post(
                 "/api/auth/paypal-login",
@@ -1112,7 +1166,7 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
             self.assertEqual(idtok_user["full_name"], "ID Token Seller")
             self.assertEqual(idtok_user["role_type"], "seller")
 
-            # 3) All fail and no id_token -> surfaces HTTP status & PayPal detail
+            # 4) All fail and no id_token -> surfaces HTTP status & PayPal detail
             mode["scenario"] = "all_fail"
             res_fail = self.client.post(
                 "/api/auth/paypal-login",
@@ -1121,6 +1175,38 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
             self.assertEqual(res_fail.status_code, 400, res_fail.text)
             self.assertIn("HTTP 403", res_fail.json()["detail"])
             self.assertIn("Insufficient scope for profile", res_fail.json()["detail"])
+
+            # 5) Sandbox business account 400 ("Unable to fetch details to serve the request") is preserved over 404 fallbacks and includes actionable guidance
+            mode["scenario"] = "sandbox_business_400"
+            res_biz = self.client.post(
+                "/api/auth/paypal-login",
+                json={"code": "AUTH_CODE_BIZ", "redirect_uri": "http://localhost:4200", "role": "seller"},
+            )
+            self.assertEqual(res_biz.status_code, 400, res_biz.text)
+            biz_detail = res_biz.json()["detail"]
+            self.assertIn("HTTP 400", biz_detail)
+            self.assertIn("Unable to fetch details to serve the request", biz_detail)
+            self.assertIn("@personal.example.com", biz_detail)
+
+            # 6) 415 Unsupported Media Type retries with Content-Type: application/json cleanly
+            mode["scenario"] = "retry_415_json"
+            res_415 = self.client.post(
+                "/api/auth/paypal-login",
+                json={"code": "AUTH_CODE_415", "redirect_uri": "http://localhost:4200", "role": "seller"},
+            )
+            self.assertEqual(res_415.status_code, 200, res_415.text)
+            self.assertEqual(res_415.json()["email"], "header_retry_seller@example.com")
+
+            # 7) /api/auth/paypal-config encodes redirect_uri cleanly
+            cfg_res = self.client.get(
+                "/api/auth/paypal-config",
+                params={"redirect_uri": "https://pay-pal-hackathon-phi.vercel.app"},
+            )
+            self.assertEqual(cfg_res.status_code, 200, cfg_res.text)
+            self.assertIn(
+                "redirect_uri=https%3A%2F%2Fpay-pal-hackathon-phi.vercel.app",
+                cfg_res.json()["oauth_url"],
+            )
 
 
 if __name__ == "__main__":

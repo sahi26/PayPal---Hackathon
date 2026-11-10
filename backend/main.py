@@ -8952,7 +8952,7 @@ def get_paypal_oauth_config(redirect_uri: Optional[str] = None):
         raise HTTPException(status_code=503, detail="PayPal sign-in is not configured.")
     scope = "openid%20profile%20email"
     paypal_web_base = "https://www.paypal.com" if paypal_service.PAYPAL_API_BASE == "https://api-m.paypal.com" else "https://www.sandbox.paypal.com"
-    oauth_url = f"{paypal_web_base}/connect?flowEntry=static&client_id={client_id}&response_type=code&scope={scope}&redirect_uri={target_redirect}"
+    oauth_url = f"{paypal_web_base}/connect?flowEntry=static&client_id={quote(client_id, safe='')}&response_type=code&scope={scope}&redirect_uri={quote(target_redirect, safe='')}"
     return {
         "client_id": client_id,
         "redirect_uri": target_redirect,
@@ -8988,6 +8988,8 @@ def _extract_paypal_profile_identity(user_info: Dict[str, Any]) -> Tuple[Optiona
 
     if not user_email and user_info.get("email"):
         user_email = str(user_info.get("email") or "").strip() or None
+    if not user_email and user_info.get("email_address"):
+        user_email = str(user_info.get("email_address") or "").strip() or None
 
     if user_email and not matched_verified and emails:
         matched_verified = any(
@@ -9038,10 +9040,11 @@ def _decode_paypal_id_token_claims(id_token: Optional[str], expected_client_id: 
 
     aud = claims.get("aud")
     if aud is not None and expected_client_id:
+        expected = expected_client_id.strip()
         if isinstance(aud, list):
-            if expected_client_id not in aud:
+            if expected not in [str(a).strip() for a in aud]:
                 return None
-        elif str(aud) != expected_client_id:
+        elif str(aud).strip() != expected:
             return None
 
     iss = claims.get("iss")
@@ -9083,48 +9086,56 @@ async def _fetch_paypal_oauth_user_profile(
 ) -> Tuple[str, str, bool]:
     userinfo_urls = [
         f"{api_base}/v1/identity/oauth2/userinfo?schema=paypalv1.1",
-        f"{api_base}/v1/identity/openidconnect/userinfo",
+        f"{api_base}/v1/identity/openidconnect/userinfo?schema=openid",
+        f"{api_base}/v1/identity/openidconnect/userinfo?schema=openidconnect",
+        f"{api_base}/v1/identity/oauth2/userinfo?schema=openidconnect",
+        f"{api_base}/v1/oauth2/token/userinfo?schema=openid",
         f"{api_base}/v1/identity/oauth2/userinfo?schema=openid",
+        f"{api_base}/v1/identity/openidconnect/userinfo",
     ]
-    headers = {
+    base_headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
         "Accept-Language": "en_US",
     }
 
-    last_status: Optional[int] = None
-    last_error_detail: Optional[str] = None
+    attempts: List[Tuple[str, Optional[int], str, Optional[str]]] = []
 
     for url in userinfo_urls:
+        endpoint_label = url[len(api_base):] if url.startswith(api_base) else url
+        request_headers = dict(base_headers)
         for attempt in range(2):
             try:
-                resp = await client.get(url, headers=headers)
+                resp = await client.get(url, headers=request_headers)
             except httpx.TransportError as exc:
-                last_error_detail = f"{type(exc).__name__}: {exc}"
+                err_text = f"{type(exc).__name__}: {exc}"
                 if attempt == 0:
                     await asyncio.sleep(0.15)
                     continue
+                attempts.append((endpoint_label, None, err_text, None))
                 break
 
+            debug_id = resp.headers.get("paypal-debug-id") or resp.headers.get("PayPal-Debug-Id")
             if resp.status_code == 200:
                 try:
                     data = resp.json()
                 except Exception:
-                    last_status = resp.status_code
-                    last_error_detail = "Malformed JSON profile response from PayPal"
+                    attempts.append((endpoint_label, resp.status_code, "Malformed JSON profile response from PayPal", debug_id))
                     break
                 email, name, verified = _extract_paypal_profile_identity(data)
                 if email:
                     return email, name, verified
-                last_status = resp.status_code
-                last_error_detail = "PayPal profile response omitted the email claim"
+                attempts.append((endpoint_label, resp.status_code, "PayPal profile response omitted the email claim", debug_id))
                 break
 
-            last_status = resp.status_code
-            last_error_detail = _summarize_paypal_error_response(resp)
+            err_text = _summarize_paypal_error_response(resp)
+            if resp.status_code == 415 and attempt == 0 and "Content-Type" not in request_headers:
+                request_headers = {**base_headers, "Content-Type": "application/json"}
+                continue
             if resp.status_code in {429, 500, 502, 503, 504} and attempt == 0:
                 await asyncio.sleep(0.15)
                 continue
+            attempts.append((endpoint_label, resp.status_code, err_text, debug_id))
             break
 
     id_claims = _decode_paypal_id_token_claims(id_token, expected_client_id)
@@ -9133,12 +9144,36 @@ async def _fetch_paypal_oauth_user_profile(
         if email:
             return email, name, verified
 
-    status_label = f"HTTP {last_status}" if last_status is not None else "network error"
-    detail_msg = last_error_detail or "Unknown PayPal profile lookup failure"
-    print(f"PayPal OAuth profile lookup failed ({status_label}): {detail_msg}")
+    # Prefer the first non-404 documented endpoint error so later fallback probes do not mask it.
+    chosen = (
+        next((item for item in attempts if item[1] is not None and item[1] != 404), None)
+        or next((item for item in attempts if item[1] is not None), None)
+        or (attempts[0] if attempts else ("userinfo", None, "Unknown PayPal profile lookup failure", None))
+    )
+    chosen_status = chosen[1]
+    chosen_detail = chosen[2] or "Unknown PayPal profile lookup failure"
+    status_label = f"HTTP {chosen_status}" if chosen_status is not None else "network error"
+
+    diagnostic_summary = "; ".join(
+        f"{ep} -> {('HTTP ' + str(st)) if st is not None else 'ERR'} ({msg})"
+        + (f" [debug_id={did}]" if did else "")
+        for ep, st, msg, did in attempts
+    )
+    print(f"PayPal OAuth profile lookup failed ({status_label}): {diagnostic_summary}")
+
+    if "unable to fetch details" in chosen_detail.lower() or any("unable to fetch details" in msg.lower() for _, _, msg, _ in attempts):
+        detail_output = (
+            f"Failed to fetch PayPal user profile ({status_label}): {chosen_detail}. "
+            "In PayPal Sandbox, this happens when signing in with the REST App's own @business.example.com merchant account "
+            "or if 'Log in with PayPal' Email/Full Name attributes are not enabled in PayPal Developer Dashboard. "
+            "To sign in as Contractor/Seller, choose 'Contractor / Seller' above and log in with a separate Sandbox Personal account (@personal.example.com)."
+        )
+    else:
+        detail_output = f"Failed to fetch PayPal user profile ({status_label}): {chosen_detail}"
+
     raise HTTPException(
         status_code=400,
-        detail=f"Failed to fetch PayPal user profile ({status_label}): {detail_msg}",
+        detail=detail_output,
     )
 
 
