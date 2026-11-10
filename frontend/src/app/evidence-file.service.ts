@@ -43,6 +43,13 @@ export class EvidenceFileService implements OnDestroy {
       filename = filename.slice('backend/uploads/'.length);
     } else if (filename.startsWith('uploads/')) {
       filename = filename.slice('uploads/'.length);
+    } else if (filename.startsWith('api/evidence/download/')) {
+      const rawName = filename.slice('api/evidence/download/'.length).split('?')[0];
+      try {
+        filename = decodeURIComponent(rawName);
+      } catch {
+        filename = rawName;
+      }
     }
     if (!filename || filename.includes('\\') || filename.includes('/')) {
       return of('');

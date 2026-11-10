@@ -8066,6 +8066,186 @@ async def _ensure_milestone_invoice(
         lock.release()
 
 
+_GENUINE_SPOOF_KEYWORDS = (
+    "moir",
+    "bezel",
+    "screen",
+    "re-photo",
+    "re-photograph",
+    "display frame",
+    "phone display",
+    "monitor",
+    "spoof",
+    "watermark",
+    "synthid",
+    "dall-e",
+    "dall·e",
+    "midjourney",
+    "stable diffusion",
+    "comfyui",
+    "civitai",
+    "firefly",
+    "ai-generated",
+    "ai watermark",
+    "generative",
+    "manipulat",
+    "fabricat",
+    "synthetic",
+    "reflection",
+    "physical challenge",
+    "challenge missing",
+)
+
+
+def _is_evidence_buyer_rejected(ev: models.Evidence) -> bool:
+    if not ev:
+        return False
+    flags = ev.fraud_flags or []
+    if isinstance(flags, str):
+        try:
+            flags = json.loads(flags)
+        except Exception:
+            flags = [flags]
+    if any(str(f).strip().lower() == "buyer_resubmission_requested" for f in (flags or [])):
+        return True
+    notes = ev.ai_analysis_notes or ""
+    if "Buyer Rejection Feedback:" in notes:
+        return True
+    return False
+
+
+def _extract_genuine_manipulation_flags(flags: Any) -> List[str]:
+    if not flags:
+        return []
+    if isinstance(flags, str):
+        try:
+            flags = json.loads(flags)
+        except Exception:
+            flags = [flags]
+    genuine: List[str] = []
+    for raw_flag in (flags or []):
+        f_str = str(raw_flag or "").strip()
+        if not f_str:
+            continue
+        f_low = f_str.lower()
+        if f_low == "buyer_resubmission_requested":
+            continue
+        if any(kw in f_low for kw in _GENUINE_SPOOF_KEYWORDS):
+            genuine.append(f_str)
+    return genuine
+
+
+def _parse_agreement_milestones(agreement: Optional[models.Agreement]) -> List[Dict[str, Any]]:
+    if not agreement or not agreement.milestones:
+        return []
+    raw = agreement.milestones
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return []
+    if not isinstance(raw, list):
+        return []
+    return [dict(m) for m in raw if isinstance(m, dict)]
+
+
+def _select_latest_non_rejected_batch(
+    ms_evs_desc: List[models.Evidence],
+    milestone_meta: Optional[Dict[str, Any]] = None,
+) -> List[models.Evidence]:
+    if not ms_evs_desc:
+        return []
+    rejected_max_id = int((milestone_meta or {}).get("rejected_evidence_max_id") or 0)
+    effective_rejected_max_id = max(
+        [rejected_max_id]
+        + [int(ev.id or 0) for ev in ms_evs_desc if _is_evidence_buyer_rejected(ev)]
+    )
+    candidates = [
+        ev
+        for ev in ms_evs_desc
+        if (not _is_evidence_buyer_rejected(ev)) and int(ev.id or 0) > effective_rejected_max_id
+    ]
+    if not candidates:
+        return []
+
+    active_latest = candidates[0]
+    latest_details = active_latest.ai_comparison_details if isinstance(active_latest.ai_comparison_details, dict) else {}
+    latest_batch_id = latest_details.get("submission_batch_id")
+    if latest_batch_id:
+        return [
+            ev
+            for ev in candidates
+            if isinstance(ev.ai_comparison_details, dict)
+            and ev.ai_comparison_details.get("submission_batch_id") == latest_batch_id
+        ]
+
+    cap_val = (
+        active_latest.capture_method.value
+        if hasattr(active_latest.capture_method, "value")
+        else str(active_latest.capture_method or "")
+    ).lower()
+    if cap_val == "file_upload":
+        return [active_latest]
+
+    latest_ts = ensure_utc(active_latest.server_receipt_timestamp) if active_latest.server_receipt_timestamp else None
+    if not latest_ts:
+        return [active_latest]
+
+    selected = []
+    for ev in candidates:
+        if ev.id == active_latest.id:
+            selected.append(ev)
+            continue
+        ev_ts = ensure_utc(ev.server_receipt_timestamp) if ev.server_receipt_timestamp else None
+        if ev_ts and abs((latest_ts - ev_ts).total_seconds()) <= 2.0:
+            selected.append(ev)
+    return selected
+
+
+def _select_approved_dispute_milestone_evidence(
+    agreement: Optional[models.Agreement],
+    all_milestone_items: List[models.Evidence],
+) -> Tuple[List[models.Evidence], Dict[str, Any]]:
+    milestones = _parse_agreement_milestones(agreement)
+    approved_indices = [
+        idx
+        for idx, ms in enumerate(milestones)
+        if str(ms.get("status") or "").strip().lower() == "approved"
+    ]
+    if not approved_indices:
+        return [], {
+            "approved_milestone_indices": [],
+            "total_uploaded_count": len(all_milestone_items),
+            "excluded_count": len(all_milestone_items),
+        }
+
+    selected_items: List[models.Evidence] = []
+    selected_ids = set()
+    for m_idx in approved_indices:
+        ms_meta = milestones[m_idx] if m_idx < len(milestones) else {}
+        ms_evs_desc = sorted(
+            [
+                ev
+                for ev in all_milestone_items
+                if (ev.milestone_index if ev.milestone_index is not None else 0) == m_idx
+            ],
+            key=lambda e: int(e.id or 0),
+            reverse=True,
+        )
+        batch = _select_latest_non_rejected_batch(ms_evs_desc, ms_meta)
+        for ev in batch:
+            if ev.id not in selected_ids:
+                selected_ids.add(ev.id)
+                selected_items.append(ev)
+
+    selected_items.sort(key=lambda e: (int(e.milestone_index or 0), int(e.id or 0)))
+    return selected_items, {
+        "approved_milestone_indices": approved_indices,
+        "total_uploaded_count": len(all_milestone_items),
+        "excluded_count": max(0, len(all_milestone_items) - len(selected_items)),
+    }
+
+
 @app.post("/api/milestones/{milestone_id}/approve")
 @app.post("/api/projects/{project_id}/milestones/{milestone_index}/approve")
 async def approve_milestone(
@@ -8183,11 +8363,18 @@ async def approve_milestone(
     milestones[m_idx]["status"] = "approved"
     milestones[m_idx]["approved_at"] = datetime.utcnow().isoformat()
 
-    # 2. Mark any related Evidence as verified
-    db.query(models.Evidence).filter(
-        models.Evidence.project_id == p_id,
-        models.Evidence.milestone_index == m_idx
-    ).update({"status": models.EvidenceStatus.VERIFIED})
+    # 2. Mark ONLY the active non-rejected milestone evidence batch as verified
+    ms_evidence_desc = [
+        ev
+        for ev in db.query(models.Evidence).filter(
+            models.Evidence.project_id == p_id,
+            models.Evidence.milestone_index == m_idx,
+        ).order_by(models.Evidence.id.desc()).all()
+        if (ev.evidence_type or "milestone_evidence") != "before_evidence"
+    ]
+    approved_ev_batch = _select_latest_non_rejected_batch(ms_evidence_desc, milestones[m_idx])
+    for ev_item in approved_ev_batch:
+        ev_item.status = models.EvidenceStatus.VERIFIED
 
     # 3. Check progression: unlock next milestone or complete project
     next_active = None
@@ -10322,17 +10509,95 @@ def get_project_payments(project_id: int, db: Session = Depends(get_db)):
 # Phase 3: The Disputes API & AI Integration
 # ==============================================================================
 
+def _serialize_scope_change_summary(sc: Any) -> Dict[str, Any]:
+    if isinstance(sc, dict):
+        return {
+            "id": sc.get("id"),
+            "description": sc.get("description") or "",
+            "proposed_extra_cost": float(sc.get("proposed_extra_cost") or 0.0),
+            "proposed_extra_days": int(sc.get("proposed_extra_days") or 0),
+            "status": str(sc.get("status") or "NEGOTIATING"),
+            "rejection_reason": sc.get("rejection_reason"),
+            "addendum_contract": sc.get("addendum_contract"),
+            "created_at": sc.get("created_at"),
+        }
+    return {
+        "id": getattr(sc, "id", None),
+        "description": getattr(sc, "description", None) or "",
+        "proposed_extra_cost": float(getattr(sc, "proposed_extra_cost", 0.0) or 0.0),
+        "proposed_extra_days": int(getattr(sc, "proposed_extra_days", 0) or 0),
+        "status": str(getattr(sc, "status", None) or "NEGOTIATING"),
+        "rejection_reason": getattr(sc, "rejection_reason", None),
+        "addendum_contract": getattr(sc, "addendum_contract", None),
+        "created_at": sc.created_at.isoformat() if getattr(sc, "created_at", None) else None,
+    }
+
+
+def _serialize_dossier_evidence_item(
+    ev: models.Evidence,
+    milestones: List[Dict[str, Any]],
+    is_before: bool = False,
+) -> Dict[str, Any]:
+    file_path = ev.file_path
+    download_path = None
+    if file_path and not str(file_path).strip().lower().startswith(("http://", "https://")):
+        basename = os.path.basename(str(file_path).strip())
+        if basename:
+            download_path = f"/api/evidence/download/{quote(basename)}"
+
+    clean_flags = [
+        f
+        for f in (ev.fraud_flags or [])
+        if str(f).strip().lower() != "buyer_resubmission_requested"
+    ]
+    cap_val = ev.capture_method.value if hasattr(ev.capture_method, "value") else ev.capture_method
+    stat_val = ev.status.value if hasattr(ev.status, "value") else ev.status
+
+    item: Dict[str, Any] = {
+        "id": ev.id,
+        "sha256_hash": ev.file_hash,
+        "server_receipt_timestamp": ev.server_receipt_timestamp.isoformat() if ev.server_receipt_timestamp else None,
+        "file_path": file_path,
+        "download_path": download_path,
+        "original_filename": ev.original_filename or (os.path.basename(file_path) if file_path else None),
+        "mime_type": ev.mime_type,
+        "file_size": ev.file_size,
+        "asset_url": ev.asset_url,
+        "location": ev.location,
+        "capture_method": cap_val,
+        "status": stat_val,
+        "ai_match_score": ev.ai_confidence_score,
+        "fraud_flags": clean_flags,
+        "analysis_notes": ev.ai_analysis_notes,
+    }
+    if not is_before:
+        m_idx = int(ev.milestone_index) if ev.milestone_index is not None else 0
+        ms_meta = milestones[m_idx] if 0 <= m_idx < len(milestones) else {}
+        item.update({
+            "milestone_index": m_idx,
+            "milestone_number": m_idx + 1,
+            "milestone_title": ms_meta.get("title") or f"Milestone {m_idx + 1}",
+            "milestone_description": ms_meta.get("description") or "",
+            "milestone_proof_required": ms_meta.get("proof_required") or "",
+            "milestone_amount": float(ms_meta.get("price_allocation") or 0.0),
+            "milestone_status": str(ms_meta.get("status") or "pending").strip().lower(),
+        })
+    return item
+
+
 def classify_dispute_with_ai(
     project: models.Project,
     agreement: Optional[models.Agreement],
     before_items: list,
     milestone_items: list,
     dispute_reason: str,
-    disputed_by: str = "buyer"
+    disputed_by: str = "buyer",
+    scope_changes: Optional[list] = None,
 ) -> dict:
     """
     AI Classification Logic: Uses Gemini AI to classify dispute (e.g., missing work, technical defect, scope disagreement, fraud).
     Strict Constraint: Do not force an AI verdict in every case.
+    Evaluates ONLY approved milestone evidences (after filtering out unapproved milestones and buyer-rejected attempts).
     Output specific validity flags:
     - 'Verified'
     - 'Not verified'
@@ -10342,6 +10607,20 @@ def classify_dispute_with_ai(
     """
     gemini_key = os.getenv("GEMINI_API_KEY", "")
 
+    parsed_milestones = _parse_agreement_milestones(agreement)
+    approved_ms_indices = [
+        idx
+        for idx, ms in enumerate(parsed_milestones)
+        if str(ms.get("status") or "").strip().lower() == "approved"
+    ]
+    approved_num_str = ", ".join(f"Milestone {idx + 1}" for idx in approved_ms_indices) or "None"
+
+    normalized_sc = [_serialize_scope_change_summary(sc) for sc in (scope_changes or [])]
+    pending_sc = [
+        sc for sc in normalized_sc if str(sc.get("status") or "").upper() in ("NEGOTIATING", "PENDING_FUNDS", "DRAFT")
+    ]
+    accepted_sc = [sc for sc in normalized_sc if str(sc.get("status") or "").upper() == "ACCEPTED"]
+
     before_summary = []
     for b in before_items:
         loc = f" (GPS: {b.location})" if b.location else ""
@@ -10349,27 +10628,92 @@ def classify_dispute_with_ai(
     before_str = "\n".join(before_summary) if before_summary else "No baseline before-evidence (Exempt or from scratch)."
 
     ms_summary = []
+    genuine_flags_flat: List[str] = []
     for m in milestone_items:
-        m_idx = f"M{m.milestone_index + 1}" if m.milestone_index is not None else "General"
-        flags = f" | Flags: {', '.join(m.fraud_flags)}" if m.fraud_flags else " | Anti-Spoof: Passed"
-        score = f" | AI Match: {m.ai_confidence_score}%" if m.ai_confidence_score else ""
-        ms_summary.append(f"• [{m_idx}] File: {m.original_filename} | Timestamp: {m.server_receipt_timestamp} | Hash: {m.file_hash[:16]}...{flags}{score}\n  Notes: {m.ai_analysis_notes or 'Visual inspection recorded.'}")
-    ms_str = "\n".join(ms_summary) if ms_summary else "No milestone proof submitted."
+        m_idx_num = int(m.milestone_index) if m.milestone_index is not None else 0
+        m_title = (
+            parsed_milestones[m_idx_num].get("title")
+            if 0 <= m_idx_num < len(parsed_milestones)
+            else f"Milestone {m_idx_num + 1}"
+        )
+        m_idx = f"M{m_idx_num + 1} - {m_title}"
+        genuine_item_flags = _extract_genuine_manipulation_flags(m.fraud_flags)
+        genuine_flags_flat.extend(genuine_item_flags)
+        non_rejection_flags = [
+            str(f).strip()
+            for f in (m.fraud_flags or [])
+            if str(f).strip() and str(f).strip().lower() != "buyer_resubmission_requested"
+        ]
+        flags_str = f" | Flags: {', '.join(non_rejection_flags)}" if non_rejection_flags else " | Anti-Spoof: Passed"
+        score = f" | AI Match: {m.ai_confidence_score}%" if m.ai_confidence_score is not None else ""
+        ms_summary.append(
+            f"• [{m_idx}] File: {m.original_filename or m.file_path or 'deliverable'} | Timestamp: {m.server_receipt_timestamp} | Hash: {(m.file_hash or '')[:16]}...{flags_str}{score}\n"
+            f"  Notes: {m.ai_analysis_notes or 'Visual inspection recorded.'}"
+        )
+    ms_str = "\n".join(ms_summary) if ms_summary else "No approved milestone proof submissions on file."
 
     terms_str = agreement.ai_generated_contract if agreement and agreement.ai_generated_contract else project.description
     proof_req_str = agreement.evidence_requirements if agreement and agreement.evidence_requirements else "Visual photographic proof."
 
+    ms_schedule_lines = []
+    for idx, ms in enumerate(parsed_milestones):
+        ms_schedule_lines.append(
+            f"  • Milestone {idx + 1}: {ms.get('title', f'Milestone {idx + 1}')} | Status: {ms.get('status', 'pending')} | Amount: ${float(ms.get('price_allocation') or 0):,.2f} | Proof: {ms.get('proof_required', 'Standard proof')}"
+        )
+    ms_schedule_str = "\n".join(ms_schedule_lines) if ms_schedule_lines else "No milestone schedule recorded."
+
+    sc_lines = []
+    for sc in normalized_sc:
+        sc_lines.append(
+            f"  • Scope Request #{sc.get('id')}: '{sc.get('description')}' | Status: {sc.get('status')} | Delta: +${sc.get('proposed_extra_cost'):,.2f}, +{sc.get('proposed_extra_days')}d"
+        )
+    sc_str = "\n".join(sc_lines) if sc_lines else "None"
+
+    r_lower = (dispute_reason or "").lower()
+    explicit_spoof_alleged = any(
+        k in r_lower
+        for k in [
+            "screen",
+            "fake",
+            "spoof",
+            "photo of",
+            "re-photo",
+            "rephoto",
+            "moir",
+            "bezel",
+            "photoshop",
+            "ai generated",
+            "ai-generated",
+            "watermark",
+            "manipulat",
+            "tamper",
+            "forged",
+            "fabricated",
+        ]
+    )
+    has_genuine_media_flags = len(genuine_flags_flat) > 0
+
     prompt = f"""
     You are an expert impartial dispute adjudication AI for ProofLens and the PayPal Disputes API.
     Analyze this dispute claim filed by the {disputed_by.upper()} against the authoritative chronological record.
+
+    IMPORTANT AUDIT SCOPE:
+    - ONLY accepted evidence submissions from BUYER-APPROVED milestones ({approved_num_str}) are included in the evidence audit below. Prior superseded/rejected resubmission attempts and unapproved milestones have been excluded.
+    - CLASSIFICATION RULE: Only classify as "fraud" or "Potentially manipulated" if genuine media tampering, screen bezel/Moire re-photographing, fabricated assets, or unauthorized AI watermarks are present in the evaluated approved evidence or plausibly alleged. Do NOT classify color, shade, design preference, or scope disagreements (e.g. green/emerald vs red/ruby/purple) as "fraud" — classify those as "scope_disagreement".
 
     PROJECT CONTEXT:
     - Title: {project.title} ({project.industry_type})
     - Escrow Value: ${project.total_price:,.2f} USD
     - Target Deadline: {project.deadline or 'Not specified'}
 
-    AGREED CONTRACT TERMS:
+    AGREED CONTRACT TERMS (v{agreement.version if agreement else 1}):
     {terms_str}
+
+    AGREED MILESTONE SCHEDULE:
+    {ms_schedule_str}
+
+    SCOPE CHANGE REQUESTS & ADDENDUMS:
+    {sc_str}
 
     SPECIFIC VERIFICATION REQUIREMENTS:
     {proof_req_str}
@@ -10377,7 +10721,7 @@ def classify_dispute_with_ai(
     AUTHORITATIVE BASELINE BEFORE-EVIDENCE:
     {before_str}
 
-    CHRONOLOGICAL MILESTONE EVIDENCE SUBMISSIONS:
+    APPROVED MILESTONE EVIDENCE SUBMISSIONS ONLY:
     {ms_str}
 
     DISPUTE CLAIM FILED BY {disputed_by.upper()}:
@@ -10387,16 +10731,16 @@ def classify_dispute_with_ai(
     1. Dispute Classification: Classify into one of:
        - "missing_work": Deliverable not finished, skipped milestones, or key components absent.
        - "technical_defect": Deliverable has physical/functional defects, leaks, improper dimensions, or craftsmanship failure.
-       - "scope_disagreement": Conflict over deliverables or expectations not explicitly specified in the contract clauses.
+       - "scope_disagreement": Conflict over deliverables, colors, materials, or expectations not explicitly specified in the executed contract clauses or disputed against previously approved work.
        - "fraud": Intentional spoofing, photographed screen, manipulated media, or fabricated proof.
-    
+
     2. STRICT VALIDITY FLAG CONSTRAINT:
        Do NOT force an AI verdict in every case!
-       Assign EXACTLY ONE of the following validity flags:
-       - "Verified": Evidence conclusively validates the claimant's position or contractual compliance.
-       - "Not verified": The claim is directly contradicted by the authoritative timestamped cryptographic record.
+       Assign EXACTLY ONE of the following validity flags for the CLAIM:
+       - "Verified": Evidence conclusively validates the claimant's position.
+       - "Not verified": The claimant's assertion is contradicted by the active contract baseline and clean approved timestamped cryptographic evidence.
        - "Conflicting": Visual records or mutual statements contain contradictory indicators.
-       - "Potentially manipulated": Visible screen bezels, Moiré patterns, or metadata anomalies detected.
+       - "Potentially manipulated": Visible screen bezels, Moiré patterns, AI watermarks, or media tampering detected.
        - "Requires expert review": Subjective craftsmanship, trade tolerances, or technical testing requiring human specialist evaluation.
 
     Return JSON strictly adhering to schema:
@@ -10404,7 +10748,7 @@ def classify_dispute_with_ai(
       "dispute_classification": "technical_defect" | "missing_work" | "scope_disagreement" | "fraud",
       "validity_flag": "Verified" | "Not verified" | "Conflicting" | "Potentially manipulated" | "Requires expert review",
       "confidence_score": 1-100,
-      "discrepancy_analysis": "Step-by-step chronological analysis comparing contract terms vs submitted evidence vs dispute claim",
+      "discrepancy_analysis": "Step-by-step chronological analysis comparing contract terms vs approved milestone evidence vs dispute claim",
       "dossier_summary": "Concise executive summary tailored for PayPal dispute resolution adjudicators",
       "evidence_audit_findings": "Summary of cryptographic SHA-256 hashes, server timestamps, and hardware camera authenticity",
       "recommended_adjudication": "Neutral recommendation regarding escrow release, partial settlement, or inspection"
@@ -10430,6 +10774,17 @@ def classify_dispute_with_ai(
                     if parsed and "validity_flag" in parsed and "dispute_classification" in parsed:
                         valid_flags = ["Verified", "Not verified", "Conflicting", "Potentially manipulated", "Requires expert review"]
                         if parsed["validity_flag"] in valid_flags:
+                            # Prevent false fraud hallucinations when evaluated approved evidences passed anti-spoof
+                            # and the dispute claim itself does not allege media spoofing/tampering.
+                            if (
+                                not has_genuine_media_flags
+                                and not explicit_spoof_alleged
+                                and (
+                                    str(parsed.get("dispute_classification")).lower() == "fraud"
+                                    or parsed.get("validity_flag") == "Potentially manipulated"
+                                )
+                            ):
+                                break
                             return parsed
                 except Exception:
                     continue
@@ -10437,39 +10792,96 @@ def classify_dispute_with_ai(
             print(f"Gemini dispute classification notice: {e}")
 
     # Domain-aware Resilient Fallback Engine
-    r_lower = dispute_reason.lower()
-    any_fraud = any(m.fraud_flags for m in milestone_items) or any(k in r_lower for k in ["screen", "fake", "spoof", "photo of", "re-photo"])
-    
-    if any_fraud:
+    scores = [int(m.ai_confidence_score) for m in milestone_items if m.ai_confidence_score is not None]
+    avg_score = round(sum(scores) / len(scores)) if scores else None
+    pending_sc_note = ""
+    if pending_sc:
+        first_p = pending_sc[0]
+        pending_sc_note = (
+            f" Note: Scope Change Request ('{first_p.get('description')}') remains in "
+            f"{first_p.get('status')} state and has not been mutually executed or funded as a binding addendum."
+        )
+    elif accepted_sc:
+        pending_sc_note = f" ({len(accepted_sc)} accepted scope addendum(s) on file)."
+
+    if has_genuine_media_flags or explicit_spoof_alleged:
         classification = "fraud"
         flag = "Potentially manipulated"
         conf = 92
-        analysis = "Anti-spoofing audit flagged potential screen re-photographing or media anomalies. Image evidence requires manual review."
-    elif any(k in r_lower for k in ["leak", "crack", "defect", "flaw", "drip", "broken", "peel", "uneven", "pressure"]):
+        if has_genuine_media_flags:
+            dedup_flags = ", ".join(dict.fromkeys(genuine_flags_flat))
+            analysis = f"Anti-spoofing audit flagged genuine media integrity anomalies on evaluated proof(s): {dedup_flags}. Manual forensic review required."
+        else:
+            analysis = f"Claimant explicitly alleges media spoofing or manipulation ('{dispute_reason}'). Evaluated milestone evidence requires manual forensic authentication."
+        summary = f"ProofLens Chronological Dossier: Dispute classified as {classification}. Assigned validity flag: '{flag}'."
+        recommendation = "Hold disputed escrow release pending resolution of manual forensic inspection findings."
+    elif any(k in r_lower for k in ["leak", "crack", "defect", "flaw", "drip", "broken", "peel", "uneven", "pressure", "scratch", "damage", "bent", "loose", "chip"]):
         classification = "technical_defect"
         flag = "Requires expert review"
         conf = 88
-        analysis = f"Claimant asserts technical/craftsmanship defect: '{dispute_reason}'. Authoritative photographic record shows work progression, but operational integrity requires human expert verification."
-    elif any(k in r_lower for k in ["missing", "not done", "never", "incomplete", "skipped", "unfinished", "didn't finish"]):
+        analysis = (
+            f"Claimant asserts technical/craftsmanship defect: '{dispute_reason}'. "
+            f"All {len(milestone_items)} approved milestone proof(s) passed anti-spoofing authentication, but physical/functional tolerances require qualified expert inspection."
+        )
+        summary = f"ProofLens Chronological Dossier: Dispute classified as {classification}. Assigned validity flag: '{flag}'."
+        recommendation = "Hold remaining escrow release pending qualified human expert inspection findings."
+    elif any(k in r_lower for k in ["missing", "not done", "never", "incomplete", "skipped", "unfinished", "didn't finish", "did not finish", "undelivered"]):
         classification = "missing_work"
         flag = "Conflicting"
         conf = 84
-        analysis = f"Claimant alleges incomplete deliverables. Milestone submissions are recorded on file; claim conflicts with seller's submitted photographic record."
+        analysis = (
+            f"Claimant alleges incomplete deliverables ('{dispute_reason}'). "
+            f"{len(milestone_items)} accepted proof submission(s) across Approved Milestone(s) ({approved_num_str}) are recorded on file with SHA-256 provenance."
+        )
+        summary = f"ProofLens Chronological Dossier: Dispute classified as {classification}. Assigned validity flag: '{flag}'."
+        recommendation = "Hold unapproved escrow funds pending delivery audit against Section 1.0 milestone requirements."
     else:
         classification = "scope_disagreement"
-        flag = "Requires expert review"
-        conf = 80
-        analysis = f"Dispute involves interpretation of contract scope and deliverables ('{dispute_reason}'). Requires adjudicator contract review against Section 1.0 terms."
+        all_approved_clean = (
+            len(approved_ms_indices) > 0
+            and len(milestone_items) > 0
+            and (avg_score is None or avg_score >= 75)
+        )
+        if all_approved_clean and disputed_by.lower() == "buyer":
+            flag = "Not verified"
+            conf = min(92, max(80, avg_score if avg_score is not None else 85))
+            score_text = f" (avg AI match score: {avg_score}%)" if avg_score is not None else ""
+            analysis = (
+                f"Color/specification disagreement ('{dispute_reason}') rather than media fraud. "
+                f"All {len(milestone_items)} approved milestone evidence submission(s) across {approved_num_str} passed cryptographic SHA-256 and anti-spoofing checks{score_text}, "
+                f"and those milestones were already reviewed and approved against the active Section 1.0 contract.{pending_sc_note}"
+            )
+            summary = (
+                f"ProofLens Chronological Dossier: Classified as scope_disagreement. Claimant's specification assertion is 'Not verified' "
+                f"against the locked Section 1.0 agreement and {len(milestone_items)} verified approved milestone proof(s) (anti-spoofing passed)."
+            )
+            recommendation = (
+                "Uphold the executed Section 1.0 Agreement and already-approved milestone settlements unless both parties "
+                "formally execute and fund a Scope Change Addendum covering the requested modification."
+            )
+        else:
+            flag = "Requires expert review"
+            conf = 80
+            analysis = (
+                f"Dispute involves interpretation of contract scope and deliverables ('{dispute_reason}') across "
+                f"{len(milestone_items)} approved milestone evidence item(s) ({approved_num_str}). Requires adjudicator contract review against Section 1.0 terms.{pending_sc_note}"
+            )
+            summary = f"ProofLens Chronological Dossier: Dispute classified as {classification}. Assigned validity flag: '{flag}'."
+            recommendation = "Hold unapproved escrow release pending human adjudicator contract review or mutual Scope Change Addendum."
 
     return {
         "dispute_classification": classification,
         "validity_flag": flag,
         "confidence_score": conf,
         "discrepancy_analysis": analysis,
-        "dossier_summary": f"ProofLens Chronological Dossier: Dispute classified as {classification}. Assigned validity flag: '{flag}'.",
-        "evidence_audit_findings": f"{len(milestone_items)} milestone evidence item(s) cryptographically hashed with SHA-256 and server-timestamped.",
-        "recommended_adjudication": "Hold escrow release pending resolution of expert inspection findings."
+        "dossier_summary": summary,
+        "evidence_audit_findings": (
+            f"{len(milestone_items)} approved milestone evidence item(s) across Approved Milestone(s) ({approved_num_str}) "
+            f"cryptographically hashed with SHA-256 and server-timestamped (Anti-Spoof: {'Passed' if not has_genuine_media_flags else 'Flagged'})."
+        ),
+        "recommended_adjudication": recommendation,
     }
+
 
 def compile_evidence_dossier(
     project: models.Project,
@@ -10478,10 +10890,38 @@ def compile_evidence_dossier(
     milestone_items: list,
     dispute_reason: str,
     disputed_by: str,
-    ai_classification: dict
+    ai_classification: dict,
+    scope_changes: Optional[list] = None,
+    evidence_filter_stats: Optional[dict] = None,
 ) -> dict:
     dossier_id = f"DOSSIER-{project.id}-{uuid.uuid4().hex[:8].upper()}"
     now_iso = datetime.utcnow().isoformat() + "Z"
+
+    parsed_milestones = _parse_agreement_milestones(agreement)
+    normalized_milestones = []
+    approved_indices: List[int] = []
+    for idx, ms in enumerate(parsed_milestones):
+        ms_status = str(ms.get("status") or "pending").strip().lower()
+        if ms_status == "approved":
+            approved_indices.append(idx)
+        normalized_milestones.append({
+            "index": idx,
+            "milestone_number": idx + 1,
+            "title": ms.get("title") or f"Milestone {idx + 1}",
+            "description": ms.get("description") or "",
+            "proof_required": ms.get("proof_required") or "",
+            "price_allocation": float(ms.get("price_allocation") or 0.0),
+            "deadline": ms.get("deadline"),
+            "relative_deadline": ms.get("relative_deadline"),
+            "status": ms_status,
+            "approved_at": ms.get("approved_at"),
+            "submitted_at": ms.get("submitted_at"),
+            "is_addendum": bool(ms.get("is_addendum", False)),
+            "version": ms.get("version"),
+        })
+
+    normalized_sc = [_serialize_scope_change_summary(sc) for sc in (scope_changes or [])]
+    excluded_count = int((evidence_filter_stats or {}).get("excluded_count") or 0)
 
     return {
         "dossier_id": dossier_id,
@@ -10500,50 +10940,50 @@ def compile_evidence_dossier(
         "executive_summary": ai_classification.get("dossier_summary"),
         "recommended_adjudication": ai_classification.get("recommended_adjudication"),
         "contractual_baseline": {
+            "agreement_id": agreement.id if agreement else None,
             "agreement_version": agreement.version if agreement else 1,
-            "legal_terms": agreement.ai_generated_contract if agreement else project.description,
-            "evidence_requirements": agreement.evidence_requirements if agreement else "Visual photo proof",
-            "milestones": agreement.milestones if agreement and agreement.milestones else []
+            "agreement_status": agreement.status if agreement else "ACTIVE",
+            "project_description": project.description,
+            "project_domain": project.project_domain or "physical",
+            "target_deadline": project.deadline,
+            "warranty_days": int(getattr(agreement, "warranty_days", 0) or 0) if agreement else 0,
+            "lock_in_type": (getattr(agreement, "lock_in_type", "NONE") or "NONE") if agreement else "NONE",
+            "lock_in_amount": float(getattr(agreement, "lock_in_amount", 0.0) or 0.0) if agreement else 0.0,
+            "legal_terms": agreement.ai_generated_contract if agreement and agreement.ai_generated_contract else project.description,
+            "evidence_requirements": agreement.evidence_requirements if agreement and agreement.evidence_requirements else "Visual photo proof",
+            "milestones": normalized_milestones,
+            "approved_milestones_count": len(approved_indices),
+            "total_milestones_count": len(normalized_milestones),
+            "scope_changes": normalized_sc,
         },
         "authoritative_evidence_chronology": {
+            "evidence_filter_policy": "APPROVED_MILESTONES_ONLY",
+            "considered_approved_milestone_indices": approved_indices,
+            "total_approved_milestone_evidence_count": len(milestone_items),
+            "excluded_unapproved_or_superseded_count": excluded_count,
             "before_evidence": [
-                {
-                    "id": b.id,
-                    "sha256_hash": b.file_hash,
-                    "server_receipt_timestamp": b.server_receipt_timestamp.isoformat() if b.server_receipt_timestamp else None,
-                    "file_path": b.file_path,
-                    "location": b.location,
-                    "capture_method": b.capture_method
-                }
+                _serialize_dossier_evidence_item(b, normalized_milestones, is_before=True)
                 for b in before_items
             ],
             "milestone_submissions": [
-                {
-                    "id": m.id,
-                    "milestone_index": m.milestone_index,
-                    "sha256_hash": m.file_hash,
-                    "server_receipt_timestamp": m.server_receipt_timestamp.isoformat() if m.server_receipt_timestamp else None,
-                    "file_path": m.file_path,
-                    "location": m.location,
-                    "status": m.status,
-                    "ai_match_score": m.ai_confidence_score,
-                    "fraud_flags": m.fraud_flags or [],
-                    "analysis_notes": m.ai_analysis_notes
-                }
+                _serialize_dossier_evidence_item(m, normalized_milestones, is_before=False)
                 for m in milestone_items
-            ]
-        }
+            ],
+        },
     }
 
+
 def format_paypal_dispute_notes(dossier: dict) -> str:
+    cb = dossier.get("contractual_baseline") or {}
+    auth = dossier.get("authoritative_evidence_chronology") or {}
     lines = [
         f"PROOFLENS AUTHORITATIVE EVIDENCE DOSSIER ({dossier['dossier_id']})",
-        f"Project: {dossier['project_title']} | Escrow Value: ${dossier['total_escrow_amount']:,.2f} USD",
+        f"Project: {dossier['project_title']} | Escrow Value: ${dossier['total_escrow_amount']:,.2f} USD | Agreement v{cb.get('agreement_version', 1)} ({cb.get('approved_milestones_count', 0)}/{cb.get('total_milestones_count', len(cb.get('milestones', [])))} Milestones Approved)",
         f"AI Dispute Classification: {str(dossier['ai_dispute_classification']).upper()}",
         f"Strict Validity Flag: {dossier['ai_validity_flag']} (Confidence: {dossier['ai_confidence_score']}%)",
         f"Claimant ({dossier['claimant']}): \"{dossier['dispute_claim']}\"",
         f"Discrepancy Analysis: {dossier['adjudication_analysis']}",
-        f"Evidence Audit: {len(dossier['authoritative_evidence_chronology']['before_evidence'])} Before Baseline(s), {len(dossier['authoritative_evidence_chronology']['milestone_submissions'])} Milestone Proof Submission(s) secured with SHA-256 cryptographic hashes and hardware camera provenance.",
+        f"Evidence Audit (Approved Milestones Only): {len(auth.get('before_evidence', []))} Before Baseline(s), {len(auth.get('milestone_submissions', []))} Approved Milestone Proof(s) secured with SHA-256 cryptographic hashes and hardware camera provenance.",
         f"Adjudication Recommendation: {dossier['recommended_adjudication']}"
     ]
     return "\n".join(lines)[:1990]
@@ -10747,6 +11187,18 @@ async def _resolve_or_sync_paypal_dispute_id(
     return None, "none", note
 
 
+def _dossier_needs_approved_filter_upgrade(dossier: Any) -> bool:
+    if not isinstance(dossier, dict):
+        return False
+    auth = dossier.get("authoritative_evidence_chronology") or {}
+    cb = dossier.get("contractual_baseline") or {}
+    if auth.get("evidence_filter_policy") != "APPROVED_MILESTONES_ONLY":
+        return True
+    if "scope_changes" not in cb or "milestones" not in cb:
+        return True
+    return False
+
+
 def _compile_and_store_dispute_dossier(
     project: models.Project,
     dispute: models.DisputeRecord,
@@ -10756,15 +11208,25 @@ def _compile_and_store_dispute_dossier(
 ) -> Tuple[dict, dict, list, models.Dossier]:
     agreement = project.agreement
 
-    before_items = db.query(models.Evidence).filter(
-        models.Evidence.project_id == project.id,
-        models.Evidence.evidence_type == "before_evidence"
+    all_evidence_rows = db.query(models.Evidence).filter(
+        models.Evidence.project_id == project.id
     ).order_by(models.Evidence.id.asc()).all()
 
-    milestone_items = db.query(models.Evidence).filter(
-        models.Evidence.project_id == project.id,
-        models.Evidence.evidence_type == "milestone_evidence"
-    ).order_by(models.Evidence.id.asc()).all()
+    before_items = [
+        ev for ev in all_evidence_rows if ev.evidence_type == "before_evidence"
+    ]
+    all_milestone_items = [
+        ev for ev in all_evidence_rows if (ev.evidence_type or "milestone_evidence") != "before_evidence"
+    ]
+
+    milestone_items, filter_stats = _select_approved_dispute_milestone_evidence(
+        agreement=agreement,
+        all_milestone_items=all_milestone_items,
+    )
+
+    scope_changes = db.query(models.ScopeChangeRequest).filter(
+        models.ScopeChangeRequest.project_id == project.id
+    ).order_by(models.ScopeChangeRequest.id.asc()).all()
 
     ai_classification = classify_dispute_with_ai(
         project=project,
@@ -10772,7 +11234,8 @@ def _compile_and_store_dispute_dossier(
         before_items=before_items,
         milestone_items=milestone_items,
         dispute_reason=dispute.reason,
-        disputed_by=dispute.disputed_by
+        disputed_by=dispute.disputed_by,
+        scope_changes=scope_changes,
     )
 
     dossier = compile_evidence_dossier(
@@ -10782,7 +11245,9 @@ def _compile_and_store_dispute_dossier(
         milestone_items=milestone_items,
         dispute_reason=dispute.reason,
         disputed_by=dispute.disputed_by,
-        ai_classification=ai_classification
+        ai_classification=ai_classification,
+        scope_changes=scope_changes,
+        evidence_filter_stats=filter_stats,
     )
     dossier["paypal_dispute_id"] = paypal_dispute_id
     dossier["paypal_sync_status"] = "SUBMITTED_TO_PAYPAL" if pushed_to_paypal else "PROOFLENS_INTERNAL_READY"
@@ -10804,7 +11269,11 @@ def _compile_and_store_dispute_dossier(
         print(f"Dossier record creation notice: {e}")
 
     dispute.dispute_classification = ai_classification.get("dispute_classification")
-    dispute.validity_flag = ai_classification.get("validity_flag")
+    raw_flag = ai_classification.get("validity_flag")
+    try:
+        dispute.validity_flag = models.DisputeValidityFlag(raw_flag)
+    except Exception:
+        dispute.validity_flag = models.DisputeValidityFlag.REQUIRES_EXPERT_REVIEW
     dispute.ai_confidence_score = ai_classification.get("confidence_score")
     dispute.ai_analysis = ai_classification.get("discrepancy_analysis")
     dispute.compiled_dossier = dossier
@@ -10952,6 +11421,21 @@ def get_active_dispute(project_id: int, db: Session = Depends(get_db)):
     visible_dispute_id = dispute.dispute_id
     if app_env != "test" and _is_synthetic_dispute_id(project_id, visible_dispute_id):
         visible_dispute_id = None
+
+    if dispute.compiled_dossier and _dossier_needs_approved_filter_upgrade(dispute.compiled_dossier):
+        try:
+            _compile_and_store_dispute_dossier(
+                project=project,
+                dispute=dispute,
+                db=db,
+                paypal_dispute_id=visible_dispute_id,
+                pushed_to_paypal=bool(dispute.pushed_to_paypal),
+            )
+            db.commit()
+            db.refresh(dispute)
+        except Exception as upgrade_err:
+            db.rollback()
+            print(f"[DOSSIER_UPGRADE_NOTICE] Failed to upgrade dossier for project #{project_id}: {upgrade_err}")
 
     # Fetch chat messages
     messages = db.query(models.DisputeChatHistory).filter(
@@ -11161,7 +11645,7 @@ async def escalate_dispute_programmatic(
         sender_name="PayPal Disputes Sync" if pushed else "ProofLens Forensic Gateway",
         message=(
             f"{prefix}"
-            f"Authoritative Evidence Dossier ({dossier['dossier_id']}) compiled with {len(milestone_items)} verified milestone proof(s) "
+            f"Authoritative Evidence Dossier ({dossier['dossier_id']}) compiled with {len(milestone_items)} approved milestone proof(s) "
             f"and cryptographic SHA-256 hashes, {sync_detail}{extra_note}"
         ),
         proposal_type="escalation_programmatic"
@@ -11227,7 +11711,7 @@ async def escalate_dispute_to_human(
         verify_explicit=True,
     )
 
-    if not dispute.compiled_dossier:
+    if not dispute.compiled_dossier or _dossier_needs_approved_filter_upgrade(dispute.compiled_dossier):
         _compile_and_store_dispute_dossier(
             project=project,
             dispute=dispute,
@@ -11406,6 +11890,22 @@ def get_dispute_dossier(project_id: int, db: Session = Depends(get_db)):
     dispute = db.query(models.DisputeRecord).filter(models.DisputeRecord.project_id == project_id).order_by(models.DisputeRecord.id.desc()).first()
     if not dispute or not dispute.compiled_dossier:
         raise HTTPException(status_code=404, detail="No dispute dossier on file for this project.")
+    if _dossier_needs_approved_filter_upgrade(dispute.compiled_dossier):
+        project = db.query(models.Project).filter(models.Project.id == project_id).first()
+        if project:
+            app_env = os.getenv("APP_ENV", "development").lower()
+            visible_dispute_id = dispute.dispute_id
+            if app_env != "test" and _is_synthetic_dispute_id(project_id, visible_dispute_id):
+                visible_dispute_id = None
+            _compile_and_store_dispute_dossier(
+                project=project,
+                dispute=dispute,
+                db=db,
+                paypal_dispute_id=visible_dispute_id,
+                pushed_to_paypal=bool(dispute.pushed_to_paypal),
+            )
+            db.commit()
+            db.refresh(dispute)
     return dispute.compiled_dossier
 
 
@@ -11497,13 +11997,13 @@ async def sync_project_paypal_dispute(
         models.DisputeStatus.ESCALATED_PROGRAMMATIC,
         models.DisputeStatus.ESCALATED_HUMAN,
     ]:
-        if not dispute.compiled_dossier:
+        if not dispute.compiled_dossier or _dossier_needs_approved_filter_upgrade(dispute.compiled_dossier):
             _compile_and_store_dispute_dossier(
                 project=project,
                 dispute=dispute,
                 db=db,
                 paypal_dispute_id=paypal_dispute_id,
-                pushed_to_paypal=False,
+                pushed_to_paypal=bool(dispute.pushed_to_paypal),
             )
 
         if not dispute.pushed_to_paypal and dispute.compiled_dossier:

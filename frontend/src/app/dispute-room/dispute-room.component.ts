@@ -3,7 +3,9 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { ActivatedRoute, Router } from '@angular/router';
+import { Observable, firstValueFrom, of } from 'rxjs';
 import { API_BASE_URL } from '../api.config';
+import { EvidenceFileService } from '../evidence-file.service';
 import { RevisionRoomComponent } from '../revision-room/revision-room.component';
 
 export interface DisputeMessageItem {
@@ -85,6 +87,9 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
   dossierData: any = null;
   isLoadingDossier: boolean = false;
   isGeneratingDossier: boolean = false;
+  private readonly emptyUrl$ = of('');
+  private readonly resolvedPrintImages = new Map<string, string>();
+  private readonly failedImageKeys = new Set<string>();
 
   // Initial dispute creation form if no dispute is open yet
   showOpenDisputeForm: boolean = false;
@@ -98,7 +103,8 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
   constructor(
     private http: HttpClient,
     private route: ActivatedRoute,
-    private router: Router
+    private router: Router,
+    private evidenceFileService: EvidenceFileService
   ) {}
 
   ngOnInit(): void {
@@ -514,6 +520,17 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
       next: (data) => {
         this.isLoadingDossier = false;
         this.dossierData = data;
+        if (this.activeDispute && data) {
+          this.activeDispute = {
+            ...this.activeDispute,
+            has_dossier: true,
+            dispute_classification: data.ai_dispute_classification || this.activeDispute.dispute_classification,
+            validity_flag: data.ai_validity_flag || this.activeDispute.validity_flag,
+            ai_confidence_score: data.ai_confidence_score ?? this.activeDispute.ai_confidence_score,
+            ai_analysis: data.adjudication_analysis || this.activeDispute.ai_analysis
+          };
+        }
+        void this.prefetchDossierImages(data);
       },
       error: (err) => {
         if (err.status === 404) {
@@ -551,6 +568,7 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
             ai_analysis: compiled.adjudication_analysis || this.activeDispute.ai_analysis
           };
         }
+        void this.prefetchDossierImages(compiled);
       },
       error: (err) => {
         this.isGeneratingDossier = false;
@@ -584,53 +602,260 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
       .replace(/'/g, '&#39;');
   }
 
-  printDossierReport(): void {
+  getEvidencePathKey(ev: any): string {
+    if (!ev) return '';
+    return String(ev.file_path || ev.download_path || '').trim();
+  }
+
+  isPreviewableImage(ev: any): boolean {
+    if (!ev) return false;
+    const key = this.getEvidencePathKey(ev);
+    if (!key || this.failedImageKeys.has(key)) return false;
+    const mime = String(ev.mime_type || '').toLowerCase();
+    if (mime.startsWith('image/')) return true;
+    if (mime && (mime.startsWith('video/') || mime.includes('pdf') || mime.startsWith('text/') || mime.includes('zip'))) {
+      return false;
+    }
+    const candidate = String(ev.original_filename || key).split('?')[0].toLowerCase();
+    return /\.(jpe?g|png|webp|gif|bmp)$/.test(candidate);
+  }
+
+  getEvidenceUrl(ev: any): Observable<string> {
+    const key = this.getEvidencePathKey(ev);
+    if (!key) return this.emptyUrl$;
+    return this.evidenceFileService.getFileUrl(key);
+  }
+
+  getSafeExternalUrl(url: any): string | null {
+    const raw = String(url || '').trim();
+    if (/^https?:\/\//i.test(raw)) {
+      return raw;
+    }
+    return null;
+  }
+
+  openResolvedUrl(url: string | null | undefined): void {
+    const target = String(url || '').trim();
+    if (target) {
+      window.open(target, '_blank', 'noopener,noreferrer');
+    }
+  }
+
+  onEvidenceImageError(ev: any): void {
+    const key = this.getEvidencePathKey(ev);
+    if (key) {
+      this.failedImageKeys.add(key);
+    }
+  }
+
+  formatClassification(classification: any): string {
+    const val = String(classification || '').trim();
+    if (!val) return 'Under Review';
+    return val
+      .split('_')
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+  }
+
+  formatScopeStatus(status: any): string {
+    const val = String(status || 'NEGOTIATING').trim().toUpperCase();
+    if (val === 'NEGOTIATING') return 'Under Negotiation';
+    if (val === 'PENDING_FUNDS') return 'Pending Escrow Funding';
+    if (val === 'ACCEPTED') return 'Accepted Addendum';
+    if (val === 'REJECTED') return 'Declined';
+    return val;
+  }
+
+  getApprovedMilestoneNumbersText(): string {
+    const indices: number[] = this.dossierData?.authoritative_evidence_chronology?.considered_approved_milestone_indices || [];
+    if (!Array.isArray(indices) || indices.length === 0) {
+      const milestones: any[] = this.dossierData?.contractual_baseline?.milestones || [];
+      const derived = milestones
+        .filter(ms => String(ms?.status || '').toLowerCase() === 'approved')
+        .map(ms => Number(ms.milestone_number || (Number(ms.index || 0) + 1)));
+      return derived.length ? derived.map(n => `Milestone ${n}`).join(', ') : 'None yet';
+    }
+    return indices.map(idx => `Milestone ${Number(idx) + 1}`).join(', ');
+  }
+
+  getNonRejectionFlags(flags: any): string[] {
+    if (!Array.isArray(flags)) return [];
+    return flags
+      .map(f => String(f || '').trim())
+      .filter(f => f.length > 0 && f.toLowerCase() !== 'buyer_resubmission_requested');
+  }
+
+  private async blobUrlToDataUrl(url: string): Promise<string> {
+    if (!url) return '';
+    if (url.startsWith('data:')) return url;
+    try {
+      const resp = await fetch(url);
+      const blob = await resp.blob();
+      return await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(blob);
+      });
+    } catch {
+      return '';
+    }
+  }
+
+  private async prefetchDossierImages(dossier: any): Promise<void> {
+    if (!dossier) return;
+    const beforeItems: any[] = dossier.authoritative_evidence_chronology?.before_evidence || [];
+    const msItems: any[] = dossier.authoritative_evidence_chronology?.milestone_submissions || [];
+    const allItems = [...beforeItems, ...msItems];
+    await Promise.all(
+      allItems.map(async (item) => {
+        const key = this.getEvidencePathKey(item);
+        if (!key || this.resolvedPrintImages.has(key) || !this.isPreviewableImage(item)) {
+          return;
+        }
+        try {
+          const url = await firstValueFrom(this.getEvidenceUrl(item));
+          const dataUrl = await this.blobUrlToDataUrl(url);
+          if (dataUrl) {
+            this.resolvedPrintImages.set(key, dataUrl);
+          }
+        } catch {
+          // Non-fatal: report still prints complete metadata even if an image cannot be embedded.
+        }
+      })
+    );
+  }
+
+  async printDossierReport(): Promise<void> {
     if (!this.dossierData) return;
     const d = this.dossierData;
-    const win = window.open('', '_blank', 'width=960,height=780');
+    const win = window.open('', '_blank', 'width=1024,height=840');
     if (!win) {
       alert('Pop-up blocked. Please allow pop-ups or use Download JSON.');
       return;
     }
 
-    const beforeRows = (d.authoritative_evidence_chronology?.before_evidence || [])
-      .map((b: any, i: number) => `
-        <tr>
-          <td>Baseline #${i + 1}</td>
-          <td><code>${this.escapeHtml(b.sha256_hash || '')}</code></td>
-          <td>${this.escapeHtml(b.server_receipt_timestamp || '')}</td>
-          <td>${this.escapeHtml(b.capture_method || 'verified_capture')}</td>
-        </tr>
-      `)
-      .join('');
+    win.document.write('<!doctype html><html><head><title>Preparing ProofLens Evidence Dossier...</title></head><body style="font-family:sans-serif;padding:2rem;color:#334155;">Loading agreement &amp; approved milestone evidences for PDF export...</body></html>');
+    await this.prefetchDossierImages(d);
 
-    const msRows = (d.authoritative_evidence_chronology?.milestone_submissions || [])
-      .map((m: any) => `
-        <tr>
-          <td>Milestone ${(Number(m.milestone_index) || 0) + 1}</td>
-          <td><code>${this.escapeHtml(m.sha256_hash || '')}</code></td>
-          <td>${this.escapeHtml(m.server_receipt_timestamp || '')}</td>
-          <td>${this.escapeHtml(m.ai_match_score ?? '-')}%</td>
-          <td>${this.escapeHtml(m.status || '')}</td>
-        </tr>
-      `)
-      .join('');
+    const cb = d.contractual_baseline || {};
+    const auth = d.authoritative_evidence_chronology || {};
+    const milestones: any[] = Array.isArray(cb.milestones) ? cb.milestones : [];
+    const scopeChanges: any[] = Array.isArray(cb.scope_changes) ? cb.scope_changes : [];
+    const beforeEvidence: any[] = Array.isArray(auth.before_evidence) ? auth.before_evidence : [];
+    const milestoneEvidence: any[] = Array.isArray(auth.milestone_submissions) ? auth.milestone_submissions : [];
+    const excludedCount = Number(auth.excluded_unapproved_or_superseded_count || 0);
 
+    const milestoneRows = milestones.length
+      ? milestones.map((ms: any, idx: number) => `
+          <tr>
+            <td><strong>M${this.escapeHtml(ms.milestone_number ?? (idx + 1))}</strong>${ms.is_addendum ? '<br><span class="pill pill-purple">Addendum</span>' : ''}</td>
+            <td>
+              <strong>${this.escapeHtml(ms.title || `Milestone ${idx + 1}`)}</strong>
+              ${ms.description ? `<div class="muted">${this.escapeHtml(ms.description)}</div>` : ''}
+              ${ms.proof_required ? `<div class="muted"><em>Proof Required:</em> ${this.escapeHtml(ms.proof_required)}</div>` : ''}
+            </td>
+            <td>$${Number(ms.price_allocation || 0).toFixed(2)} USD</td>
+            <td>${this.escapeHtml(ms.deadline || ms.relative_deadline || 'Per Schedule')}</td>
+            <td><span class="pill ${String(ms.status || '').toLowerCase() === 'approved' ? 'pill-green' : 'pill-slate'}">${this.escapeHtml(String(ms.status || 'pending').toUpperCase())}</span></td>
+          </tr>
+        `).join('')
+      : '<tr><td colspan="5">No milestone schedule attached.</td></tr>';
+
+    const scopeChangeRows = scopeChanges.length
+      ? scopeChanges.map((sc: any) => `
+          <tr>
+            <td>#${this.escapeHtml(sc.id || '')}</td>
+            <td>${this.escapeHtml(sc.description || '')}</td>
+            <td>+$${Number(sc.proposed_extra_cost || 0).toFixed(2)} / +${this.escapeHtml(sc.proposed_extra_days ?? 0)}d</td>
+            <td><span class="pill">${this.escapeHtml(this.formatScopeStatus(sc.status))}</span></td>
+          </tr>
+        `).join('')
+      : '<tr><td colspan="4">No formal scope change requests recorded on this project.</td></tr>';
+
+    const renderEvidenceCard = (ev: any, title: string, subtitle: string, showAi: boolean) => {
+      const key = this.getEvidencePathKey(ev);
+      const dataUrl = key ? this.resolvedPrintImages.get(key) : '';
+      const flags = this.getNonRejectionFlags(ev.fraud_flags);
+      const extUrl = this.getSafeExternalUrl(ev.asset_url);
+      return `
+        <div class="ev-card">
+          <div class="ev-card-head">
+            <div>
+              <strong>${this.escapeHtml(title)}</strong>
+              <div class="muted">${this.escapeHtml(subtitle)}</div>
+            </div>
+            <span class="pill ${showAi && Number(ev.ai_match_score || 0) >= 80 ? 'pill-green' : ''}">${this.escapeHtml(String(ev.status || 'verified').toUpperCase())}</span>
+          </div>
+          <div class="ev-card-body">
+            ${dataUrl ? `<div class="ev-img-wrap"><img src="${dataUrl}" alt="${this.escapeHtml(ev.original_filename || title)}" /></div>` : '<div class="ev-no-img">File / Link Evidence</div>'}
+            <div class="ev-meta">
+              <div><strong>Filename:</strong> ${this.escapeHtml(ev.original_filename || ev.file_path || 'Captured Deliverable')}</div>
+              <div><strong>Method:</strong> ${this.escapeHtml(ev.capture_method || 'verified_capture')} • <strong>Server Timestamp:</strong> ${this.escapeHtml(ev.server_receipt_timestamp || '')}</div>
+              <div><strong>SHA-256:</strong> <code>${this.escapeHtml(ev.sha256_hash || '')}</code></div>
+              ${ev.location ? `<div><strong>Location / GPS:</strong> ${this.escapeHtml(ev.location)}</div>` : ''}
+              ${extUrl ? `<div><strong>Asset Link:</strong> ${this.escapeHtml(extUrl)}</div>` : ''}
+              ${showAi ? `<div><strong>AI Match:</strong> ${this.escapeHtml(ev.ai_match_score ?? '-')}% • <strong>Anti-Spoof:</strong> ${flags.length ? this.escapeHtml(flags.join(', ')) : 'Passed (Clean)'}</div>` : ''}
+              ${ev.analysis_notes ? `<div class="ev-notes"><strong>Analysis Notes:</strong><br>${this.escapeHtml(ev.analysis_notes)}</div>` : ''}
+            </div>
+          </div>
+        </div>
+      `;
+    };
+
+    const beforeCardsHtml = beforeEvidence.length
+      ? beforeEvidence.map((b: any, i: number) =>
+          renderEvidenceCard(
+            b,
+            `Baseline Before-Evidence #${i + 1}`,
+            b.original_filename || 'Pre-work authoritative reference',
+            false
+          )
+        ).join('')
+      : '<div class="box">No baseline before-evidence submitted on file.</div>';
+
+    const approvedMsCardsHtml = milestoneEvidence.length
+      ? milestoneEvidence.map((m: any) =>
+          renderEvidenceCard(
+            m,
+            `Milestone ${(Number(m.milestone_index) || 0) + 1}: ${m.milestone_title || 'Approved Deliverable'}`,
+            `$${Number(m.milestone_amount || 0).toFixed(2)} USD • Status: ${String(m.milestone_status || 'approved').toUpperCase()}`,
+            true
+          )
+        ).join('')
+      : '<div class="box">No accepted evidence from buyer-approved milestones is currently on file.</div>';
+
+    win.document.open();
     win.document.write(`
       <!doctype html>
       <html>
         <head>
           <title>ProofLens Evidence Dossier - ${this.escapeHtml(d.dossier_id)}</title>
           <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #0f172a; margin: 2rem; line-height: 1.5; }
-            h1 { margin: 0 0 0.25rem; color: #001435; font-size: 1.35rem; }
-            h2 { margin: 1.5rem 0 0.5rem; font-size: 1rem; color: #003087; border-bottom: 1px solid #cbd5e1; padding-bottom: 0.25rem; }
-            .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 1.5rem; background: #f8fafc; border: 1px solid #cbd5e1; padding: 1rem; border-radius: 8px; margin-top: 1rem; font-size: 0.85rem; }
-            .box { background: #f8fafc; border: 1px solid #e2e8f0; padding: 0.85rem; border-radius: 6px; white-space: pre-wrap; font-size: 0.85rem; }
-            table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.8rem; }
-            th, td { border: 1px solid #cbd5e1; padding: 0.45rem 0.6rem; text-align: left; word-break: break-all; }
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #0f172a; margin: 1.75rem; line-height: 1.45; }
+            h1 { margin: 0 0 0.2rem; color: #001435; font-size: 1.35rem; }
+            h2 { margin: 1.4rem 0 0.5rem; font-size: 0.98rem; color: #003087; border-bottom: 1.5px solid #cbd5e1; padding-bottom: 0.25rem; }
+            h3 { margin: 0.9rem 0 0.4rem; font-size: 0.88rem; color: #1e293b; }
+            .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.45rem 1.25rem; background: #f8fafc; border: 1px solid #cbd5e1; padding: 0.9rem; border-radius: 8px; margin-top: 0.75rem; font-size: 0.82rem; }
+            .box { background: #f8fafc; border: 1px solid #e2e8f0; padding: 0.75rem 0.9rem; border-radius: 6px; white-space: pre-wrap; font-size: 0.82rem; }
+            .policy-banner { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e3a8a; padding: 0.6rem 0.85rem; border-radius: 6px; font-size: 0.8rem; margin-bottom: 0.75rem; }
+            table { width: 100%; border-collapse: collapse; margin-top: 0.45rem; font-size: 0.78rem; }
+            th, td { border: 1px solid #cbd5e1; padding: 0.45rem 0.55rem; text-align: left; vertical-align: top; }
             th { background: #f1f5f9; }
-            code { font-family: monospace; font-size: 0.75rem; }
+            code { font-family: monospace; font-size: 0.72rem; word-break: break-all; }
+            .muted { color: #64748b; font-size: 0.74rem; margin-top: 0.15rem; }
+            .pill { display: inline-block; padding: 0.12rem 0.45rem; border-radius: 999px; font-size: 0.68rem; font-weight: 700; background: #e2e8f0; color: #1e293b; }
+            .pill-green { background: #dcfce7; color: #166534; }
+            .pill-purple { background: #f3e8ff; color: #6b21a8; }
+            .pill-slate { background: #f1f5f9; color: #475569; }
+            .ev-card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.75rem; margin-bottom: 0.75rem; break-inside: avoid; background: #ffffff; }
+            .ev-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.75rem; border-bottom: 1px solid #f1f5f9; padding-bottom: 0.45rem; margin-bottom: 0.55rem; }
+            .ev-card-body { display: grid; grid-template-columns: 165px 1fr; gap: 0.85rem; align-items: start; }
+            .ev-img-wrap img { width: 100%; max-height: 155px; object-fit: cover; border-radius: 6px; border: 1px solid #cbd5e1; }
+            .ev-no-img { width: 100%; min-height: 90px; display: flex; align-items: center; justify-content: center; background: #f1f5f9; color: #475569; border-radius: 6px; font-size: 0.75rem; font-weight: 600; text-align: center; padding: 0.5rem; box-sizing: border-box; }
+            .ev-meta { font-size: 0.78rem; display: flex; flex-direction: column; gap: 0.25rem; }
+            .ev-notes { margin-top: 0.25rem; background: #f8fafc; border: 1px solid #e2e8f0; padding: 0.45rem 0.6rem; border-radius: 5px; white-space: pre-wrap; font-size: 0.74rem; }
+            @media print { body { margin: 1rem; } }
           </style>
         </head>
         <body>
@@ -639,7 +864,7 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
           <div class="meta">
             <div><strong>Dossier ID:</strong> ${this.escapeHtml(d.dossier_id)}</div>
             <div><strong>Compiled At:</strong> ${this.escapeHtml(d.compiled_at)}</div>
-            <div><strong>AI Classification:</strong> ${this.escapeHtml(d.ai_dispute_classification)}</div>
+            <div><strong>AI Classification:</strong> ${this.escapeHtml(this.formatClassification(d.ai_dispute_classification))}</div>
             <div><strong>AI Validity Flag:</strong> ${this.escapeHtml(d.ai_validity_flag)} (${this.escapeHtml(d.ai_confidence_score)}%)</div>
             <div><strong>Claimant:</strong> ${this.escapeHtml(d.claimant)}</div>
             <div><strong>PayPal Sync:</strong> ${this.escapeHtml(d.paypal_dispute_id || d.paypal_sync_status || 'Internal Dossier Ready')}</div>
@@ -648,16 +873,58 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
           <div class="box">${this.escapeHtml(d.dispute_claim)}</div>
           <h2>Executive Summary</h2>
           <div class="box">${this.escapeHtml(d.executive_summary || '')}</div>
-          <h2>Adjudication Analysis & Findings</h2>
+          <h2>Adjudication Analysis &amp; Findings</h2>
           <div class="box">${this.escapeHtml(d.adjudication_analysis || '')}</div>
           <h2>Recommended Adjudication</h2>
           <div class="box">${this.escapeHtml(d.recommended_adjudication || '')}</div>
-          <h2>Contractual Baseline (Agreement v${this.escapeHtml(d.contractual_baseline?.agreement_version || 1)})</h2>
-          <div class="box">${this.escapeHtml(d.contractual_baseline?.legal_terms || '')}</div>
-          ${beforeRows ? `<h2>Baseline Before-Evidence (SHA-256)</h2><table><thead><tr><th>Item</th><th>SHA-256 Hash</th><th>Server Receipt</th><th>Method</th></tr></thead><tbody>${beforeRows}</tbody></table>` : ''}
-          <h2>Milestone Proof Submissions (SHA-256)</h2>
-          <table><thead><tr><th>Milestone</th><th>SHA-256 Hash</th><th>Server Receipt</th><th>AI Match</th><th>Status</th></tr></thead><tbody>${msRows || '<tr><td colspan="5">No milestone proof submissions recorded yet.</td></tr>'}</tbody></table>
-          <script>window.onload = function() { window.print(); };</script>
+
+          <h2>Project Agreement &amp; Contractual Baseline (v${this.escapeHtml(cb.agreement_version || 1)})</h2>
+          <div class="meta">
+            <div><strong>Agreement Status:</strong> ${this.escapeHtml(cb.agreement_status || 'ACTIVE')}</div>
+            <div><strong>Domain &amp; Deadline:</strong> ${this.escapeHtml(cb.project_domain || 'physical')} • Due ${this.escapeHtml(cb.target_deadline || 'Not specified')}</div>
+            <div><strong>Milestones Approved:</strong> ${this.escapeHtml(cb.approved_milestones_count ?? 0)} / ${this.escapeHtml(cb.total_milestones_count ?? milestones.length)}</div>
+            <div><strong>Warranty / Retainage:</strong> ${Number(cb.warranty_days || 0)} days (${this.escapeHtml(cb.lock_in_type || 'NONE')}${Number(cb.lock_in_amount || 0) > 0 ? ` • $${Number(cb.lock_in_amount).toFixed(2)}` : ''})</div>
+          </div>
+          ${cb.project_description ? `<h3>Project Scope Description</h3><div class="box">${this.escapeHtml(cb.project_description)}</div>` : ''}
+          <h3>Legal Contract Terms (Section 1.0)</h3>
+          <div class="box">${this.escapeHtml(cb.legal_terms || '')}</div>
+          <h3>Specific Verification &amp; Evidence Requirements</h3>
+          <div class="box">${this.escapeHtml(cb.evidence_requirements || '')}</div>
+          <h3>Agreed Milestone Schedule</h3>
+          <table>
+            <thead><tr><th>MS</th><th>Deliverable &amp; Proof Required</th><th>Escrow</th><th>Due</th><th>Status</th></tr></thead>
+            <tbody>${milestoneRows}</tbody>
+          </table>
+          <h3>Scope Change Requests &amp; Addendums</h3>
+          <table>
+            <thead><tr><th>ID</th><th>Requested Modification</th><th>Proposed Delta</th><th>Status</th></tr></thead>
+            <tbody>${scopeChangeRows}</tbody>
+          </table>
+
+          <h2>Authoritative Evidences (Approved Milestones Only)</h2>
+          <div class="policy-banner">
+            <strong>Evidence Audit Policy:</strong> Only buyer-approved milestone evidences (${this.escapeHtml(this.getApprovedMilestoneNumbersText())}) and authoritative baseline proofs are included in forensic adjudication. ${excludedCount > 0 ? `${excludedCount} unapproved milestone upload(s) or prior buyer-rejected/superseded resubmission(s) were excluded.` : ''}
+          </div>
+          <h3>Baseline Before-Evidence (${beforeEvidence.length})</h3>
+          ${beforeCardsHtml}
+          <h3>Approved Milestone Evidences (${milestoneEvidence.length})</h3>
+          ${approvedMsCardsHtml}
+          <script>
+            (function() {
+              function triggerPrint() { setTimeout(function() { window.print(); }, 150); }
+              var imgs = Array.prototype.slice.call(document.images || []);
+              if (imgs.length === 0) { triggerPrint(); return; }
+              var pending = imgs.length;
+              function done() { pending -= 1; if (pending <= 0) triggerPrint(); }
+              imgs.forEach(function(img) {
+                if (img.complete) { done(); }
+                else {
+                  img.addEventListener('load', done, { once: true });
+                  img.addEventListener('error', done, { once: true });
+                }
+              });
+            })();
+          </script>
         </body>
       </html>
     `);

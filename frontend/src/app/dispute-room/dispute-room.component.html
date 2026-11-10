@@ -631,8 +631,9 @@
             <div class="dossier-meta-banner">
               <div>Dossier ID: <strong>{{ dossierData.dossier_id }}</strong></div>
               <div>Compiled: <strong>{{ dossierData.compiled_at | date:'medium' }}</strong></div>
-              <div>Classification: <strong>{{ dossierData.ai_dispute_classification }}</strong></div>
+              <div>Classification: <strong>{{ formatClassification(dossierData.ai_dispute_classification) }}</strong></div>
               <div>AI Validity: <strong>{{ dossierData.ai_validity_flag }}</strong> (Confidence: {{ dossierData.ai_confidence_score }}%)</div>
+              <div>Claimant: <strong>{{ (dossierData.claimant || 'buyer') | uppercase }}</strong></div>
               <div>
                 PayPal Sync:
                 <strong>
@@ -640,6 +641,13 @@
                 </strong>
               </div>
             </div>
+
+            @if (dossierData.dispute_claim) {
+              <div class="dossier-section">
+                <h4>Dispute Claim Filed</h4>
+                <p class="claim-quote-box">"{{ dossierData.dispute_claim }}"</p>
+              </div>
+            }
 
             @if (dossierData.executive_summary) {
               <div class="dossier-section">
@@ -660,70 +668,288 @@
               </div>
             }
 
-            <div class="dossier-section">
-              <h4>Contractual Baseline (Section 1.0)</h4>
-              <pre class="code-block">{{ dossierData.contractual_baseline?.legal_terms }}</pre>
-            </div>
+            <!-- Project Agreement & Contractual Baseline -->
+            <div class="dossier-section agreement-dossier-section">
+              <div class="dossier-section-head">
+                <h4>Project Agreement &amp; Contractual Baseline</h4>
+                <span class="version-pill">
+                  Agreement v{{ dossierData.contractual_baseline?.agreement_version || 1 }} • {{ dossierData.contractual_baseline?.agreement_status || 'ACTIVE' }}
+                </span>
+              </div>
 
-            @if ((dossierData.authoritative_evidence_chronology?.before_evidence?.length || 0) > 0) {
-              <div class="dossier-section">
-                <h4>Baseline Before-Evidence Ledger (SHA-256)</h4>
-                <div class="table-responsive">
-                  <table class="dossier-table">
-                    <thead>
-                      <tr>
-                        <th>#</th>
-                        <th>SHA-256 Hash</th>
-                        <th>Server Timestamp</th>
-                        <th>Capture Method</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      @for (b of dossierData.authoritative_evidence_chronology?.before_evidence; track b.id; let idx = $index) {
-                        <tr>
-                          <td>Baseline {{ idx + 1 }}</td>
-                          <td><code>{{ (b.sha256_hash || '').slice(0, 16) }}...</code></td>
-                          <td>{{ b.server_receipt_timestamp | date:'short' }}</td>
-                          <td><span class="status-chip">{{ b.capture_method || 'verified' }}</span></td>
-                        </tr>
-                      }
-                    </tbody>
-                  </table>
+              <div class="agreement-facts-grid">
+                <div class="fact-item">
+                  <span class="fact-label">Project Domain</span>
+                  <span class="fact-value">{{ (dossierData.contractual_baseline?.project_domain || 'physical') | uppercase }}</span>
+                </div>
+                <div class="fact-item">
+                  <span class="fact-label">Target Deadline</span>
+                  <span class="fact-value">{{ dossierData.contractual_baseline?.target_deadline || 'Not specified' }}</span>
+                </div>
+                <div class="fact-item">
+                  <span class="fact-label">Milestones Approved</span>
+                  <span class="fact-value">
+                    {{ dossierData.contractual_baseline?.approved_milestones_count ?? 0 }} / {{ dossierData.contractual_baseline?.total_milestones_count ?? (dossierData.contractual_baseline?.milestones?.length || 0) }}
+                  </span>
+                </div>
+                <div class="fact-item">
+                  <span class="fact-label">Warranty / Retainage</span>
+                  <span class="fact-value">
+                    {{ dossierData.contractual_baseline?.warranty_days || 0 }} days ({{ dossierData.contractual_baseline?.lock_in_type || 'NONE' }})
+                    @if ((dossierData.contractual_baseline?.lock_in_amount || 0) > 0) {
+                      • ${{ Number(dossierData.contractual_baseline?.lock_in_amount || 0).toFixed(2) }}
+                    }
+                  </span>
                 </div>
               </div>
-            }
 
-            <div class="dossier-section">
-              <h4>Milestone Proof Submissions Ledger (SHA-256)</h4>
-              <div class="table-responsive">
-                <table class="dossier-table">
-                  <thead>
-                    <tr>
-                      <th>MS #</th>
-                      <th>SHA-256 Hash</th>
-                      <th>Server Timestamp</th>
-                      <th>AI Match</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    @for (m of dossierData.authoritative_evidence_chronology?.milestone_submissions; track m.id) {
-                      <tr>
-                        <td>Milestone {{ (m.milestone_index || 0) + 1 }}</td>
-                        <td><code>{{ (m.sha256_hash || '').slice(0, 16) }}...</code></td>
-                        <td>{{ m.server_receipt_timestamp | date:'short' }}</td>
-                        <td>{{ m.ai_match_score ?? '-' }}%</td>
-                        <td>
-                          <span class="status-chip">{{ m.status }}</span>
-                        </td>
-                      </tr>
-                    } @empty {
-                      <tr>
-                        <td colspan="5" style="text-align:center; color:#64748b;">No milestone proof submissions recorded yet.</td>
-                      </tr>
+              @if (dossierData.contractual_baseline?.project_description) {
+                <div class="agreement-subblock">
+                  <h5>Project Scope Description</h5>
+                  <p class="scope-desc-box">{{ dossierData.contractual_baseline.project_description }}</p>
+                </div>
+              }
+
+              <div class="agreement-subblock">
+                <h5>Legal Contract Terms (Section 1.0)</h5>
+                <pre class="code-block">{{ dossierData.contractual_baseline?.legal_terms }}</pre>
+              </div>
+
+              @if (dossierData.contractual_baseline?.evidence_requirements) {
+                <div class="agreement-subblock">
+                  <h5>Verification &amp; Evidence Requirements</h5>
+                  <p class="requirements-box">{{ dossierData.contractual_baseline.evidence_requirements }}</p>
+                </div>
+              }
+
+              @if ((dossierData.contractual_baseline?.milestones?.length || 0) > 0) {
+                <div class="agreement-subblock">
+                  <h5>Agreed Milestone Schedule &amp; Acceptance Criteria</h5>
+                  <div class="table-responsive">
+                    <table class="dossier-table">
+                      <thead>
+                        <tr>
+                          <th>MS</th>
+                          <th>Title &amp; Deliverable Criteria</th>
+                          <th>Escrow</th>
+                          <th>Due</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        @for (ms of dossierData.contractual_baseline.milestones; track ms.index) {
+                          <tr>
+                            <td>
+                              <strong>M{{ ms.milestone_number ?? (ms.index + 1) }}</strong>
+                              @if (ms.is_addendum) {
+                                <div class="addendum-badge">Addendum</div>
+                              }
+                            </td>
+                            <td>
+                              <div class="ms-title-cell">{{ ms.title }}</div>
+                              @if (ms.description) {
+                                <div class="ms-desc-cell">{{ ms.description }}</div>
+                              }
+                              @if (ms.proof_required) {
+                                <div class="ms-proof-cell"><strong>Proof Required:</strong> {{ ms.proof_required }}</div>
+                              }
+                            </td>
+                            <td>${{ Number(ms.price_allocation || 0).toFixed(2) }}</td>
+                            <td>{{ ms.deadline || ms.relative_deadline || 'Per Schedule' }}</td>
+                            <td>
+                              <span class="status-chip" [class.chip-approved]="ms.status === 'approved'">
+                                {{ (ms.status || 'pending') | uppercase }}
+                              </span>
+                            </td>
+                          </tr>
+                        }
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              }
+
+              @if ((dossierData.contractual_baseline?.scope_changes?.length || 0) > 0) {
+                <div class="agreement-subblock">
+                  <h5>Scope Change Requests &amp; Addendums</h5>
+                  <div class="table-responsive">
+                    <table class="dossier-table">
+                      <thead>
+                        <tr>
+                          <th>ID</th>
+                          <th>Requested Scope Change</th>
+                          <th>Proposed Delta</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        @for (sc of dossierData.contractual_baseline.scope_changes; track sc.id) {
+                          <tr>
+                            <td>#{{ sc.id }}</td>
+                            <td>{{ sc.description }}</td>
+                            <td>+${{ Number(sc.proposed_extra_cost || 0).toFixed(2) }} / +{{ sc.proposed_extra_days || 0 }}d</td>
+                            <td>
+                              <span class="status-chip" [class.chip-approved]="sc.status === 'ACCEPTED'" [class.chip-warn]="sc.status === 'NEGOTIATING' || sc.status === 'PENDING_FUNDS'">
+                                {{ formatScopeStatus(sc.status) }}
+                              </span>
+                            </td>
+                          </tr>
+                        }
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              }
+            </div>
+
+            <!-- Authoritative Evidences (Approved Milestones Only) -->
+            <div class="dossier-section evidences-dossier-section">
+              <div class="dossier-section-head">
+                <h4>Authoritative Evidences (Approved Milestones Only)</h4>
+                <span class="approved-filter-badge">
+                  Approved: {{ getApprovedMilestoneNumbersText() }}
+                </span>
+              </div>
+
+              <div class="evidence-policy-banner">
+                <strong>Audit Filter Applied:</strong> Only accepted proofs from buyer-approved milestones ({{ getApprovedMilestoneNumbersText() }}) and baseline before-evidence are audited.
+                @if ((dossierData.authoritative_evidence_chronology?.excluded_unapproved_or_superseded_count || 0) > 0) {
+                  <span>
+                    {{ dossierData.authoritative_evidence_chronology.excluded_unapproved_or_superseded_count }} prior buyer-rejected/superseded or unapproved milestone upload(s) were excluded.
+                  </span>
+                }
+              </div>
+
+              @if ((dossierData.authoritative_evidence_chronology?.before_evidence?.length || 0) > 0) {
+                <div class="agreement-subblock">
+                  <h5>Baseline Before-Evidence ({{ dossierData.authoritative_evidence_chronology.before_evidence.length }})</h5>
+                  <div class="evidence-cards-grid">
+                    @for (b of dossierData.authoritative_evidence_chronology.before_evidence; track b.id; let idx = $index) {
+                      <div class="dossier-evidence-card">
+                        <div class="ev-card-header">
+                          <span class="ev-card-title">Baseline #{{ idx + 1 }}</span>
+                          <span class="status-chip chip-approved">{{ (b.status || 'verified') | uppercase }}</span>
+                        </div>
+
+                        <div class="ev-card-content">
+                          @if (getEvidencePathKey(b) && (getEvidenceUrl(b) | async); as fileUrl) {
+                            <div class="ev-media-col">
+                              @if (isPreviewableImage(b)) {
+                                <img [src]="fileUrl" [alt]="b.original_filename || 'Baseline evidence'" class="ev-thumb" (error)="onEvidenceImageError(b)" />
+                              } @else {
+                                <div class="ev-file-badge">File Attachment</div>
+                              }
+                              <button type="button" class="btn-view-ev-file" (click)="openResolvedUrl(fileUrl)">
+                                Open Full File
+                              </button>
+                            </div>
+                          }
+
+                          <div class="ev-details-col">
+                            @if (b.original_filename) {
+                              <div><strong>File:</strong> {{ b.original_filename }}</div>
+                            }
+                            <div><strong>Method:</strong> <span class="status-chip">{{ b.capture_method || 'verified' }}</span></div>
+                            <div><strong>Received:</strong> {{ b.server_receipt_timestamp | date:'medium' }}</div>
+                            @if (b.location) {
+                              <div><strong>GPS / Location:</strong> {{ b.location }}</div>
+                            }
+                            @if (getSafeExternalUrl(b.asset_url); as extUrl) {
+                              <div>
+                                <strong>Asset Link:</strong>
+                                <a [href]="extUrl" target="_blank" rel="noopener noreferrer" class="ev-ext-link">{{ extUrl }}</a>
+                              </div>
+                            }
+                            <div class="ev-hash-row">
+                              <strong>SHA-256:</strong>
+                              <code [title]="b.sha256_hash || ''">{{ (b.sha256_hash || '').slice(0, 24) }}...</code>
+                            </div>
+                            @if (b.analysis_notes) {
+                              <div class="ev-notes-box">{{ b.analysis_notes }}</div>
+                            }
+                          </div>
+                        </div>
+                      </div>
                     }
-                  </tbody>
-                </table>
+                  </div>
+                </div>
+              }
+
+              <div class="agreement-subblock">
+                <h5>Approved Milestone Evidences ({{ dossierData.authoritative_evidence_chronology?.milestone_submissions?.length || 0 }})</h5>
+                @if ((dossierData.authoritative_evidence_chronology?.milestone_submissions?.length || 0) > 0) {
+                  <div class="evidence-cards-grid">
+                    @for (m of dossierData.authoritative_evidence_chronology.milestone_submissions; track m.id) {
+                      <div class="dossier-evidence-card">
+                        <div class="ev-card-header">
+                          <div>
+                            <div class="ev-card-title">
+                              Milestone {{ m.milestone_number ?? ((m.milestone_index || 0) + 1) }}: {{ m.milestone_title || 'Approved Deliverable' }}
+                            </div>
+                            <div class="ev-card-subtitle">
+                              ${{ Number(m.milestone_amount || 0).toFixed(2) }} USD • Milestone Status: {{ (m.milestone_status || 'approved') | uppercase }}
+                            </div>
+                          </div>
+                          <span class="status-chip chip-approved">{{ (m.status || 'verified') | uppercase }}</span>
+                        </div>
+
+                        <div class="ev-card-content">
+                          @if (getEvidencePathKey(m) && (getEvidenceUrl(m) | async); as fileUrl) {
+                            <div class="ev-media-col">
+                              @if (isPreviewableImage(m)) {
+                                <img [src]="fileUrl" [alt]="m.original_filename || 'Milestone evidence'" class="ev-thumb" (error)="onEvidenceImageError(m)" />
+                              } @else {
+                                <div class="ev-file-badge">Deliverable File</div>
+                              }
+                              <button type="button" class="btn-view-ev-file" (click)="openResolvedUrl(fileUrl)">
+                                Open Full File
+                              </button>
+                            </div>
+                          }
+
+                          <div class="ev-details-col">
+                            @if (m.original_filename) {
+                              <div><strong>File:</strong> {{ m.original_filename }}</div>
+                            }
+                            <div class="ev-metrics-row">
+                              <span><strong>AI Match:</strong> {{ m.ai_match_score ?? '-' }}%</span>
+                              <span><strong>Method:</strong> <span class="status-chip">{{ m.capture_method || 'live_camera' }}</span></span>
+                              <span>
+                                <strong>Anti-Spoof:</strong>
+                                @if (getNonRejectionFlags(m.fraud_flags).length > 0) {
+                                  <span class="flag-warn-text">{{ getNonRejectionFlags(m.fraud_flags).join(', ') }}</span>
+                                } @else {
+                                  <span class="flag-clean-text">Passed (Clean)</span>
+                                }
+                              </span>
+                            </div>
+                            <div><strong>Received:</strong> {{ m.server_receipt_timestamp | date:'medium' }}</div>
+                            @if (m.location) {
+                              <div><strong>GPS / Location:</strong> {{ m.location }}</div>
+                            }
+                            @if (getSafeExternalUrl(m.asset_url); as extUrl) {
+                              <div>
+                                <strong>Asset Link:</strong>
+                                <a [href]="extUrl" target="_blank" rel="noopener noreferrer" class="ev-ext-link">{{ extUrl }}</a>
+                              </div>
+                            }
+                            <div class="ev-hash-row">
+                              <strong>SHA-256:</strong>
+                              <code [title]="m.sha256_hash || ''">{{ (m.sha256_hash || '').slice(0, 24) }}...</code>
+                            </div>
+                            @if (m.analysis_notes) {
+                              <div class="ev-notes-box">{{ m.analysis_notes }}</div>
+                            }
+                          </div>
+                        </div>
+                      </div>
+                    }
+                  </div>
+                } @else {
+                  <div class="empty-ev-box">
+                    No approved milestone evidences are currently eligible for adjudication. Only milestones marked APPROVED by the buyer are included.
+                  </div>
+                }
               </div>
             </div>
           </div>

@@ -1,14 +1,16 @@
 import os
 import unittest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 from datetime import datetime
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.pool import StaticPool
 
 import auth_service
 import database
+import main
 import models
 from main import app, get_db
 
@@ -670,6 +672,280 @@ class TestDisputeWorkflow(unittest.TestCase):
             self.assertIsNone(esc.json()["paypal_dispute_id"])
             self.assertFalse(esc.json()["pushed_to_paypal"])
             mock_provide_evidence.assert_not_awaited()
+
+    @patch("main._ensure_milestone_invoice", new_callable=AsyncMock, return_value=(None, None))
+    @patch("paypal_service.capture_payment", new_callable=AsyncMock)
+    @patch("ai_service.has_network_connection", return_value=False)
+    def test_15_color_scope_dispute_after_resubmission_not_fraud_and_dossier_contains_agreement_and_evidences(
+        self, mock_net, mock_capture, mock_invoice
+    ):
+        """
+        Regression test for Project #93 bug:
+        - Prior buyer-rejected upload ('buyer_resubmission_requested') must NOT be flipped to VERIFIED on approve
+          and must NOT cause false 'fraud' / 'Potentially manipulated' classification.
+        - Color/spec disputes classify as scope_disagreement + 'Not verified' when approved evidence passed anti-spoof.
+        - Dossier includes full Project Agreement (milestones, scope_changes, requirements) + only approved evidences.
+        """
+        mock_capture.return_value = {"id": "CAP-M0-TEST-93", "status": "COMPLETED"}
+
+        self.agreement.version = 2
+        self.agreement.evidence_requirements = "Multi-angle live hardware camera photos of gemstone setting."
+        self.agreement.warranty_days = 14
+        self.agreement.lock_in_type = "FINAL_MILESTONE"
+        self.agreement.lock_in_amount = 300.0
+        self.agreement.milestones = [
+            {
+                "title": "Core Execution & Emerald Setting",
+                "description": "Set green emerald and purple sapphire accent",
+                "proof_required": "Live camera macro photo",
+                "price_allocation": 200.0,
+                "status": "awaiting_buyer_review",
+                "rejected_evidence_max_id": None,
+            },
+            {
+                "title": "Final Polish & Delivery",
+                "description": "Final polish and box packaging",
+                "proof_required": "Final live camera photos",
+                "price_allocation": 300.0,
+                "status": "pending",
+            },
+        ]
+        flag_modified(self.agreement, "milestones")
+
+        # Replace default self.ev2 with an old buyer-rejected attempt + a clean resubmission on Milestone 0
+        self.db.delete(self.ev2)
+        self.db.commit()
+
+        rejected_ev = models.Evidence(
+            project_id=self.project.id,
+            evidence_type="milestone_evidence",
+            milestone_index=0,
+            file_hash="1111" * 16,
+            file_path="/uploads/rejected_m0.jpg",
+            original_filename="rejected_m0.jpg",
+            mime_type="image/jpeg",
+            server_receipt_timestamp=datetime.utcnow(),
+            status=models.EvidenceStatus.POSSIBLE_MISMATCH,
+            ai_confidence_score=70,
+            ai_analysis_notes="Buyer Rejection Feedback: stone angle unclear",
+            fraud_flags=["buyer_resubmission_requested"],
+            ai_comparison_details={"submission_batch_id": "SUB-OLD"},
+        )
+        self.db.add(rejected_ev)
+        self.db.flush()
+
+        # Record rejected_evidence_max_id in milestone metadata as /reject does
+        ms_copy = [dict(m) for m in self.agreement.milestones]
+        ms_copy[0]["rejected_evidence_max_id"] = rejected_ev.id
+        self.agreement.milestones = ms_copy
+        flag_modified(self.agreement, "milestones")
+
+        approved_ev = models.Evidence(
+            project_id=self.project.id,
+            evidence_type="milestone_evidence",
+            milestone_index=0,
+            file_hash="2222" * 16,
+            file_path="/uploads/approved_m0_emerald.jpg",
+            original_filename="approved_m0_emerald.jpg",
+            mime_type="image/jpeg",
+            server_receipt_timestamp=datetime.utcnow(),
+            status=models.EvidenceStatus.VERIFIED,
+            ai_confidence_score=95,
+            ai_analysis_notes="Verified green emerald and purple sapphire match Section 1.0.",
+            fraud_flags=[],
+            ai_comparison_details={"submission_batch_id": "SUB-GOOD"},
+        )
+        self.db.add(approved_ev)
+        self.db.add(
+            models.Payment(
+                project_id=self.project.id,
+                milestone_index=0,
+                amount=200.0,
+                authorization_id="AUTH-M0-TEST-93",
+                status=models.PaymentStatus.AUTHORIZED,
+            )
+        )
+        self.db.add(
+            models.ScopeChangeRequest(
+                project_id=self.project.id,
+                requested_by_id=self.buyer.id,
+                description="replace emerald green stone to ruby",
+                proposed_extra_cost=100.0,
+                proposed_extra_days=1,
+                status=models.ScopeChangeStatus.NEGOTIATING.value,
+            )
+        )
+        self.db.commit()
+
+        # Approve Milestone 0: must ONLY mark approved_ev verified, never rejected_ev
+        app_resp = self.client.post(f"/api/projects/{self.project.id}/milestones/0/approve")
+        self.assertEqual(app_resp.status_code, 200, app_resp.text)
+
+        self.db.expire_all()
+        rejected_refetched = self.db.query(models.Evidence).filter(models.Evidence.id == rejected_ev.id).first()
+        self.assertEqual(rejected_refetched.status, models.EvidenceStatus.POSSIBLE_MISMATCH)
+
+        headers = self._buyer_headers()
+        with patch.dict(os.environ, {"APP_ENV": "development"}):
+            self.client.post(
+                f"/api/disputes/{self.project.id}/open",
+                json={
+                    "reason": "Follow-up escalation on prior resolved dispute: colors doesnt match i said. i remember saying red ruby nor purple",
+                    "disputed_by": "buyer",
+                },
+                headers=headers,
+            )
+
+            esc_resp = self.client.post(
+                f"/api/disputes/{self.project.id}/escalate",
+                json={},
+                headers=headers,
+            )
+            self.assertEqual(esc_resp.status_code, 200, esc_resp.text)
+            esc_data = esc_resp.json()
+
+            self.assertEqual(esc_data["ai_classification"], "scope_disagreement")
+            self.assertEqual(esc_data["validity_flag"], "Not verified")
+            self.assertNotEqual(esc_data["ai_classification"], "fraud")
+
+            dossier = esc_data["evidence_dossier"]
+            auth = dossier["authoritative_evidence_chronology"]
+            cb = dossier["contractual_baseline"]
+
+            # Strict Approved-Milestones-Only Evidence Audit
+            self.assertEqual(auth["evidence_filter_policy"], "APPROVED_MILESTONES_ONLY")
+            self.assertEqual(auth["considered_approved_milestone_indices"], [0])
+            self.assertEqual(auth["excluded_unapproved_or_superseded_count"], 1)
+            self.assertEqual(len(auth["milestone_submissions"]), 1)
+            self.assertEqual(auth["milestone_submissions"][0]["id"], approved_ev.id)
+            self.assertEqual(auth["milestone_submissions"][0]["original_filename"], "approved_m0_emerald.jpg")
+            self.assertEqual(auth["milestone_submissions"][0]["download_path"], "/api/evidence/download/approved_m0_emerald.jpg")
+            self.assertIn("Section 1.0", auth["milestone_submissions"][0]["analysis_notes"])
+            self.assertEqual(auth["milestone_submissions"][0]["milestone_title"], "Core Execution & Emerald Setting")
+            self.assertEqual(len(auth["before_evidence"]), 1)
+
+            # Full Agreement Metadata included in Dossier
+            self.assertEqual(cb["agreement_version"], 2)
+            self.assertEqual(cb["approved_milestones_count"], 1)
+            self.assertEqual(cb["total_milestones_count"], 2)
+            self.assertEqual(len(cb["milestones"]), 2)
+            self.assertEqual(len(cb["scope_changes"]), 1)
+            self.assertEqual(cb["scope_changes"][0]["description"], "replace emerald green stone to ruby")
+            self.assertEqual(cb["scope_changes"][0]["status"], "NEGOTIATING")
+            self.assertEqual(cb["warranty_days"], 14)
+
+    @patch("ai_service.has_network_connection", return_value=False)
+    def test_16_unapproved_milestones_excluded_and_genuine_spoof_on_approved_triggers_fraud(self, mock_net):
+        """
+        Uploads on unapproved milestones must be excluded even if flagged,
+        while genuine spoofing flags on an APPROVED milestone still classify as fraud.
+        """
+        # M0 is approved (self.ev2); M1 is pending with a spoofed photo that must be excluded
+        spoofed_unapproved = models.Evidence(
+            project_id=self.project.id,
+            evidence_type="milestone_evidence",
+            milestone_index=1,
+            file_hash="3333" * 16,
+            file_path="/uploads/m1_unapproved_spoof.jpg",
+            original_filename="m1_unapproved_spoof.jpg",
+            mime_type="image/jpeg",
+            server_receipt_timestamp=datetime.utcnow(),
+            status=models.EvidenceStatus.POSSIBLE_MISMATCH,
+            ai_confidence_score=40,
+            ai_analysis_notes="Screen bezel detected on unapproved milestone upload",
+            fraud_flags=["screen bezel detected", "moire pattern"],
+        )
+        self.db.add(spoofed_unapproved)
+        self.db.commit()
+
+        headers = self._buyer_headers()
+        with patch.dict(os.environ, {"APP_ENV": "development"}):
+            self.client.post(
+                f"/api/disputes/{self.project.id}/open",
+                json={"reason": "Shade difference on grain", "disputed_by": "buyer"},
+                headers=headers,
+            )
+            gen1 = self.client.post(f"/api/disputes/{self.project.id}/dossier/generate", json={}, headers=headers)
+            self.assertEqual(gen1.status_code, 200, gen1.text)
+            d1 = gen1.json()["dossier"]
+            self.assertEqual(d1["ai_dispute_classification"], "scope_disagreement")
+            self.assertEqual(
+                [item["id"] for item in d1["authoritative_evidence_chronology"]["milestone_submissions"]],
+                [self.ev2.id],
+            )
+            self.assertEqual(d1["authoritative_evidence_chronology"]["excluded_unapproved_or_superseded_count"], 1)
+
+            # Now simulate a genuine spoofing anomaly ON Approved Milestone 0 itself
+            self.ev2.fraud_flags = ["moire pattern screen reflection detected"]
+            self.db.commit()
+
+            gen2 = self.client.post(f"/api/disputes/{self.project.id}/dossier/generate", json={}, headers=headers)
+            self.assertEqual(gen2.status_code, 200, gen2.text)
+            d2 = gen2.json()["dossier"]
+            self.assertEqual(d2["ai_dispute_classification"], "fraud")
+            self.assertEqual(d2["ai_validity_flag"], "Potentially manipulated")
+
+    @patch("ai_service.has_network_connection", return_value=True)
+    @patch("main.genai.GenerativeModel")
+    def test_17_gemini_false_fraud_hallucination_guard_falls_back(self, mock_gen_model_cls, mock_net):
+        """
+        Even if Gemini erroneously returns fraud / Potentially manipulated on clean approved proofs
+        for a color/scope dispute, post-guard overrides back to resilient scope_disagreement analysis.
+        """
+        fake_response = MagicMock()
+        fake_response.text = '{"dispute_classification": "fraud", "validity_flag": "Potentially manipulated", "confidence_score": 92, "discrepancy_analysis": "hallucinated", "dossier_summary": "bad", "evidence_audit_findings": "bad", "recommended_adjudication": "hold"}'
+        mock_model_inst = MagicMock()
+        mock_model_inst.generate_content.return_value = fake_response
+        mock_gen_model_cls.return_value = mock_model_inst
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key-for-guard-test"}):
+            result = main.classify_dispute_with_ai(
+                project=self.project,
+                agreement=self.agreement,
+                before_items=[self.ev1],
+                milestone_items=[self.ev2],
+                dispute_reason="colors doesnt match i said green vs ruby",
+                disputed_by="buyer",
+                scope_changes=[],
+            )
+        self.assertEqual(result["dispute_classification"], "scope_disagreement")
+        self.assertEqual(result["validity_flag"], "Not verified")
+
+    @patch("ai_service.has_network_connection", return_value=False)
+    def test_18_legacy_cached_dossier_auto_upgrades_on_dossier_fetch(self, mock_net):
+        """
+        Legacy cached dossiers lacking evidence_filter_policy / scope_changes upgrade once on fetch,
+        clearing stale 'fraud' / 'Potentially manipulated' verdicts.
+        """
+        disp = models.DisputeRecord(
+            project_id=self.project.id,
+            reason="colors doesnt match",
+            disputed_by="buyer",
+            status=models.DisputeStatus.ESCALATED_PROGRAMMATIC,
+            dispute_classification="fraud",
+            validity_flag=models.DisputeValidityFlag.POTENTIALLY_MANIPULATED,
+            ai_confidence_score=92,
+            compiled_dossier={
+                "dossier_id": "DOSSIER-LEGACY-93",
+                "ai_dispute_classification": "fraud",
+                "ai_validity_flag": "Potentially manipulated",
+                "contractual_baseline": {"legal_terms": "old only"},
+                "authoritative_evidence_chronology": {"milestone_submissions": [{"id": 999}]},
+            },
+        )
+        self.db.add(disp)
+        self.db.commit()
+
+        headers = self._buyer_headers()
+        dossier_resp = self.client.get(f"/api/disputes/{self.project.id}/dossier", headers=headers)
+        self.assertEqual(dossier_resp.status_code, 200, dossier_resp.text)
+        upgraded = dossier_resp.json()
+
+        self.assertEqual(upgraded["ai_dispute_classification"], "scope_disagreement")
+        self.assertEqual(upgraded["ai_validity_flag"], "Not verified")
+        self.assertEqual(upgraded["authoritative_evidence_chronology"]["evidence_filter_policy"], "APPROVED_MILESTONES_ONLY")
+        self.assertIn("milestones", upgraded["contractual_baseline"])
+        self.assertIn("scope_changes", upgraded["contractual_baseline"])
 
 if __name__ == "__main__":
     unittest.main()
