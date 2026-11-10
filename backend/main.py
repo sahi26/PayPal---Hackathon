@@ -131,7 +131,7 @@ SELLER_ONLY_ROUTES = (
     re.compile(r"^/api/contractor/active-alerts$"),
 )
 
-@app.get("/api/health")
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 def health_check():
     db_status = "ok"
     try:
@@ -734,7 +734,7 @@ class ResolveDisputeRequest(BaseModel):
     notes: Optional[str] = None
 
 # --- Basic Health & Debug Endpoints ---
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def read_root():
     return {"message": "ProofLens API is running!"}
 
