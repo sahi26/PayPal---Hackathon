@@ -3,18 +3,22 @@
       inset: 0;
       background: rgba(0, 20, 53, 0.6);
       backdrop-filter: blur(4px);
-      z-index: 1050;
+      -webkit-backdrop-filter: blur(4px);
+      z-index: 10010;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 1.5rem;
+      box-sizing: border-box;
+      overflow-y: auto;
     }
 
     .revision-modal-container {
       background: #ffffff;
       width: 100%;
       max-width: 900px;
-      max-height: 90vh;
+      max-height: min(90vh, calc(100dvh - 3rem));
+      margin: auto;
       border-radius: 12px;
       box-shadow: 0 20px 40px rgba(0, 20, 53, 0.2);
       display: flex;
@@ -104,6 +108,7 @@
       padding: 1.5rem 1.75rem;
       overflow-y: auto;
       flex: 1;
+      min-height: 0;
     }
 
     .loading-panel {
@@ -942,16 +947,16 @@
     .reject-modal-backdrop {
       position: fixed;
       inset: 0;
-      width: 100vw;
-      height: 100vh;
       background: rgba(15, 23, 42, 0.75);
       backdrop-filter: blur(8px);
       -webkit-backdrop-filter: blur(8px);
-      z-index: 10000;
+      z-index: 10020;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 1.5rem;
+      box-sizing: border-box;
+      overflow-y: auto;
       animation: modalFadeIn 0.2s ease-out;
     }
 
@@ -964,6 +969,8 @@
       background: #FFFFFF;
       width: 100%;
       max-width: 600px;
+      max-height: min(90vh, calc(100dvh - 3rem));
+      margin: auto;
       border-radius: 16px;
       border: 1px solid rgba(226, 232, 240, 0.9);
       box-shadow: 0 25px 60px -15px rgba(15, 23, 42, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.04);
@@ -1036,6 +1043,9 @@
       display: flex;
       flex-direction: column;
       gap: 1.15rem;
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
     }
 
     .reject-field-label {
@@ -1225,12 +1235,12 @@
 
     @media (max-width: 640px) {
       .revision-modal-backdrop {
-        padding: 0.5rem;
-        align-items: flex-end;
+        padding: 0.75rem;
+        align-items: center;
       }
       .revision-modal-container {
-        max-height: 94vh;
-        border-radius: 16px 16px 0 0;
+        max-height: calc(100dvh - 1.5rem);
+        border-radius: 14px;
       }
       .revision-modal-header {
         padding: 1rem 1.15rem;
@@ -1267,12 +1277,13 @@
 
     @media (max-width: 480px) {
       .revision-modal-backdrop {
-        padding: 0;
+        padding: 0.5rem;
+        align-items: center;
       }
       .revision-modal-container {
-        height: 100vh;
-        max-height: 100vh;
-        border-radius: 0;
+        height: auto;
+        max-height: calc(100dvh - 1rem);
+        border-radius: 12px;
       }
       .revision-modal-header {
         padding: 0.85rem 1rem;

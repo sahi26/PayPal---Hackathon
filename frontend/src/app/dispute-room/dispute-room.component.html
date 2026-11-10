@@ -423,17 +423,13 @@
 
   <!-- Scope Changes Revision Room Modal Overlay -->
   @if (showScopeChangeModal) {
-    <div class="modal-backdrop" (click)="closeScopeChange()">
-      <div class="modal-card" (click)="$event.stopPropagation()">
-        <app-revision-room
-          [projectId]="projectId"
-          [currentRole]="currentRole"
-          [projectTitle]="projectTitle"
-          (closed)="closeScopeChange()"
-          (scopeAccepted)="onScopeChangeAccepted($event)"
-        ></app-revision-room>
-      </div>
-    </div>
+    <app-revision-room
+      [projectId]="projectId"
+      [currentRole]="currentRole"
+      [projectTitle]="projectTitle"
+      (closed)="closeScopeChange()"
+      (scopeAccepted)="onScopeChangeAccepted($event)"
+    ></app-revision-room>
   }
 
   <!-- Dossier Viewer Modal Overlay -->
