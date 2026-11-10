@@ -162,3 +162,10 @@ class TestScopeChangeRejection(unittest.TestCase):
         sc_record = next(sc for sc in list_data["scope_changes"] if sc["id"] == sc_id)
         self.assertEqual(sc_record["status"], "REJECTED")
         self.assertEqual(sc_record["rejection_reason"], rejection_reason)
+
+        # 8. Verify notification action_url stays clean (no sticky scope_change=1 reload trigger)
+        buyer_notifs = self.client.get(f"/api/notifications?user_id={buyer.id}&role=buyer")
+        self.assertEqual(buyer_notifs.status_code, 200)
+        rej_notif = next(n for n in buyer_notifs.json()["notifications"] if n["type"] == "SCOPE_CHANGE_REJECTED")
+        self.assertEqual(rej_notif["action_url"], f"/project/{project.id}/fulfillment?role=buyer")
+        self.assertNotIn("scope_change=1", rej_notif["action_url"])

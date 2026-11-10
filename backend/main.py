@@ -4690,8 +4690,8 @@ async def init_scope_change(
         message=f"The buyer proposed a scope revision for '{project.title}': {request.description}. Review the AI-drafted addendum and negotiate or accept it.",
         type="SCOPE_CHANGE_REQUEST",
         project_id=project.id,
-        action_url=f"/project/{project.id}/fulfillment?role=seller&scope_change=1",
-        action_data={"project_id": project.id, "scope_change_id": scope_change.id},
+        action_url=f"/project/{project.id}/fulfillment?role=seller",
+        action_data={"project_id": project.id, "scope_change_id": scope_change.id, "open_scope_change": True},
         fallback_role="seller"
     )
 
@@ -4801,8 +4801,8 @@ def negotiate_scope_change(
         message=f"The {sender_role} sent a counter-offer for '{project.title}': {request.message or 'Updated scope change terms are available for review.'}",
         type="SCOPE_CHANGE_COUNTER_OFFER",
         project_id=project.id,
-        action_url=f"/project/{project.id}/fulfillment?role={recipient_role}&scope_change=1",
-        action_data={"project_id": project.id, "scope_change_id": scope_change.id},
+        action_url=f"/project/{project.id}/fulfillment?role={recipient_role}",
+        action_data={"project_id": project.id, "scope_change_id": scope_change.id, "open_scope_change": True},
         fallback_role=recipient_role
     )
 
@@ -5040,8 +5040,8 @@ async def accept_scope_change(
             message=f"The seller accepted the scope revision for '{project.title}'. Authorize the additional ${extra_cost:,.2f} USD in PayPal before the added work begins.",
             type="SCOPE_CHANGE_ACCEPTED",
             project_id=project.id,
-            action_url=f"/project/{project.id}/fulfillment?role=buyer&scope_change=1",
-            action_data={"project_id": project.id, "scope_change_id": scope_change.id, "status": "PENDING_FUNDS"},
+            action_url=f"/project/{project.id}/fulfillment?role=buyer",
+            action_data={"project_id": project.id, "scope_change_id": scope_change.id, "status": "PENDING_FUNDS", "open_scope_change": True},
             fallback_role="buyer"
         )
 
@@ -5097,7 +5097,7 @@ async def accept_scope_change(
             message=f"The seller accepted the scope revision for '{project.title}'. The updated agreement and milestones are active.",
             type="SCOPE_CHANGE_ACCEPTED",
             project_id=project.id,
-            action_url=f"/project/{project.id}/fulfillment?role=buyer&scope_change=1",
+            action_url=f"/project/{project.id}/fulfillment?role=buyer",
             action_data={"project_id": project.id, "scope_change_id": scope_change.id, "status": "ACCEPTED"},
             fallback_role="buyer"
         )
@@ -5200,7 +5200,7 @@ async def reject_scope_change(
         message=f"The contractor declined the proposed scope revision for '{project.title}': {reason_text}",
         type="SCOPE_CHANGE_REJECTED",
         project_id=project.id,
-        action_url=f"/project/{project.id}/fulfillment?role=buyer&scope_change=1",
+        action_url=f"/project/{project.id}/fulfillment?role=buyer",
         action_data={"project_id": project.id, "scope_change_id": scope_change.id, "status": "REJECTED", "reason": reason_text},
         fallback_role="buyer"
     )

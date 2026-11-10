@@ -4,12 +4,14 @@ import { ActivatedRoute, Router } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { Subscription } from 'rxjs';
 import { API_BASE_URL } from '../api.config';
 import { EvidenceFileService } from '../evidence-file.service';
 import { requiresDigitalWarrantyHold } from '../project-warranty.utils';
 import { LiveCameraComponent } from '../live-camera/live-camera.component';
 import { RevisionRoomComponent, ScopeChangeItem } from '../revision-room/revision-room.component';
 import { DisputeRoomComponent } from '../dispute-room/dispute-room.component';
+import { ScopeChangeNavigationService } from '../scope-change-navigation.service';
 
 @Component({
   selector: 'app-milestone-fulfillment',
@@ -86,13 +88,15 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
   isReapprovingEscrow = false;
   escrowReauthSuccessMsg: string | null = null;
   private escrowSocket?: WebSocket;
+  private scopeChangeNavSub: Subscription | null = null;
 
   constructor(
     private route: ActivatedRoute,
     private router: Router,
     private http: HttpClient,
     private sanitizer: DomSanitizer,
-    private evidenceFiles: EvidenceFileService
+    private evidenceFiles: EvidenceFileService,
+    private scopeChangeNav: ScopeChangeNavigationService
   ) {}
 
   ngOnInit() {
@@ -101,9 +105,18 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
       this.currentRole = initialRole;
     }
 
+    this.scopeChangeNavSub = this.scopeChangeNav.openRequested$.subscribe(targetProjectId => {
+      if (this.projectId && targetProjectId === this.projectId && this.scopeChangeNav.consumePending(this.projectId)) {
+        this.showRevisionRoom = true;
+      }
+    });
+
     this.route.paramMap.subscribe(params => {
       this.projectId = Number(params.get('id')) || 0;
       if (this.projectId) {
+        if (this.scopeChangeNav.consumePending(this.projectId)) {
+          this.showRevisionRoom = true;
+        }
         this.fetchProject();
         this.initEscrowWebSocket();
       } else {
@@ -134,9 +147,13 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
           queryParams: { role: this.currentRole },
           replaceUrl: true
         });
-      }
-      if (q['scope_change'] === '1') {
-        this.showRevisionRoom = true;
+      } else if (q['scope_change'] !== undefined) {
+        this.router.navigate([], {
+          relativeTo: this.route,
+          queryParams: { scope_change: null },
+          queryParamsHandling: 'merge',
+          replaceUrl: true
+        });
       }
     });
   }
@@ -187,6 +204,10 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    if (this.scopeChangeNavSub) {
+      this.scopeChangeNavSub.unsubscribe();
+      this.scopeChangeNavSub = null;
+    }
     if (this.escrowSocket) {
       try {
         this.escrowSocket.close();

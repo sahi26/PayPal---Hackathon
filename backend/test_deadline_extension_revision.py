@@ -127,6 +127,13 @@ class TestDeadlineExtensionRevision(unittest.TestCase):
         self.assertEqual(sc["status"], "NEGOTIATING")
         sc_id = sc["id"]
 
+        # 3b. Verify seller notification URL stays clean and signals modal intent via action_data
+        seller_notifs = self.client.get(f"/api/notifications?user_id={seller.id}&role=seller")
+        self.assertEqual(seller_notifs.status_code, 200)
+        sc_init_notif = next(n for n in seller_notifs.json()["notifications"] if n["type"] == "SCOPE_CHANGE_REQUEST" and n["project_id"] == project_id)
+        self.assertEqual(sc_init_notif["action_url"], f"/project/{project_id}/fulfillment?role=seller")
+        self.assertTrue(sc_init_notif["action_data"].get("open_scope_change"))
+
         # 4. Check active scope change endpoint
         active_resp = self.client.get(f"/api/projects/{project_id}/scope-change/active")
         self.assertEqual(active_resp.status_code, 200)

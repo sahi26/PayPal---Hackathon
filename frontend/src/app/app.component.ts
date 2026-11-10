@@ -7,6 +7,8 @@ import { Subscription } from 'rxjs';
 import { API_BASE_URL } from './api.config';
 import { PROOFLENS_LOGO_BASE64 } from './assets.constants';
 import { PayPalOAuthService } from './paypal-oauth.service';
+import { ScopeChangeNavigationService } from './scope-change-navigation.service';
+import { parseNotificationAction } from './scope-change-navigation.mjs';
 
 interface CurrentUser {
   id: number;
@@ -70,7 +72,8 @@ export class AppComponent implements OnInit, OnDestroy {
   constructor(
     private http: HttpClient,
     private router: Router,
-    private paypalOAuth: PayPalOAuthService
+    private paypalOAuth: PayPalOAuthService,
+    private scopeChangeNav: ScopeChangeNavigationService
   ) {}
 
   ngOnInit() {
@@ -151,19 +154,16 @@ export class AppComponent implements OnInit, OnDestroy {
   handleToastClick(actionUrl?: string) {
     if (actionUrl) {
       this.dismissToast();
-      this.router.navigateByUrl(this.getRoleAwareActionUrl(actionUrl));
+      this.router.navigateByUrl(this.prepareNotificationNavigation(actionUrl));
     }
   }
 
-  private getRoleAwareActionUrl(actionUrl: string): string {
-    const role = this.currentUser?.role_type?.toLowerCase();
-    if (!role || !actionUrl.startsWith('/project/')) return actionUrl;
-
-    const resolvedRole = role === 'seller' || role === 'maker' ? 'seller' : 'buyer';
-    const [path, query = ''] = actionUrl.split('?', 2);
-    const params = new URLSearchParams(query);
-    params.set('role', resolvedRole);
-    return `${path}?${params.toString()}`;
+  private prepareNotificationNavigation(actionUrl: string, notif?: any): string {
+    const parsed = parseNotificationAction(actionUrl, this.currentUser?.role_type, notif);
+    if (parsed.openScopeChangeProjectId) {
+      this.scopeChangeNav.requestOpen(parsed.openScopeChangeProjectId);
+    }
+    return parsed.url;
   }
 
   loadNotifications() {
@@ -243,8 +243,8 @@ export class AppComponent implements OnInit, OnDestroy {
   handleNotificationClick(notif: any) {
     this.markNotificationAsRead(notif);
     this.closeNotificationsPopover();
-    if (notif.action_url) {
-      this.router.navigateByUrl(this.getRoleAwareActionUrl(notif.action_url));
+    if (notif?.action_url) {
+      this.router.navigateByUrl(this.prepareNotificationNavigation(notif.action_url, notif));
     }
   }
 
