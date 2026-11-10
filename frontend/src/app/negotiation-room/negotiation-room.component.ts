@@ -62,8 +62,67 @@ export class NegotiationRoomComponent implements OnInit {
   evidenceList: any[] = [];
   selectedMilestoneIndex = 0;
 
+  private parseServerIsoMs(ts: string | null | undefined): number {
+    if (!ts) return 0;
+    const trimmed = String(ts).trim();
+    if (!trimmed) return 0;
+    const hasTz = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(trimmed);
+    const normalized = hasTz ? trimmed : `${trimmed}Z`;
+    const parsed = Date.parse(normalized);
+    return isNaN(parsed) ? 0 : parsed;
+  }
+
+  isEvidenceItemBuyerRejected(item: any): boolean {
+    if (!item) return false;
+    let flags = item.fraud_flags;
+    if (typeof flags === 'string') {
+      try { flags = JSON.parse(flags); } catch (_) {}
+    }
+    if (Array.isArray(flags) && flags.includes('buyer_resubmission_requested')) {
+      return true;
+    }
+    return typeof item.ai_analysis_notes === 'string' &&
+      item.ai_analysis_notes.includes('Buyer Rejection Feedback:');
+  }
+
+  private getSortedMilestoneEvidence(index: number): any[] {
+    return (this.evidenceList || [])
+      .filter(e => (e.evidence_type || 'milestone_evidence') === 'milestone_evidence' && Number(e.milestone_index ?? 0) === index)
+      .sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0));
+  }
+
+  hasNewerSubmissionSinceRejection(index: number): boolean {
+    const ms = this.projectData?.agreement?.milestones?.[index];
+    const sorted = this.getSortedMilestoneEvidence(index);
+    if (!sorted.length) return false;
+
+    const latest = sorted[0];
+    if (this.isEvidenceItemBuyerRejected(latest)) {
+      return false;
+    }
+
+    const rejectedMaxId = Number(ms?.rejected_evidence_max_id || 0);
+    if (rejectedMaxId > 0 && Number(latest.id || 0) > rejectedMaxId) {
+      return true;
+    }
+
+    if (sorted.slice(1).some(ev => this.isEvidenceItemBuyerRejected(ev))) {
+      return true;
+    }
+
+    const resubmittedMs = this.parseServerIsoMs(ms?.resubmitted_at);
+    const rejectedMs = this.parseServerIsoMs(ms?.rejected_at);
+    if (resubmittedMs > 0 && (rejectedMs === 0 || resubmittedMs >= rejectedMs)) {
+      return true;
+    }
+
+    const latestMs = this.parseServerIsoMs(latest.server_receipt_timestamp);
+    return rejectedMs > 0 && latestMs > rejectedMs;
+  }
+
   getEvidenceForMilestone(index: number): any {
-    return this.evidenceList.find(e => e.evidence_type === 'milestone_evidence' && Number(e.milestone_index) === index);
+    const list = this.getAllEvidenceForMilestone(index);
+    return list.length > 0 ? list[0] : null;
   }
 
   isMilestoneApproved(index: number): boolean {
@@ -72,10 +131,14 @@ export class NegotiationRoomComponent implements OnInit {
   }
 
   isMilestoneAwaitingReview(index: number): boolean {
+    if (this.isMilestoneApproved(index)) return false;
     const ms = this.projectData?.agreement?.milestones?.[index];
     if ((ms?.status || '').toLowerCase() === 'awaiting_buyer_review') return true;
+    if ((ms?.status || '').toLowerCase() === 'resubmission_requested' && !this.hasNewerSubmissionSinceRejection(index)) {
+      return false;
+    }
     const ev = this.getEvidenceForMilestone(index);
-    return !!ev && !this.isMilestoneApproved(index);
+    return !!ev && !this.isEvidenceItemBuyerRejected(ev);
   }
 
   isMilestoneUnlocked(index: number): boolean {
@@ -101,7 +164,44 @@ export class NegotiationRoomComponent implements OnInit {
   }
 
   getAllEvidenceForMilestone(index: number): any[] {
-    return this.evidenceList.filter(e => e.evidence_type === 'milestone_evidence' && Number(e.milestone_index) === index);
+    const sorted = this.getSortedMilestoneEvidence(index);
+    if (sorted.length === 0) return [];
+
+    const ms = this.projectData?.agreement?.milestones?.[index];
+    const rejectedMaxId = Number(ms?.rejected_evidence_max_id || 0);
+    const effectiveRejectedMaxId = sorted.reduce(
+      (maxId, ev) => (this.isEvidenceItemBuyerRejected(ev) ? Math.max(maxId, Number(ev.id) || 0) : maxId),
+      rejectedMaxId
+    );
+
+    const latest = sorted[0];
+    const latestIsRejected = this.isEvidenceItemBuyerRejected(latest);
+
+    const candidates = latestIsRejected
+      ? sorted
+      : sorted.filter(item => !this.isEvidenceItemBuyerRejected(item) && (Number(item.id) || 0) > effectiveRejectedMaxId);
+
+    const activeLatest = candidates[0] || latest;
+    const batchId = activeLatest.ai_comparison_details?.submission_batch_id;
+    if (batchId) {
+      return candidates.filter(item => item.ai_comparison_details?.submission_batch_id === batchId);
+    }
+
+    if (activeLatest.capture_method === 'file_upload') {
+      return [activeLatest];
+    }
+
+    const latestTime = this.parseServerIsoMs(activeLatest.server_receipt_timestamp);
+    if (!latestTime) {
+      return [activeLatest];
+    }
+
+    return candidates.filter(item => {
+      if (item.id === activeLatest.id) return true;
+      if (this.isEvidenceItemBuyerRejected(item) !== latestIsRejected) return false;
+      const itemTime = this.parseServerIsoMs(item.server_receipt_timestamp);
+      return itemTime > 0 && Math.abs(latestTime - itemTime) <= 2000;
+    });
   }
 
   isItemFlagged(item: any): boolean {
@@ -204,6 +304,12 @@ export class NegotiationRoomComponent implements OnInit {
   }
 
   private syncRoleWithProject(data: any) {
+    const explicitRole = (this.route.snapshot.queryParams['role'] || '').toLowerCase();
+    if (explicitRole === 'buyer' || explicitRole === 'seller') {
+      this.currentRole = explicitRole;
+      return;
+    }
+
     const savedUser = localStorage.getItem('prooflens_user');
     let user: { email?: string; role_type?: string } | null = null;
     try {
@@ -219,7 +325,7 @@ export class NegotiationRoomComponent implements OnInit {
       this.currentRole = 'seller';
     } else if (email && email === buyerEmail) {
       this.currentRole = 'buyer';
-    } else if (!this.route.snapshot.queryParams['role']) {
+    } else {
       const role = user?.role_type?.toLowerCase();
       if (role === 'seller' || role === 'maker') this.currentRole = 'seller';
       else if (role === 'buyer' || role === 'customer') this.currentRole = 'buyer';

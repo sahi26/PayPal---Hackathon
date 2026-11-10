@@ -142,6 +142,8 @@ class TestMilestoneRejectionFlow(unittest.TestCase):
         self.assertEqual(m0["status"], "awaiting_buyer_review")
         self.assertIsNone(m0["rejection_reason"])
         self.assertEqual(m0["previous_rejection_reason"], reject_reason)
+        self.assertTrue(m0.get("resubmitted_at"))
+        self.assertGreater(m0.get("rejected_evidence_max_id", 0), 0)
         print("✅ Milestone 1 status back to awaiting_buyer_review; previous rejection preserved in history!")
 
         # 7. Buyer APPROVES Milestone 1
@@ -164,6 +166,247 @@ class TestMilestoneRejectionFlow(unittest.TestCase):
         self.assertEqual(m2_res.status_code, 200)
         self.assertEqual(m2_res.json()["status"], "awaiting_buyer_review")
         print("✅ Milestone 2 evidence submitted successfully!")
+
+    def test_evidence_batch_multi_angle_rejection_and_rapid_resubmission(self):
+        init_res = self.client.post("/api/projects/init", json={
+            "title": "Custom Jewellery Ring",
+            "industry_type": "Jewellery",
+            "description": "Custom 18k gold gemstone ring handcrafted physically.",
+            "total_price": 500.0,
+            "deadline": "2026-12-15",
+            "buyer_email": "buyer_jewel@test.com"
+        })
+        self.assertEqual(init_res.status_code, 200)
+        p_id = init_res.json()["project_id"]
+
+        milestones = [
+            {
+                "title": "Wax Casting & Stone Setting",
+                "description": "Cast ring setting and set gemstone.",
+                "price_allocation": 250.0,
+                "proof_required": "Photos of cast ring and stone setting.",
+                "deadline": "2026-11-20",
+                "status": "pending"
+            },
+            {
+                "title": "Final Polish & Hallmark",
+                "description": "Final mirror polish and 18k stamp.",
+                "price_allocation": 250.0,
+                "proof_required": "Photos of polished ring and hallmark.",
+                "deadline": "2026-12-10",
+                "status": "pending"
+            }
+        ]
+        fin_res = self.client.post(f"/api/projects/{p_id}/finalize-draft", json={
+            "contract_terms": "Physical craftsmanship agreement",
+            "evidence_requirements": "Live camera multi-angle photos",
+            "milestones": milestones
+        })
+        self.assertEqual(fin_res.status_code, 200)
+        invite_token = fin_res.json()["invite_token"]
+
+        join_res = self.client.post(f"/api/projects/invite/{invite_token}/join", json={
+            "seller_email": "jeweller@test.com",
+            "seller_name": "Artisan Jeweller"
+        })
+        self.assertEqual(join_res.status_code, 200)
+        self.assertEqual(self.client.post(f"/api/projects/{p_id}/accept").status_code, 200)
+
+        # 1. Seller submits 2-angle live capture batch
+        batch1_res = self.client.post(
+            f"/api/projects/{p_id}/evidence-batch",
+            data={
+                "capture_method": "live_camera",
+                "evidence_type": "milestone_evidence",
+                "milestone_index": 0
+            },
+            files=[
+                ("files", ("angle1.jpg", b"ring_attempt_1_angle_1_bytes", "image/jpeg")),
+                ("files", ("angle2.jpg", b"ring_attempt_1_angle_2_bytes", "image/jpeg")),
+            ]
+        )
+        self.assertEqual(batch1_res.status_code, 200)
+        b1_json = batch1_res.json()
+        self.assertEqual(b1_json["total_uploaded"], 2)
+        b1_id = b1_json["submission_batch_id"]
+        self.assertTrue(b1_id)
+        for item in b1_json["items"]:
+            self.assertEqual(item["ai_comparison_details"]["submission_batch_id"], b1_id)
+
+        # 2. Buyer rejects Milestone 0
+        reason = "Lighting obscured prong setting. Please recapture closer to gemstone."
+        reject_res = self.client.post(
+            f"/api/projects/{p_id}/milestones/0/reject",
+            json={"reason": reason}
+        )
+        self.assertEqual(reject_res.status_code, 200)
+        m0_after_reject = reject_res.json()["milestones"][0]
+        self.assertEqual(m0_after_reject["status"], "resubmission_requested")
+        self.assertIn("+00:00", m0_after_reject["rejected_at"])
+        max_b1_ev_id = max(item["id"] for item in b1_json["items"])
+        self.assertEqual(m0_after_reject["rejected_evidence_max_id"], max_b1_ev_id)
+
+        # Both angles in batch 1 must be marked buyer_resubmission_requested
+        ev_list_after_reject = self.client.get(f"/api/projects/{p_id}/evidence").json()
+        self.assertEqual(len(ev_list_after_reject), 2)
+        for ev in ev_list_after_reject:
+            self.assertIn("buyer_resubmission_requested", ev["fraud_flags"])
+            self.assertIn("Buyer Rejection Feedback:", ev["ai_analysis_notes"])
+
+        # Alert endpoint should report resubmission_requested
+        alert_res = self.client.get(f"/api/projects/{p_id}/alerts").json()
+        self.assertTrue(alert_res["has_alert"])
+        self.assertEqual(alert_res["alert_type"], "resubmission_requested")
+
+        # 3. Seller rapidly (<1s) resubmits 2 new angles via evidence-batch
+        batch2_res = self.client.post(
+            f"/api/projects/{p_id}/evidence-batch",
+            data={
+                "capture_method": "live_camera",
+                "evidence_type": "milestone_evidence",
+                "milestone_index": 0
+            },
+            files=[
+                ("files", ("new_angle1.jpg", b"ring_attempt_2_angle_1_bytes", "image/jpeg")),
+                ("files", ("new_angle2.jpg", b"ring_attempt_2_angle_2_bytes", "image/jpeg")),
+            ]
+        )
+        self.assertEqual(batch2_res.status_code, 200)
+        b2_json = batch2_res.json()
+        b2_id = b2_json["submission_batch_id"]
+        self.assertNotEqual(b1_id, b2_id)
+        for item in b2_json["items"]:
+            self.assertEqual(item["ai_comparison_details"]["submission_batch_id"], b2_id)
+            self.assertNotIn("buyer_resubmission_requested", item["fraud_flags"])
+
+        # Milestone state must flip back to awaiting_buyer_review & clear active rejection_reason
+        proj_after_resub = self.client.get(f"/api/projects/{p_id}").json()
+        m0_after_resub = proj_after_resub["agreement"]["milestones"][0]
+        self.assertEqual(m0_after_resub["status"], "awaiting_buyer_review")
+        self.assertIsNone(m0_after_resub["rejection_reason"])
+        self.assertEqual(m0_after_resub["previous_rejection_reason"], reason)
+        self.assertTrue(m0_after_resub.get("resubmitted_at"))
+        self.assertEqual(m0_after_resub["rejected_evidence_max_id"], max_b1_ev_id)
+
+        # Approve succeeds using newest batch
+        app_res = self.client.post(f"/api/projects/{p_id}/milestones/0/approve")
+        self.assertEqual(app_res.status_code, 200)
+        self.assertEqual(app_res.json()["status"], "approved")
+
+    def test_digital_evidence_url_and_file_rejection_resubmission(self):
+        init_res = self.client.post("/api/projects/init", json={
+            "title": "SaaS Dashboard UI Kit",
+            "industry_type": "Software",
+            "description": "Design Figma UI components and dashboard screens.",
+            "total_price": 400.0,
+            "deadline": "2026-12-20",
+            "buyer_email": "buyer_ui@test.com"
+        })
+        self.assertEqual(init_res.status_code, 200)
+        p_id = init_res.json()["project_id"]
+
+        milestones = [
+            {
+                "title": "Design System & Components",
+                "description": "Figma library with tokens and components.",
+                "price_allocation": 400.0,
+                "proof_required": "Figma link or SVG/PNG asset export.",
+                "deadline": "2026-12-01",
+                "status": "pending"
+            }
+        ]
+        fin_res = self.client.post(f"/api/projects/{p_id}/finalize-draft", json={
+            "contract_terms": "Digital UI kit terms",
+            "evidence_requirements": "Digital deliverables and preview links",
+            "milestones": milestones
+        })
+        self.assertEqual(fin_res.status_code, 200)
+        invite_token = fin_res.json()["invite_token"]
+
+        self.client.post(f"/api/projects/invite/{invite_token}/join", json={
+            "seller_email": "designer@test.com",
+            "seller_name": "UI Designer"
+        })
+        self.assertEqual(self.client.post(f"/api/projects/{p_id}/accept").status_code, 200)
+
+        # 1. Seller submits URL-only milestone deliverable via /evidence
+        sub1 = self.client.post(
+            f"/api/projects/{p_id}/evidence",
+            data={
+                "capture_method": "file_upload",
+                "evidence_type": "milestone_evidence",
+                "milestone_index": 0,
+                "asset_url": "https://www.figma.com/design/attempt-1"
+            }
+        )
+        self.assertEqual(sub1.status_code, 200)
+        s1_json = sub1.json()
+        self.assertEqual(s1_json["evidence_type"], "milestone_evidence")
+        self.assertEqual(s1_json["milestone_index"], 0)
+        self.assertEqual(s1_json["asset_url"], "https://www.figma.com/design/attempt-1")
+
+        # Must NOT wrongly flip before_evidence_status to "provided"
+        proj1 = self.client.get(f"/api/projects/{p_id}").json()
+        self.assertNotEqual(proj1["project"]["before_evidence_status"], "provided")
+        self.assertEqual(proj1["agreement"]["milestones"][0]["status"], "awaiting_buyer_review")
+
+        # 2. Buyer rejects Milestone 0
+        reason1 = "Missing mobile breakpoints in Figma file."
+        rej1 = self.client.post(f"/api/projects/{p_id}/milestones/0/reject", json={"reason": reason1})
+        self.assertEqual(rej1.status_code, 200)
+        self.assertEqual(rej1.json()["milestones"][0]["status"], "resubmission_requested")
+
+        # 3. Seller resubmits via URL-only
+        sub2 = self.client.post(
+            f"/api/projects/{p_id}/evidence",
+            data={
+                "capture_method": "file_upload",
+                "evidence_type": "milestone_evidence",
+                "milestone_index": 0,
+                "asset_url": "https://www.figma.com/design/attempt-2-responsive"
+            }
+        )
+        self.assertEqual(sub2.status_code, 200)
+        proj2 = self.client.get(f"/api/projects/{p_id}").json()
+        m0_2 = proj2["agreement"]["milestones"][0]
+        self.assertEqual(m0_2["status"], "awaiting_buyer_review")
+        self.assertIsNone(m0_2["rejection_reason"])
+        self.assertEqual(m0_2["previous_rejection_reason"], reason1)
+        self.assertNotEqual(
+            s1_json["ai_comparison_details"]["submission_batch_id"],
+            sub2.json()["ai_comparison_details"]["submission_batch_id"],
+        )
+
+        # 4. Buyer rejects a second time, seller resubmits via PNG file upload
+        reason2 = "Export hi-res preview screenshot as well."
+        self.client.post(f"/api/projects/{p_id}/milestones/0/reject", json={"reason": reason2})
+        sub3 = self.client.post(
+            f"/api/projects/{p_id}/evidence",
+            data={
+                "capture_method": "file_upload",
+                "evidence_type": "milestone_evidence",
+                "milestone_index": 0
+            },
+            files={"file": ("dashboard_v3.png", b"png_binary_payload_attempt_3", "image/png")}
+        )
+        self.assertEqual(sub3.status_code, 200)
+
+        ev_list = self.client.get(f"/api/projects/{p_id}/evidence").json()
+        self.assertEqual(len(ev_list), 3)
+        self.assertEqual(ev_list[0]["id"], sub3.json()["evidence_id"])
+        self.assertEqual(ev_list[1]["asset_url"], "https://www.figma.com/design/attempt-2-responsive")
+        self.assertIn("buyer_resubmission_requested", ev_list[1]["fraud_flags"])
+        self.assertIn("buyer_resubmission_requested", ev_list[2]["fraud_flags"])
+
+        proj3 = self.client.get(f"/api/projects/{p_id}").json()
+        m0_3 = proj3["agreement"]["milestones"][0]
+        self.assertEqual(m0_3["status"], "awaiting_buyer_review")
+        self.assertIsNone(m0_3["rejection_reason"])
+        self.assertEqual(m0_3["rejected_evidence_max_id"], sub2.json()["evidence_id"])
+
+        app_res = self.client.post(f"/api/projects/{p_id}/milestones/0/approve")
+        self.assertEqual(app_res.status_code, 200)
+        self.assertEqual(app_res.json()["status"], "approved")
 
 if __name__ == "__main__":
     unittest.main()

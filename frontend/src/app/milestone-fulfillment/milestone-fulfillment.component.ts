@@ -94,8 +94,10 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
   ) {}
 
   ngOnInit() {
-    const storedRole = (localStorage.getItem('role') || 'buyer').toLowerCase();
-    this.currentRole = storedRole === 'seller' ? 'seller' : 'buyer';
+    const initialRole = this.resolveStoredRole();
+    if (initialRole) {
+      this.currentRole = initialRole;
+    }
 
     this.route.paramMap.subscribe(params => {
       this.projectId = Number(params.get('id')) || 0;
@@ -114,6 +116,12 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
           this.currentRole = r;
         }
       }
+      if (q['ms'] !== undefined) {
+        const msIdx = Number(q['ms']);
+        if (!isNaN(msIdx) && msIdx >= 0) {
+          this.selectedMilestoneIndex = msIdx;
+        }
+      }
       const token = q['token'];
       if (token && q['paypal_cancelled'] !== '1' && !this.isConfirmingAuth) {
         this.confirmPayPalEscrowHold(token);
@@ -129,6 +137,51 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
         this.showRevisionRoom = true;
       }
     });
+  }
+
+  private resolveStoredRole(): 'seller' | 'buyer' | null {
+    try {
+      const savedUser = localStorage.getItem('prooflens_user');
+      if (savedUser) {
+        const user = JSON.parse(savedUser);
+        const rt = (user?.role_type || '').toLowerCase();
+        if (rt === 'seller' || rt === 'maker') return 'seller';
+        if (rt === 'buyer' || rt === 'customer') return 'buyer';
+      }
+    } catch {}
+    const storedRole = (localStorage.getItem('role') || '').toLowerCase();
+    if (storedRole === 'seller') return 'seller';
+    if (storedRole === 'buyer') return 'buyer';
+    return null;
+  }
+
+  private syncRoleWithProject(data: any) {
+    const explicitRole = (this.route.snapshot.queryParams['role'] || '').toLowerCase();
+    if (explicitRole === 'buyer' || explicitRole === 'seller') {
+      this.currentRole = explicitRole;
+      return;
+    }
+
+    try {
+      const savedUser = localStorage.getItem('prooflens_user');
+      const user = savedUser ? JSON.parse(savedUser) : null;
+      const email = user?.email?.trim().toLowerCase();
+      const buyerEmail = data?.project?.buyer_email?.trim().toLowerCase();
+      const sellerEmail = data?.project?.seller_email?.trim().toLowerCase();
+      if (email && sellerEmail && email === sellerEmail) {
+        this.currentRole = 'seller';
+        return;
+      }
+      if (email && buyerEmail && email === buyerEmail) {
+        this.currentRole = 'buyer';
+        return;
+      }
+    } catch {}
+
+    const stored = this.resolveStoredRole();
+    if (stored) {
+      this.currentRole = stored;
+    }
   }
 
   ngOnDestroy() {
@@ -363,6 +416,7 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
     this.http.get<any>(`${API_BASE_URL}/api/projects/${this.projectId}`)
       .subscribe({
         next: (data) => {
+          this.syncRoleWithProject(data);
           this.projectData = data;
           this.milestones = data.agreement?.milestones || [];
           this.activeScopeChange = data.active_scope_change || null;
@@ -370,11 +424,19 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
           this.loadProjectEvidence();
           this.loadActiveDispute();
 
-          // Auto-select first unapproved milestone
-          for (let i = 0; i < this.milestones.length; i++) {
-            if (!this.isMilestoneApproved(i)) {
-              this.selectedMilestoneIndex = i;
-              break;
+          const explicitMs = this.route.snapshot.queryParams['ms'];
+          if (explicitMs === undefined || explicitMs === null || explicitMs === '') {
+            // Auto-select first unapproved milestone
+            for (let i = 0; i < this.milestones.length; i++) {
+              if (!this.isMilestoneApproved(i)) {
+                this.selectedMilestoneIndex = i;
+                break;
+              }
+            }
+          } else {
+            const parsedMs = Number(explicitMs);
+            if (!isNaN(parsedMs) && parsedMs >= 0 && parsedMs < this.milestones.length && this.isMilestoneUnlocked(parsedMs)) {
+              this.selectedMilestoneIndex = parsedMs;
             }
           }
 
@@ -441,6 +503,7 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
     if (!this.projectData?.project?.status) return false;
     const s = this.projectData.project.status.toLowerCase();
     return s === 'accepted' || s === 'completed' || s === 'active' || s === 'work_in_progress' || 
+           s === 'in_review' || s === 'funds_at_risk' ||
            s === 'warranty_period' || s === 'cancelled' || s === 'partially_completed_canceled' || s === 'disputed';
   }
 
@@ -889,9 +952,74 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
     });
   }
 
+  private parseServerIsoMs(ts: string | null | undefined): number {
+    if (!ts) return 0;
+    const trimmed = String(ts).trim();
+    if (!trimmed) return 0;
+    const hasTz = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(trimmed);
+    const normalized = hasTz ? trimmed : `${trimmed}Z`;
+    const parsed = Date.parse(normalized);
+    return isNaN(parsed) ? 0 : parsed;
+  }
+
+  isEvidenceItemBuyerRejected(item: any): boolean {
+    if (!item) return false;
+    let flags = item.fraud_flags;
+    if (typeof flags === 'string') {
+      try { flags = JSON.parse(flags); } catch (_) {}
+    }
+    if (Array.isArray(flags) && flags.includes('buyer_resubmission_requested')) {
+      return true;
+    }
+    return typeof item.ai_analysis_notes === 'string' &&
+      item.ai_analysis_notes.includes('Buyer Rejection Feedback:');
+  }
+
+  private getSortedMilestoneEvidence(index: number): any[] {
+    return (this.evidenceList || [])
+      .filter(e => (e.evidence_type || 'milestone_evidence') === 'milestone_evidence' && Number(e.milestone_index ?? 0) === index)
+      .sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0));
+  }
+
+  hasNewerSubmissionSinceRejection(index: number): boolean {
+    const ms = this.milestones[index];
+    const sorted = this.getSortedMilestoneEvidence(index);
+    if (!sorted.length) return false;
+
+    const latest = sorted[0];
+    if (this.isEvidenceItemBuyerRejected(latest)) {
+      return false;
+    }
+
+    const rejectedMaxId = Number(ms?.rejected_evidence_max_id || 0);
+    if (rejectedMaxId > 0 && Number(latest.id || 0) > rejectedMaxId) {
+      return true;
+    }
+
+    if (sorted.slice(1).some(ev => this.isEvidenceItemBuyerRejected(ev))) {
+      return true;
+    }
+
+    const resubmittedMs = this.parseServerIsoMs(ms?.resubmitted_at);
+    const rejectedMs = this.parseServerIsoMs(ms?.rejected_at);
+    if (resubmittedMs > 0 && (rejectedMs === 0 || resubmittedMs >= rejectedMs)) {
+      return true;
+    }
+
+    const latestMs = this.parseServerIsoMs(latest.server_receipt_timestamp);
+    if (rejectedMs > 0 && latestMs > rejectedMs) {
+      return true;
+    }
+
+    return false;
+  }
+
   isMilestoneResubmissionRequested(index: number): boolean {
     const ms = this.milestones[index];
     const st = (ms?.status || '').toLowerCase();
+    if (this.hasNewerSubmissionSinceRejection(index)) {
+      return this.isLowConfidenceDigitalSubmission(index);
+    }
     return st === 'resubmission_requested' || st === 'rejected' || this.isLowConfidenceDigitalSubmission(index);
   }
 
@@ -933,10 +1061,13 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
   }
 
   isMilestoneAwaitingReview(index: number): boolean {
+    if (this.isMilestoneApproved(index) || this.isMilestoneResubmissionRequested(index)) {
+      return false;
+    }
     const ms = this.milestones[index];
     if ((ms?.status || '').toLowerCase() === 'awaiting_buyer_review') return true;
     const ev = this.getEvidenceForMilestone(index);
-    return !!ev && !this.isMilestoneApproved(index);
+    return !!ev && !this.isEvidenceItemBuyerRejected(ev);
   }
 
   isMilestoneUnlocked(index: number): boolean {
@@ -1012,34 +1143,94 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
   }
 
   getAllEvidenceForMilestone(index: number): any[] {
-    const list = this.evidenceList.filter(
-      e => e.evidence_type === 'milestone_evidence' && Number(e.milestone_index) === index
+    const sorted = this.getSortedMilestoneEvidence(index);
+    if (sorted.length === 0) return [];
+
+    const ms = this.milestones[index];
+    const rejectedMaxId = Number(ms?.rejected_evidence_max_id || 0);
+    const effectiveRejectedMaxId = sorted.reduce(
+      (maxId, ev) => (this.isEvidenceItemBuyerRejected(ev) ? Math.max(maxId, Number(ev.id) || 0) : maxId),
+      rejectedMaxId
     );
-    if (!list || list.length === 0) return [];
 
-    // Phase 3: Fix stacking evidence issue. Sort by ID descending (newest first)
-    list.sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0));
+    const latest = sorted[0];
+    const latestIsRejected = this.isEvidenceItemBuyerRejected(latest);
 
-    // Isolate the single most recent submission session
-    const latest = list[0];
-    const latestTime = latest.server_receipt_timestamp ? new Date(latest.server_receipt_timestamp).getTime() : 0;
+    const candidates = latestIsRejected
+      ? sorted
+      : sorted.filter(item => !this.isEvidenceItemBuyerRejected(item) && (Number(item.id) || 0) > effectiveRejectedMaxId);
 
-    return list.filter(item => {
-      if (!latestTime || !item.server_receipt_timestamp) {
-        return item.id === latest.id;
-      }
-      const itemTime = new Date(item.server_receipt_timestamp).getTime();
-      return Math.abs(latestTime - itemTime) <= 15000;
+    const activeLatest = candidates[0] || latest;
+    const batchId = activeLatest.ai_comparison_details?.submission_batch_id;
+    if (batchId) {
+      return candidates.filter(item => item.ai_comparison_details?.submission_batch_id === batchId);
+    }
+
+    if (activeLatest.capture_method === 'file_upload') {
+      return [activeLatest];
+    }
+
+    const latestTime = this.parseServerIsoMs(activeLatest.server_receipt_timestamp);
+    if (!latestTime) {
+      return [activeLatest];
+    }
+
+    return candidates.filter(item => {
+      if (item.id === activeLatest.id) return true;
+      if (this.isEvidenceItemBuyerRejected(item) !== latestIsRejected) return false;
+      const itemTime = this.parseServerIsoMs(item.server_receipt_timestamp);
+      return itemTime > 0 && Math.abs(latestTime - itemTime) <= 2000;
     });
   }
 
+  getDisplayedEvidenceList(): any[] {
+    const raw = (this.evidenceList || []).slice().sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0));
+    if (this.currentRole !== 'buyer') {
+      return raw;
+    }
+
+    const displayed: any[] = [];
+    const seenIds = new Set<any>();
+
+    const latestBaseline = raw.find(e => e.evidence_type === 'before_evidence');
+    if (latestBaseline) {
+      displayed.push(latestBaseline);
+      seenIds.add(latestBaseline.id);
+    }
+
+    const milestoneIndices = new Set<number>();
+    (this.milestones || []).forEach((_, idx) => milestoneIndices.add(idx));
+    raw.forEach(e => {
+      if ((e.evidence_type || 'milestone_evidence') === 'milestone_evidence') {
+        milestoneIndices.add(Number(e.milestone_index ?? 0));
+      }
+    });
+
+    milestoneIndices.forEach(mIdx => {
+      const latestBatch = this.getAllEvidenceForMilestone(mIdx);
+      latestBatch.forEach(item => {
+        if (item && !seenIds.has(item.id)) {
+          seenIds.add(item.id);
+          displayed.push(item);
+        }
+      });
+    });
+
+    return displayed.sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0));
+  }
+
+  getSafeExternalUrl(url: string | null | undefined): string | null {
+    if (!url) return null;
+    const trimmed = url.trim();
+    return /^https?:\/\//i.test(trimmed) ? trimmed : null;
+  }
+
   getRejectedEvidenceForMilestone(index: number): any | null {
-    const list = this.evidenceList.filter(
-      e => e.evidence_type === 'milestone_evidence' && Number(e.milestone_index) === index
-    );
-    if (!list || list.length === 0) return null;
-    list.sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0));
-    return list.find(e => this.isItemFlagged(e) || e.status === 'possible_mismatch') || list[list.length - 1];
+    const sorted = this.getSortedMilestoneEvidence(index);
+    if (!sorted.length) return null;
+    return sorted.find(e => this.isEvidenceItemBuyerRejected(e))
+      || sorted.find(e => this.isItemFlagged(e) || e.status === 'possible_mismatch')
+      || sorted[0];
   }
 
   isItemFlagged(item: any): boolean {

@@ -5216,6 +5216,25 @@ def get_project_alerts(project_id: int, db: Session = Depends(get_db)):
             "hours_remaining": None
         }
 
+    # Prioritize any milestone explicitly requesting buyer resubmission
+    for idx, ms in enumerate(milestones):
+        if (ms.get("status") or "").lower() == "resubmission_requested":
+            deadline_str = ms.get("deadline") or project.deadline
+            rejection_reason = ms.get("rejection_reason", "Buyer requested updated evidence resubmission.")
+            return {
+                "has_alert": True,
+                "project_id": project_id,
+                "project_title": project.title,
+                "alert_type": "resubmission_requested",
+                "milestone_index": idx,
+                "milestone_title": ms.get("title", f"Milestone {idx + 1}"),
+                "deadline": deadline_str,
+                "formatted_deadline": deadline_str,
+                "hours_remaining": None,
+                "rejection_reason": rejection_reason,
+                "message": f"Action Required: Buyer requested evidence resubmission for '{ms.get('title', f'Milestone {idx + 1}')}'. Reason: {rejection_reason}"
+            }
+
     # Find the active milestone (first one where verified evidence has not yet been approved)
     verified_evidence = db.query(models.Evidence).filter(
         models.Evidence.project_id == project_id,
@@ -5226,29 +5245,12 @@ def get_project_alerts(project_id: int, db: Session = Depends(get_db)):
 
     active_idx = 0
     for idx in range(len(milestones)):
-        if idx not in verified_indices:
+        if (milestones[idx].get("status") or "").lower() != "approved" and idx not in verified_indices:
             active_idx = idx
             break
 
     active_ms = milestones[active_idx]
     deadline_str = active_ms.get("deadline") or project.deadline
-
-    # If the buyer requested resubmission, prioritize this actionable alert
-    if (active_ms.get("status") or "").lower() == "resubmission_requested":
-        rejection_reason = active_ms.get("rejection_reason", "Buyer requested updated evidence resubmission.")
-        return {
-            "has_alert": True,
-            "project_id": project_id,
-            "project_title": project.title,
-            "alert_type": "resubmission_requested",
-            "milestone_index": active_idx,
-            "milestone_title": active_ms.get("title", f"Milestone {active_idx + 1}"),
-            "deadline": deadline_str,
-            "formatted_deadline": deadline_str,
-            "hours_remaining": None,
-            "rejection_reason": rejection_reason,
-            "message": f"Action Required: Buyer requested evidence resubmission for '{active_ms.get('title', f'Milestone {active_idx + 1}')}'. Reason: {rejection_reason}"
-        }
 
     if not deadline_str:
         return {
@@ -6347,6 +6349,35 @@ def download_evidence_file(filename: str, request: Request, db: Session = Depend
     )
 
 
+def _with_submission_batch(details: Optional[dict], batch_id: str) -> dict:
+    payload = dict(details) if isinstance(details, dict) else {}
+    payload["submission_batch_id"] = batch_id
+    return payload
+
+
+def _mark_milestone_awaiting_review(
+    agreement: Optional[models.Agreement],
+    milestone_index: Optional[int],
+    submitted_at: Optional[datetime] = None,
+) -> Optional[dict]:
+    if not agreement or not agreement.milestones:
+        return None
+    m_idx = int(milestone_index) if milestone_index is not None else 0
+    raw_ms = agreement.milestones or []
+    if not (0 <= m_idx < len(raw_ms)):
+        return None
+    milestones = [dict(m) for m in raw_ms]
+    if milestones[m_idx].get("rejection_reason"):
+        milestones[m_idx]["previous_rejection_reason"] = milestones[m_idx].get("rejection_reason")
+    milestones[m_idx]["rejection_reason"] = None
+    milestones[m_idx]["status"] = "awaiting_buyer_review"
+    ts = submitted_at or datetime.now(timezone.utc)
+    milestones[m_idx]["resubmitted_at"] = ts.isoformat()
+    agreement.milestones = milestones
+    flag_modified(agreement, "milestones")
+    return milestones[m_idx]
+
+
 @app.post("/api/projects/{project_id}/evidence-batch")
 async def upload_evidence_batch(
     project_id: int,
@@ -6412,19 +6443,23 @@ async def upload_evidence_batch(
     if not files or len(files) == 0:
         raise HTTPException(status_code=400, detail="No evidence files received.")
 
-    if evidence_type == "milestone_evidence":
+    if evidence_type != "before_evidence":
+        evidence_type = "milestone_evidence"
+        if milestone_index is None:
+            milestone_index = 0
         ensure_scope_change_funded_for_milestone(project, milestone_index, db)
         require_milestone_authorization_for_work(project, milestone_index, db)
 
     uploader_id = current_user.id
-    milestones = project.agreement.milestones if project.agreement and project.agreement.milestones else []
+    agreement = project.agreement
+    milestones = list(agreement.milestones) if agreement and agreement.milestones else []
     if milestone_index is not None and 0 <= milestone_index < len(milestones):
         target_milestone = milestones[milestone_index]
     else:
         target_milestone = {
             "title": f"Milestone {(milestone_index or 0) + 1}",
             "description": project.description,
-            "proof_required": project.agreement.evidence_requirements if project.agreement else "Visual inspection photos."
+            "proof_required": agreement.evidence_requirements if agreement else "Visual inspection photos."
         }
 
     # Strict File & Format Mapping: Cross-reference before deep analysis
@@ -6441,6 +6476,8 @@ async def upload_evidence_batch(
         models.Evidence.evidence_type == "before_evidence"
     ).order_by(models.Evidence.id.desc()).first()
 
+    submission_batch_id = f"SUB-{uuid.uuid4().hex[:12]}"
+    submission_time = datetime.now(timezone.utc)
     saved_items = []
     any_fraud = False
     all_fraud_flags = []
@@ -6481,7 +6518,10 @@ async def upload_evidence_batch(
                 f"• Scope Compliance: Pre-work site condition documented by buyer prior to contractor work.\n"
                 f"• Recommendation: Baseline locked. Seller can proceed with milestone fulfillment."
             )
-            comp_details = {"is_baseline": True, "notes": "Baseline registered successfully.", "site_location": location}
+            comp_details = _with_submission_batch(
+                {"is_baseline": True, "notes": "Baseline registered successfully.", "site_location": location},
+                submission_batch_id,
+            )
             flags = []
         else:
             ai_res = run_ai_evidence_comparison(
@@ -6505,7 +6545,7 @@ async def upload_evidence_batch(
 
             confidence = ai_res.get("confidence_score", 95)
             notes = ai_res.get("analysis_notes")
-            comp_details = ai_res.get("comparison_details")
+            comp_details = _with_submission_batch(ai_res.get("comparison_details"), submission_batch_id)
             if flags:
                 all_fraud_flags.extend(flags)
 
@@ -6521,6 +6561,7 @@ async def upload_evidence_batch(
             original_filename=file.filename or safe_filename,
             mime_type=file.content_type or "image/jpeg",
             file_size=len(file_content),
+            server_receipt_timestamp=submission_time,
             status=status,
             ai_confidence_score=confidence,
             ai_analysis_notes=notes,
@@ -6531,14 +6572,9 @@ async def upload_evidence_batch(
         saved_items.append(ev)
 
     # Transition milestone state to awaiting_buyer_review & clear old rejection notes
-    if evidence_type == "milestone_evidence" and milestone_index is not None and project.agreement and project.agreement.milestones:
-        m_idx = int(milestone_index)
-        if m_idx < len(project.agreement.milestones):
-            project.agreement.milestones[m_idx]["status"] = "awaiting_buyer_review"
-            if "rejection_reason" in project.agreement.milestones[m_idx]:
-                project.agreement.milestones[m_idx]["previous_rejection_reason"] = project.agreement.milestones[m_idx].get("rejection_reason")
-                project.agreement.milestones[m_idx]["rejection_reason"] = None
-            flag_modified(project.agreement, "milestones")
+    updated_ms = None
+    if evidence_type == "milestone_evidence":
+        updated_ms = _mark_milestone_awaiting_review(agreement, milestone_index, submitted_at=submission_time)
 
     db.commit()
     for ev in saved_items:
@@ -6546,11 +6582,11 @@ async def upload_evidence_batch(
     db.refresh(project)
 
     if evidence_type == "milestone_evidence":
+        m_idx_val = int(milestone_index) if milestone_index is not None else 0
         milestone_title = (
-            project.agreement.milestones[int(milestone_index)].get("title", f"Milestone {int(milestone_index) + 1}")
-            if project.agreement and project.agreement.milestones and milestone_index is not None
-            and int(milestone_index) < len(project.agreement.milestones)
-            else f"Milestone {int(milestone_index) + 1}" if milestone_index is not None else "Milestone"
+            updated_ms.get("title", f"Milestone {m_idx_val + 1}")
+            if updated_ms
+            else f"Milestone {m_idx_val + 1}"
         )
         create_system_notification(
             db=db,
@@ -6569,6 +6605,7 @@ async def upload_evidence_batch(
     return {
         "message": f"Successfully secured and analyzed {len(saved_items)} evidence frame(s).",
         "total_uploaded": len(saved_items),
+        "submission_batch_id": submission_batch_id,
         "overall_status": overall_status,
         "has_fraud_flags": any_fraud,
         "fraud_flags": list(set(all_fraud_flags)),
@@ -6582,6 +6619,7 @@ async def upload_evidence_batch(
                 "fraud_flags": e.fraud_flags or [],
                 "location": e.location,
                 "ai_analysis_notes": e.ai_analysis_notes,
+                "ai_comparison_details": e.ai_comparison_details,
                 "server_receipt_timestamp": e.server_receipt_timestamp.isoformat() if e.server_receipt_timestamp else None
             }
             for e in saved_items
@@ -6644,18 +6682,43 @@ async def upload_evidence(
             detail=f"Milestone fulfillment is disabled while project is in {project.status.value.upper()} status."
         )
 
-    if evidence_type == "milestone_evidence":
+    if evidence_type != "before_evidence":
+        evidence_type = "milestone_evidence"
+        if milestone_index is None:
+            milestone_index = 0
         ensure_scope_change_funded_for_milestone(project, milestone_index, db)
         require_milestone_authorization_for_work(project, milestone_index, db)
 
     p_domain = project.project_domain or determine_project_domain(project.title, project.industry_type, project.description)
+    agreement = project.agreement
+    submission_batch_id = f"SUB-{uuid.uuid4().hex[:12]}"
+    submission_time = datetime.now(timezone.utc)
 
-    # 1.1. URL-Only Baseline Submission Check (e.g. Digital Renovation Baseline)
+    # 1.1. URL-Only Submission Check (e.g. Digital Renovation Baseline or Digital Milestone URL)
     if file is None:
         if asset_url and asset_url.strip():
             url_clean = asset_url.strip()
             uploader_id = current_user.id
-            project.before_evidence_status = "provided"
+            if evidence_type == "before_evidence":
+                project.before_evidence_status = "provided"
+            else:
+                if p_domain != "digital":
+                    raise HTTPException(
+                        status_code=400,
+                        detail="File upload is strictly disabled for physical projects. Only direct live camera captures are permitted to guarantee proof authenticity."
+                    )
+                evidence_type = "milestone_evidence"
+                m_idx = int(milestone_index) if milestone_index is not None else 0
+                milestone_index = m_idx
+                if m_idx > 0 and agreement and agreement.milestones:
+                    if m_idx <= len(agreement.milestones):
+                        prev_ms = agreement.milestones[m_idx - 1]
+                        prev_status = (prev_ms.get("status") or "").lower()
+                        if prev_status != "approved":
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Sequential milestone restriction: Milestone {m_idx + 1} cannot receive evidence until Milestone {m_idx} is strictly marked as APPROVED by the buyer."
+                            )
             file_hash = hashlib.sha256(url_clean.encode("utf-8")).hexdigest()
 
             # Check duplicate
@@ -6664,6 +6727,8 @@ async def upload_evidence(
                 models.Evidence.file_hash == file_hash
             ).first()
             if existing_evidence:
+                if evidence_type != "before_evidence":
+                    raise HTTPException(status_code=400, detail="400 Bad Request: Duplicate evidence detected")
                 return {
                     "message": "Digital baseline URL reference already registered.",
                     "evidence_id": existing_evidence.id,
@@ -6679,6 +6744,40 @@ async def upload_evidence(
                     "ai_comparison_details": existing_evidence.ai_comparison_details
                 }
 
+            if evidence_type == "before_evidence":
+                url_confidence = 100
+                url_notes = (
+                    f"• Digital Baseline Reference URL Registered (100% Valid)\n"
+                    f"• Scope Compliance: Pre-redesign asset reference link ({url_clean}) registered by buyer.\n"
+                    f"• Verification: Digital reference URL locked into escrow ledger for creative fulfillment."
+                )
+                url_comp_details = _with_submission_batch({
+                    "is_baseline": True,
+                    "status": "verified",
+                    "confidence_score": 100,
+                    "domain": "digital",
+                    "asset_url": url_clean,
+                    "notes": "Authoritative digital baseline asset URL registered before redesign commencement."
+                }, submission_batch_id)
+                resp_message = "Baseline URL reference successfully stored and verified."
+            else:
+                url_confidence = 96
+                url_notes = (
+                    f"• Digital Deliverable Reference URL Submitted ({url_confidence}% Match)\n"
+                    f"• Asset Link: {url_clean}\n"
+                    f"• Scope Compliance: Digital deliverable reference link registered for buyer inspection.\n"
+                    f"• Escrow Recommendation: Ready for buyer review and milestone approval."
+                )
+                url_comp_details = _with_submission_batch({
+                    "is_baseline": False,
+                    "status": "verified",
+                    "confidence_score": url_confidence,
+                    "domain": "digital",
+                    "asset_url": url_clean,
+                    "notes": "Digital deliverable asset URL submitted for milestone verification."
+                }, submission_batch_id)
+                resp_message = "Deliverable URL reference successfully stored and verified."
+
             new_evidence = models.Evidence(
                 project_id=project_id,
                 uploader_id=uploader_id,
@@ -6692,34 +6791,27 @@ async def upload_evidence(
                 original_filename=f"URL: {url_clean[:60]}",
                 mime_type="text/uri-list",
                 file_size=len(url_clean.encode("utf-8")),
+                server_receipt_timestamp=submission_time,
                 status=models.EvidenceStatus.VERIFIED,
-                ai_confidence_score=100,
-                ai_analysis_notes=(
-                    f"• Digital Baseline Reference URL Registered (100% Valid)\n"
-                    f"• Scope Compliance: Pre-redesign asset reference link ({url_clean}) registered by buyer.\n"
-                    f"• Verification: Digital reference URL locked into escrow ledger for creative fulfillment."
-                ),
-                ai_comparison_details={
-                    "is_baseline": True,
-                    "status": "verified",
-                    "confidence_score": 100,
-                    "domain": "digital",
-                    "asset_url": url_clean,
-                    "notes": "Authoritative digital baseline asset URL registered before redesign commencement."
-                },
+                ai_confidence_score=url_confidence,
+                ai_analysis_notes=url_notes,
+                ai_comparison_details=url_comp_details,
                 fraud_flags=[]
             )
             db.add(new_evidence)
+            updated_ms = None
+            if evidence_type == "milestone_evidence":
+                updated_ms = _mark_milestone_awaiting_review(agreement, milestone_index, submitted_at=submission_time)
             db.commit()
             db.refresh(new_evidence)
             db.refresh(project)
 
             if evidence_type == "milestone_evidence":
+                m_idx_val = int(milestone_index) if milestone_index is not None else 0
                 milestone_title = (
-                    project.agreement.milestones[milestone_index].get("title", f"Milestone {milestone_index + 1}")
-                    if project.agreement and project.agreement.milestones and milestone_index is not None
-                    and milestone_index < len(project.agreement.milestones)
-                    else f"Milestone {milestone_index + 1}" if milestone_index is not None else "Milestone"
+                    updated_ms.get("title", f"Milestone {m_idx_val + 1}")
+                    if updated_ms
+                    else f"Milestone {m_idx_val + 1}"
                 )
                 create_system_notification(
                     db=db,
@@ -6734,13 +6826,15 @@ async def upload_evidence(
                 )
 
             return {
-                "message": "Baseline URL reference successfully stored and verified.",
+                "message": resp_message,
                 "evidence_id": new_evidence.id,
                 "capture_method": new_evidence.capture_method,
                 "evidence_type": new_evidence.evidence_type,
+                "milestone_index": new_evidence.milestone_index,
                 "status": new_evidence.status.value if hasattr(new_evidence.status, "value") else str(new_evidence.status),
                 "file_hash": new_evidence.file_hash,
                 "file_path": new_evidence.file_path or url_clean,
+                "asset_url": new_evidence.asset_url,
                 "server_receipt_timestamp": new_evidence.server_receipt_timestamp.isoformat() if new_evidence.server_receipt_timestamp else None,
                 "ai_confidence_score": new_evidence.ai_confidence_score,
                 "fraud_flags": [],
@@ -6761,11 +6855,11 @@ async def upload_evidence(
         )
 
     # 1.2. Strict File & Format Mapping: Reject format mismatch before deep analysis
-    target_proof = project.agreement.evidence_requirements if project.agreement else "Visual inspection proof"
-    if evidence_type == "milestone_evidence" and milestone_index is not None and project.agreement and project.agreement.milestones:
+    target_proof = agreement.evidence_requirements if agreement else "Visual inspection proof"
+    if evidence_type == "milestone_evidence" and milestone_index is not None and agreement and agreement.milestones:
         m_idx = int(milestone_index)
-        if m_idx < len(project.agreement.milestones):
-            target_proof = project.agreement.milestones[m_idx].get("proof_required", target_proof)
+        if m_idx < len(agreement.milestones):
+            target_proof = agreement.milestones[m_idx].get("proof_required", target_proof)
     validate_file_format_against_proof_requirement(file.filename, target_proof)
 
     # 1.3. Read and Hash the File & Cryptographic Double-Dip Check
@@ -6783,9 +6877,9 @@ async def upload_evidence(
     # 1.5. Sequential Milestone Enforcement
     if evidence_type == "milestone_evidence" and milestone_index is not None:
         m_idx = int(milestone_index)
-        if m_idx > 0 and project.agreement and project.agreement.milestones:
-            if m_idx <= len(project.agreement.milestones):
-                prev_ms = project.agreement.milestones[m_idx - 1]
+        if m_idx > 0 and agreement and agreement.milestones:
+            if m_idx <= len(agreement.milestones):
+                prev_ms = agreement.milestones[m_idx - 1]
                 prev_status = (prev_ms.get("status") or "").lower()
                 if prev_status != "approved":
                     raise HTTPException(
@@ -6818,14 +6912,14 @@ async def upload_evidence(
                 f"• Verification: Verified digital baseline file ({file.filename}). Physical screen spoofing checks bypassed.\n"
                 f"• Recommendation: Baseline assets locked into escrow ledger. Contractor can proceed with creative fulfillment."
             )
-            ai_comparison_details = {
+            ai_comparison_details = _with_submission_batch({
                 "is_baseline": True,
                 "status": "verified",
                 "confidence_score": 100,
                 "domain": "digital",
                 "asset_url": asset_url,
                 "notes": "Authoritative digital baseline asset registered before redesign commencement."
-            }
+            }, submission_batch_id)
         else:
             if location:
                 project.site_location = location
@@ -6835,25 +6929,25 @@ async def upload_evidence(
                 f"• Baseline Status: Stamped as authoritative reference for future milestone comparisons.\n"
                 f"• Recommendation: Baseline locked. Seller can proceed with milestone fulfillment."
             )
-            ai_comparison_details = {
+            ai_comparison_details = _with_submission_batch({
                 "is_baseline": True,
                 "status": "verified",
                 "confidence_score": 100,
                 "domain": "physical",
                 "notes": "Authoritative site baseline captured before work commencement.",
                 "site_location": location
-            }
+            }, submission_batch_id)
     else:
         # Seller Milestone Evidence Capture
         evidence_type = "milestone_evidence"
-        milestones = project.agreement.milestones if project.agreement and project.agreement.milestones else []
+        milestones = list(agreement.milestones) if agreement and agreement.milestones else []
         if milestone_index is not None and 0 <= milestone_index < len(milestones):
             target_milestone = milestones[milestone_index]
         else:
             target_milestone = {
                 "title": f"Milestone {(milestone_index or 0) + 1}",
                 "description": project.description,
-                "proof_required": project.agreement.evidence_requirements if project.agreement else "Visual inspection photos."
+                "proof_required": agreement.evidence_requirements if agreement else "Visual inspection photos."
             }
 
         # Look up buyer's before-evidence
@@ -6887,7 +6981,7 @@ async def upload_evidence(
             
         ai_confidence_score = ai_res.get("confidence_score", 95)
         ai_analysis_notes = ai_res.get("analysis_notes")
-        ai_comparison_details = ai_res.get("comparison_details")
+        ai_comparison_details = _with_submission_batch(ai_res.get("comparison_details"), submission_batch_id)
 
     new_evidence = models.Evidence(
         project_id=project_id,
@@ -6902,6 +6996,7 @@ async def upload_evidence(
         original_filename=file.filename or safe_filename,
         mime_type=file.content_type or "image/jpeg",
         file_size=len(file_content),
+        server_receipt_timestamp=submission_time,
         status=status,
         ai_confidence_score=ai_confidence_score,
         ai_analysis_notes=ai_analysis_notes,
@@ -6911,18 +7006,32 @@ async def upload_evidence(
     
     db.add(new_evidence)
     
-    if evidence_type == "milestone_evidence" and milestone_index is not None and project.agreement and project.agreement.milestones:
-        m_idx = int(milestone_index)
-        if m_idx < len(project.agreement.milestones):
-            project.agreement.milestones[m_idx]["status"] = "awaiting_buyer_review"
-            if "rejection_reason" in project.agreement.milestones[m_idx]:
-                project.agreement.milestones[m_idx]["previous_rejection_reason"] = project.agreement.milestones[m_idx].get("rejection_reason")
-                project.agreement.milestones[m_idx]["rejection_reason"] = None
-            flag_modified(project.agreement, "milestones")
+    updated_ms = None
+    if evidence_type == "milestone_evidence":
+        updated_ms = _mark_milestone_awaiting_review(agreement, milestone_index, submitted_at=submission_time)
 
     db.commit()
     db.refresh(new_evidence)
     db.refresh(project)
+
+    if evidence_type == "milestone_evidence":
+        m_idx_val = int(milestone_index) if milestone_index is not None else 0
+        milestone_title = (
+            updated_ms.get("title", f"Milestone {m_idx_val + 1}")
+            if updated_ms
+            else f"Milestone {m_idx_val + 1}"
+        )
+        create_system_notification(
+            db=db,
+            user_id=project.buyer_id,
+            title="Seller Submitted Milestone Evidence",
+            message=f"The seller submitted evidence for '{milestone_title}' on '{project.title}'. Please review it.",
+            type="EVIDENCE_SUBMITTED",
+            project_id=project.id,
+            action_url=f"/project/{project.id}/fulfillment?role=buyer",
+            action_data={"project_id": project.id, "milestone_index": milestone_index},
+            fallback_role="buyer"
+        )
 
     return {
         "message": "Evidence successfully stored and verified.",
@@ -7119,6 +7228,7 @@ def get_project_evidence(project_id: int, db: Session = Depends(get_db)):
             "evidence_type": e.evidence_type or "milestone_evidence",
             "milestone_index": e.milestone_index,
             "file_path": e.file_path,
+            "asset_url": e.asset_url,
             "file_hash": e.file_hash,
             "original_filename": e.original_filename,
             "mime_type": e.mime_type,
@@ -7302,6 +7412,10 @@ async def submit_milestone_evidence(
     else:
         ev_status = models.EvidenceStatus.VERIFIED
 
+    submission_batch_id = f"SUB-{uuid.uuid4().hex[:12]}"
+    submission_time = datetime.now(timezone.utc)
+    comp_details = _with_submission_batch(comp_details, submission_batch_id)
+
     new_ev = models.Evidence(
         project_id=p_id,
         uploader_id=project.seller_id or 1,
@@ -7315,6 +7429,7 @@ async def submit_milestone_evidence(
         original_filename=file.filename if file else "digital_asset_link",
         mime_type=mime_type,
         file_size=file_size,
+        server_receipt_timestamp=submission_time,
         status=ev_status,
         ai_confidence_score=confidence,
         ai_analysis_notes=analysis_notes,
@@ -7324,12 +7439,7 @@ async def submit_milestone_evidence(
     db.add(new_ev)
 
     # Transition milestone state to awaiting_buyer_review
-    milestones[m_idx]["status"] = "awaiting_buyer_review"
-    if "rejection_reason" in milestones[m_idx]:
-        milestones[m_idx]["previous_rejection_reason"] = milestones[m_idx].get("rejection_reason")
-        milestones[m_idx]["rejection_reason"] = None
-    agreement.milestones = milestones
-    flag_modified(agreement, "milestones")
+    _mark_milestone_awaiting_review(agreement, m_idx, submitted_at=submission_time)
     db.commit()
     db.refresh(new_ev)
     db.refresh(agreement)
@@ -7666,7 +7776,7 @@ async def approve_milestone(
     recent_ev = db.query(models.Evidence).filter(
         models.Evidence.project_id == p_id,
         models.Evidence.milestone_index == m_idx
-    ).first()
+    ).order_by(models.Evidence.id.desc()).first()
     ev_hash = getattr(recent_ev, "file_hash", getattr(recent_ev, "cryptographic_hash", None)) if recent_ev else None
 
     invoice_error = None
@@ -8185,27 +8295,59 @@ def reject_milestone(
     reason_text = (req.reason if req and req.reason else "Buyer requested evidence resubmission.").strip()
 
     # 1. Mark milestone as resubmission_requested
+    rejected_at = datetime.now(timezone.utc)
     milestones[m_idx]["status"] = "resubmission_requested"
     milestones[m_idx]["rejection_reason"] = reason_text
-    milestones[m_idx]["rejected_at"] = datetime.utcnow().isoformat()
+    milestones[m_idx]["rejected_at"] = rejected_at.isoformat()
 
-    # 2. Flag recent evidence for this milestone
-    latest_ev = db.query(models.Evidence).filter(
+    # 2. Flag recent evidence submission batch for this milestone
+    milestone_ev_items = db.query(models.Evidence).filter(
         models.Evidence.project_id == p_id,
         models.Evidence.milestone_index == m_idx
-    ).order_by(models.Evidence.id.desc()).first()
+    ).order_by(models.Evidence.id.desc()).all()
 
+    latest_ev = next(
+        (ev for ev in milestone_ev_items if (ev.evidence_type or "milestone_evidence") == "milestone_evidence"),
+        milestone_ev_items[0] if milestone_ev_items else None,
+    )
     if latest_ev:
-        latest_ev.status = models.EvidenceStatus.POSSIBLE_MISMATCH
-        flags = list(latest_ev.fraud_flags or [])
-        if "buyer_resubmission_requested" not in flags:
-            flags.append("buyer_resubmission_requested")
-        latest_ev.fraud_flags = flags
-        note_prefix = f"• Buyer Rejection Feedback: {reason_text}"
-        if latest_ev.ai_analysis_notes:
-            latest_ev.ai_analysis_notes = f"{note_prefix}\n{latest_ev.ai_analysis_notes}"
+        milestones[m_idx]["rejected_evidence_max_id"] = latest_ev.id
+        latest_batch_id = (
+            latest_ev.ai_comparison_details.get("submission_batch_id")
+            if isinstance(latest_ev.ai_comparison_details, dict)
+            else None
+        )
+        if latest_batch_id:
+            target_batch = [
+                ev for ev in milestone_ev_items
+                if isinstance(ev.ai_comparison_details, dict)
+                and ev.ai_comparison_details.get("submission_batch_id") == latest_batch_id
+            ]
+        elif latest_ev.server_receipt_timestamp:
+            latest_ts = ensure_utc(latest_ev.server_receipt_timestamp)
+            target_batch = [
+                ev for ev in milestone_ev_items
+                if ev.id == latest_ev.id or (
+                    ev.server_receipt_timestamp is not None
+                    and latest_ts is not None
+                    and abs((latest_ts - ensure_utc(ev.server_receipt_timestamp)).total_seconds()) <= 2.0
+                )
+            ]
         else:
-            latest_ev.ai_analysis_notes = note_prefix
+            target_batch = [latest_ev]
+
+        note_prefix = f"• Buyer Rejection Feedback: {reason_text}"
+        for ev_item in target_batch:
+            ev_item.status = models.EvidenceStatus.POSSIBLE_MISMATCH
+            flags = list(ev_item.fraud_flags or [])
+            if "buyer_resubmission_requested" not in flags:
+                flags.append("buyer_resubmission_requested")
+            ev_item.fraud_flags = flags
+            if not (ev_item.ai_analysis_notes and note_prefix in ev_item.ai_analysis_notes):
+                if ev_item.ai_analysis_notes:
+                    ev_item.ai_analysis_notes = f"{note_prefix}\n{ev_item.ai_analysis_notes}"
+                else:
+                    ev_item.ai_analysis_notes = note_prefix
 
     agreement.milestones = milestones
     flag_modified(agreement, "milestones")

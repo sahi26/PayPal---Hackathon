@@ -817,6 +817,22 @@
                                     }
                                   </div>
 
+                                  <div class="asset-url-row">
+                                    <label class="url-input-label">
+                                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                                      </svg>
+                                      <span>Optional Cloud Asset URL (Figma, GitHub PR, Hosted Preview):</span>
+                                    </label>
+                                    <input
+                                      type="url"
+                                      [(ngModel)]="digitalAssetUrl"
+                                      placeholder="https://www.figma.com/file/... or https://github.com/..."
+                                      class="url-text-field"
+                                    />
+                                  </div>
+
                                   @if (digitalUploadError) {
                                     <div class="upload-error-notice">
                                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -828,10 +844,10 @@
                                     <button
                                       type="button"
                                       class="btn-submit-digital"
-                                      [disabled]="!selectedDigitalFile || isUploadingDigitalFile"
+                                      [disabled]="(!selectedDigitalFile && !digitalAssetUrl.trim()) || isUploadingDigitalFile || isAnalyzing"
                                       (click)="submitDigitalDeliverable()"
                                     >
-                                      @if (isUploadingDigitalFile) {
+                                      @if (isUploadingDigitalFile || isAnalyzing) {
                                         <span class="btn-spinner"></span>
                                         <span>Auditing AI Watermarks & Resubmitting...</span>
                                       } @else {
@@ -997,6 +1013,22 @@
                                     }
                                   </div>
 
+                                  <div class="asset-url-row">
+                                    <label class="url-input-label">
+                                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                                      </svg>
+                                      <span>Optional Cloud Asset URL (Figma, GitHub PR, Hosted Preview):</span>
+                                    </label>
+                                    <input
+                                      type="url"
+                                      [(ngModel)]="digitalAssetUrl"
+                                      placeholder="https://www.figma.com/file/... or https://github.com/..."
+                                      class="url-text-field"
+                                    />
+                                  </div>
+
                                   @if (digitalUploadError) {
                                     <div class="upload-error-notice">
                                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
@@ -1008,7 +1040,7 @@
                                     <button
                                       type="button"
                                       class="btn-submit-digital"
-                                      [disabled]="!selectedDigitalFile || isUploadingDigitalFile || isAnalyzing"
+                                      [disabled]="(!selectedDigitalFile && !digitalAssetUrl.trim()) || isUploadingDigitalFile || isAnalyzing"
                                       (click)="submitDigitalDeliverable()"
                                     >
                                       @if (isUploadingDigitalFile || isAnalyzing) {
@@ -1335,7 +1367,7 @@
                               <button
                                 type="button"
                                 class="btn-submit-digital"
-                                [disabled]="!selectedDigitalFile || isUploadingDigitalFile || isAnalyzing"
+                                [disabled]="(!selectedDigitalFile && !digitalAssetUrl.trim()) || isUploadingDigitalFile || isAnalyzing"
                                 (click)="submitDigitalDeliverable()"
                               >
                                 @if (isUploadingDigitalFile || isAnalyzing) {
@@ -1452,6 +1484,14 @@
                                 rel="noopener noreferrer"
                               >View Original File</a>
                             }
+                            @if (currentRole === 'buyer' && getSafeExternalUrl(ev.asset_url); as safeAssetUrl) {
+                              <a
+                                class="view-evidence-link"
+                                [href]="safeAssetUrl"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >Open Asset Link</a>
+                            }
                           </div>
                         }
                       </div>
@@ -1501,60 +1541,65 @@
             }
 
             <!-- Secured Evidence Audit Log Gallery -->
-            @if (evidenceList.length > 0) {
-              <div class="secured-evidence-gallery">
-                <div class="gallery-title">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                  </svg>
-                  <span>Cryptographically Secured Live Evidence & Audit Ledger ({{ evidenceList.length }})</span>
-                </div>
-                <div class="evidence-cards-grid">
-                  @for (item of evidenceList; track item.id) {
-                    <div
-                      class="evidence-item-card"
-                      [class.is-fraud-item]="item.status === 'possible_mismatch' || isItemFlagged(item)"
-                      [class.is-high-match]="isHighConfidence(item) && item.status !== 'possible_mismatch' && !isItemFlagged(item)"
-                      [class.is-low-match]="!isHighConfidence(item) && item.status !== 'possible_mismatch' && !isItemFlagged(item)"
-                    >
-                      <div class="item-badge-bar">
-                        <span class="item-method-pill" [class.is-upload]="item.capture_method === 'file_upload'">
-                          {{ item.capture_method === 'file_upload' ? 'DIGITAL ASSET' : (item.evidence_type === 'before_evidence' ? 'BUYER BASELINE' : ('MILESTONE ' + (Number(item.milestone_index) + 1))) }}
-                        </span>
-                        <span
-                          class="item-conf-pill"
-                          [class.is-fraud]="item.status === 'possible_mismatch' || isItemFlagged(item)"
-                          [class.is-high-match]="isHighConfidence(item) && item.status !== 'possible_mismatch' && !isItemFlagged(item)"
-                          [class.is-low-match]="!isHighConfidence(item) && item.status !== 'possible_mismatch' && !isItemFlagged(item)"
-                        >
-                          {{ (item.status === 'possible_mismatch' || isItemFlagged(item)) ? (item.ai_confidence_score + '% Match (FLAGGED)') : (item.ai_confidence_score + '% Match') }}
-                        </span>
-                      </div>
-                      @if (item.file_path && isPreviewableImage(item.file_path)) {
-                        <img [src]="getEvidenceUrl(item.file_path) | async" alt="Deliverable proof" class="item-media-preview" (error)="onImageError($event)" />
-                      } @else {
-                        <div class="item-doc-preview">
-                          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                          <span class="item-doc-label">{{ item.original_filename || 'Digital Deliverable File' }}</span>
-                        </div>
-                      }
-                      <div class="item-meta-details">
-                        <span class="item-hash" title="{{ item.file_hash }}">SHA-256: {{ item.file_hash?.slice(0, 16) }}...</span>
-                        @if (getLocationBadgeText(item)) {
-                          <span class="item-location-badge" [class.is-verified]="isLocationVerified(item)" [class.is-mismatch]="isLocationMismatch(item)">
-                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                              <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
-                              <circle cx="12" cy="9" r="2.5"/>
-                            </svg>
-                            {{ getLocationBadgeText(item) }}
+            @if (getDisplayedEvidenceList(); as displayedEvidenceList) {
+              @if (displayedEvidenceList.length > 0) {
+                <div class="secured-evidence-gallery">
+                  <div class="gallery-title">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5">
+                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                    <span>Cryptographically Secured Live Evidence & Audit Ledger ({{ displayedEvidenceList.length }})</span>
+                  </div>
+                  <div class="evidence-cards-grid">
+                    @for (item of displayedEvidenceList; track item.id) {
+                      <div
+                        class="evidence-item-card"
+                        [class.is-fraud-item]="item.status === 'possible_mismatch' || isItemFlagged(item)"
+                        [class.is-high-match]="isHighConfidence(item) && item.status !== 'possible_mismatch' && !isItemFlagged(item)"
+                        [class.is-low-match]="!isHighConfidence(item) && item.status !== 'possible_mismatch' && !isItemFlagged(item)"
+                      >
+                        <div class="item-badge-bar">
+                          <span class="item-method-pill" [class.is-upload]="item.capture_method === 'file_upload'">
+                            {{ item.evidence_type === 'before_evidence' ? 'BUYER BASELINE' : (item.capture_method === 'file_upload' ? 'DIGITAL ASSET' : ('MILESTONE ' + (Number(item.milestone_index ?? 0) + 1))) }}
                           </span>
+                          <span
+                            class="item-conf-pill"
+                            [class.is-fraud]="item.status === 'possible_mismatch' || isItemFlagged(item)"
+                            [class.is-high-match]="isHighConfidence(item) && item.status !== 'possible_mismatch' && !isItemFlagged(item)"
+                            [class.is-low-match]="!isHighConfidence(item) && item.status !== 'possible_mismatch' && !isItemFlagged(item)"
+                          >
+                            {{ (item.status === 'possible_mismatch' || isItemFlagged(item)) ? (item.ai_confidence_score + '% Match (FLAGGED)') : (item.ai_confidence_score + '% Match') }}
+                          </span>
+                        </div>
+                        @if (item.file_path && isPreviewableImage(item.file_path)) {
+                          <img [src]="getEvidenceUrl(item.file_path) | async" alt="Deliverable proof" class="item-media-preview" (error)="onImageError($event)" />
+                        } @else {
+                          <div class="item-doc-preview">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0070ba" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                            <span class="item-doc-label">{{ item.original_filename || 'Digital Deliverable File' }}</span>
+                            @if (getSafeExternalUrl(item.asset_url); as safeAssetUrl) {
+                              <a class="view-evidence-link" [href]="safeAssetUrl" target="_blank" rel="noopener noreferrer">Open Asset Link</a>
+                            }
+                          </div>
                         }
-                        <span class="item-time">Recorded: {{ item.server_receipt_timestamp || 'Server Authoritative' }}</span>
+                        <div class="item-meta-details">
+                          <span class="item-hash" title="{{ item.file_hash }}">SHA-256: {{ item.file_hash?.slice(0, 16) }}...</span>
+                          @if (getLocationBadgeText(item)) {
+                            <span class="item-location-badge" [class.is-verified]="isLocationVerified(item)" [class.is-mismatch]="isLocationMismatch(item)">
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+                                <circle cx="12" cy="9" r="2.5"/>
+                              </svg>
+                              {{ getLocationBadgeText(item) }}
+                            </span>
+                          }
+                          <span class="item-time">Recorded: {{ item.server_receipt_timestamp || 'Server Authoritative' }}</span>
+                        </div>
                       </div>
-                    </div>
-                  }
+                    }
+                  </div>
                 </div>
-              </div>
+              }
             }
           </div>
         </main>
