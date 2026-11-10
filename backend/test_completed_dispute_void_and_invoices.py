@@ -1034,13 +1034,15 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
                     "access_token": "A21-SANDBOX-TOKEN",
                     "token_type": "Bearer",
                     "expires_in": 900,
+                    "scope": "openid profile email",
+                    "app_id": "APP-TEST-123",
                 }
                 if mode["scenario"] == "id_token_fallback":
                     token_body["id_token"] = _make_jwt(
                         {
                             "iss": "https://www.sandbox.paypal.com",
-                            "aud": "test-pp-client",
-                            "exp": int((datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()),
+                            "aud": "APP-TEST-123",
+                            "exp": str(int((datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp())),
                             "email": "id_token_seller@example.com",
                             "email_verified": True,
                             "name": "ID Token Seller",
@@ -1093,22 +1095,22 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
                             json={"error": "invalid_request", "error_description": "Unable to fetch details to serve the request"},
                         )
                     return httpx.Response(404, json={"message": "Not found"})
-                elif mode["scenario"] == "retry_415_json":
+                elif mode["scenario"] == "retry_without_content_type":
                     if (
                         request.url.path.endswith("/v1/identity/openidconnect/userinfo")
                         and "schema=openid" in str(request.url.query)
                     ):
-                        if request.headers.get("content-type") == "application/json":
+                        if "content-type" not in request.headers:
                             return httpx.Response(
                                 200,
                                 json={
-                                    "sub": "user-415",
+                                    "sub": "user-clean-get",
                                     "email": "header_retry_seller@example.com",
                                     "email_verified": True,
                                     "name": "Header Retry Seller",
                                 },
                             )
-                        return httpx.Response(415, json={"message": "Unsupported Media Type"})
+                        return httpx.Response(400, json={"error": "invalid_request", "error_description": "Content-Type rejected on GET"})
                     return httpx.Response(404, json={"message": "Not found"})
                 elif mode["scenario"] in {"id_token_fallback", "all_fail"}:
                     return httpx.Response(
@@ -1141,7 +1143,7 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
             self.assertTrue(oidc_user.get("access_token"))
             self.assertTrue(captured_get_headers)
             for hdrs in captured_get_headers:
-                self.assertNotIn("content-type", hdrs)
+                self.assertEqual(hdrs.get("content-type"), "application/json")
 
             # 2) Legacy /v1/oauth2/token/userinfo?schema=openid fallback + email_address field succeeds
             mode["scenario"] = "token_userinfo_fallback"
@@ -1187,15 +1189,17 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
             self.assertIn("HTTP 400", biz_detail)
             self.assertIn("Unable to fetch details to serve the request", biz_detail)
             self.assertIn("@personal.example.com", biz_detail)
+            self.assertIn("[Diag: scope=openid profile email; id_token=missing;", biz_detail)
+            self.assertIn("dbg-biz-400", biz_detail)
 
-            # 6) 415 Unsupported Media Type retries with Content-Type: application/json cleanly
-            mode["scenario"] = "retry_415_json"
-            res_415 = self.client.post(
+            # 6) 400 when Content-Type is rejected retries cleanly without Content-Type
+            mode["scenario"] = "retry_without_content_type"
+            res_clean_retry = self.client.post(
                 "/api/auth/paypal-login",
-                json={"code": "AUTH_CODE_415", "redirect_uri": "http://localhost:4200", "role": "seller"},
+                json={"code": "AUTH_CODE_CLEAN_RETRY", "redirect_uri": "http://localhost:4200", "role": "seller"},
             )
-            self.assertEqual(res_415.status_code, 200, res_415.text)
-            self.assertEqual(res_415.json()["email"], "header_retry_seller@example.com")
+            self.assertEqual(res_clean_retry.status_code, 200, res_clean_retry.text)
+            self.assertEqual(res_clean_retry.json()["email"], "header_retry_seller@example.com")
 
             # 7) /api/auth/paypal-config encodes redirect_uri cleanly
             cfg_res = self.client.get(

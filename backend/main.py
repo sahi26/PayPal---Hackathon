@@ -9012,45 +9012,67 @@ def _extract_paypal_profile_identity(user_info: Dict[str, Any]) -> Tuple[Optiona
     return user_email, user_name, provider_email_verified
 
 
-def _decode_paypal_id_token_claims(id_token: Optional[str], expected_client_id: str) -> Optional[Dict[str, Any]]:
+def _inspect_paypal_id_token_claims(
+    id_token: Optional[str],
+    expected_client_id: str,
+    expected_app_id: Optional[str] = None,
+) -> Tuple[Optional[Dict[str, Any]], str]:
     """
     Extracts validated identity claims from a PayPal OIDC id_token returned directly
     over server-to-server HTTPS TLS from PayPal's /v1/oauth2/token endpoint.
     """
     if not id_token or not isinstance(id_token, str):
-        return None
+        return None, "missing"
     parts = id_token.strip().split(".")
     if len(parts) != 3:
-        return None
+        return None, "malformed_jwt"
     try:
         payload_b64 = parts[1]
         padding = "=" * (-len(payload_b64) % 4)
         claims = json.loads(base64.urlsafe_b64decode(payload_b64 + padding).decode("utf-8"))
     except Exception:
-        return None
+        return None, "decode_error"
 
     if not isinstance(claims, dict):
-        return None
+        return None, "invalid_payload"
 
     exp = claims.get("exp")
-    if isinstance(exp, (int, float)):
-        now_ts = int(datetime.now(timezone.utc).timestamp())
-        if int(exp) + 60 < now_ts:
-            return None
+    if exp is not None:
+        try:
+            exp_val = int(float(exp))
+            now_ts = int(datetime.now(timezone.utc).timestamp())
+            if exp_val + 60 < now_ts:
+                return None, "expired"
+        except Exception:
+            pass
 
     aud = claims.get("aud")
-    if aud is not None and expected_client_id:
-        expected = expected_client_id.strip()
+    allowed_audiences = {
+        val.strip()
+        for val in (expected_client_id, expected_app_id)
+        if isinstance(val, str) and val.strip()
+    }
+    if aud is not None and allowed_audiences:
         if isinstance(aud, list):
-            if expected not in [str(a).strip() for a in aud]:
-                return None
-        elif str(aud).strip() != expected:
-            return None
+            aud_values = {str(a).strip() for a in aud if a is not None}
+            if not (aud_values & allowed_audiences):
+                return None, "aud_mismatch"
+        elif str(aud).strip() not in allowed_audiences:
+            return None, "aud_mismatch"
 
     iss = claims.get("iss")
-    if iss and "paypal.com" not in str(iss).lower():
-        return None
+    if iss and "paypal" not in str(iss).lower():
+        return None, "iss_mismatch"
 
+    return claims, "ok"
+
+
+def _decode_paypal_id_token_claims(
+    id_token: Optional[str],
+    expected_client_id: str,
+    expected_app_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    claims, _ = _inspect_paypal_id_token_claims(id_token, expected_client_id, expected_app_id=expected_app_id)
     return claims
 
 
@@ -9083,6 +9105,8 @@ async def _fetch_paypal_oauth_user_profile(
     access_token: str,
     id_token: Optional[str],
     expected_client_id: str,
+    granted_scope: Optional[str] = None,
+    token_app_id: Optional[str] = None,
 ) -> Tuple[str, str, bool]:
     userinfo_urls = [
         f"{api_base}/v1/identity/oauth2/userinfo?schema=paypalv1.1",
@@ -9091,9 +9115,16 @@ async def _fetch_paypal_oauth_user_profile(
         f"{api_base}/v1/identity/oauth2/userinfo?schema=openidconnect",
         f"{api_base}/v1/oauth2/token/userinfo?schema=openid",
         f"{api_base}/v1/identity/oauth2/userinfo?schema=openid",
+        f"{api_base}/v1/identity/oauth2/userinfo",
         f"{api_base}/v1/identity/openidconnect/userinfo",
     ]
     base_headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Accept-Language": "en_US",
+    }
+    clean_headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
         "Accept-Language": "en_US",
@@ -9129,8 +9160,8 @@ async def _fetch_paypal_oauth_user_profile(
                 break
 
             err_text = _summarize_paypal_error_response(resp)
-            if resp.status_code == 415 and attempt == 0 and "Content-Type" not in request_headers:
-                request_headers = {**base_headers, "Content-Type": "application/json"}
+            if resp.status_code in {400, 406, 415} and attempt == 0 and "Content-Type" in request_headers:
+                request_headers = dict(clean_headers)
                 continue
             if resp.status_code in {429, 500, 502, 503, 504} and attempt == 0:
                 await asyncio.sleep(0.15)
@@ -9138,11 +9169,14 @@ async def _fetch_paypal_oauth_user_profile(
             attempts.append((endpoint_label, resp.status_code, err_text, debug_id))
             break
 
-    id_claims = _decode_paypal_id_token_claims(id_token, expected_client_id)
+    id_claims, id_token_status = _inspect_paypal_id_token_claims(
+        id_token, expected_client_id, expected_app_id=token_app_id
+    )
     if id_claims:
         email, name, verified = _extract_paypal_profile_identity(id_claims)
         if email:
             return email, name, verified
+        id_token_status = "missing_email_claim"
 
     # Prefer the first non-404 documented endpoint error so later fallback probes do not mask it.
     chosen = (
@@ -9159,17 +9193,24 @@ async def _fetch_paypal_oauth_user_profile(
         + (f" [debug_id={did}]" if did else "")
         for ep, st, msg, did in attempts
     )
-    print(f"PayPal OAuth profile lookup failed ({status_label}): {diagnostic_summary}")
+    compact_endpoints = ", ".join(
+        f"{ep}:{st if st is not None else 'ERR'}" + (f"[{did}]" if did else "")
+        for ep, st, _, did in attempts[:4]
+    )
+    scope_diag = (granted_scope or "").strip() or "none"
+    diag_footer = f"[Diag: scope={scope_diag}; id_token={id_token_status}; tried={compact_endpoints}]"
+    print(f"PayPal OAuth profile lookup failed ({status_label}) {diag_footer}: {diagnostic_summary}")
 
     if "unable to fetch details" in chosen_detail.lower() or any("unable to fetch details" in msg.lower() for _, _, msg, _ in attempts):
         detail_output = (
             f"Failed to fetch PayPal user profile ({status_label}): {chosen_detail}. "
-            "In PayPal Sandbox, this happens when signing in with the REST App's own @business.example.com merchant account "
-            "or if 'Log in with PayPal' Email/Full Name attributes are not enabled in PayPal Developer Dashboard. "
-            "To sign in as Contractor/Seller, choose 'Contractor / Seller' above and log in with a separate Sandbox Personal account (@personal.example.com)."
+            "In PayPal Sandbox, this happens when signing in with a @business.example.com / app-owner merchant account "
+            "(or cached Sandbox session), or if 'Log in with PayPal' Email/Full Name attributes are not enabled in PayPal Developer Dashboard. "
+            "Please sign out of sandbox.paypal.com (or use Private/Incognito), choose 'Contractor / Seller', and log in with a Sandbox Personal account (@personal.example.com). "
+            f"{diag_footer}"
         )
     else:
-        detail_output = f"Failed to fetch PayPal user profile ({status_label}): {chosen_detail}"
+        detail_output = f"Failed to fetch PayPal user profile ({status_label}): {chosen_detail} {diag_footer}"
 
     raise HTTPException(
         status_code=400,
@@ -9241,6 +9282,8 @@ async def paypal_oauth_login(request: PayPalLoginRequest, db: Session = Depends(
         token_url = f"{paypal_service.PAYPAL_API_BASE}/v1/oauth2/token"
         access_token: Optional[str] = None
         id_token: Optional[str] = None
+        granted_scope: Optional[str] = None
+        token_app_id: Optional[str] = None
         last_error_detail: Optional[str] = None
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=8.0)) as client:
@@ -9264,6 +9307,8 @@ async def paypal_oauth_login(request: PayPalLoginRequest, db: Session = Depends(
                     token_data = token_response.json()
                     access_token = token_data.get("access_token")
                     id_token = token_data.get("id_token")
+                    granted_scope = token_data.get("scope")
+                    token_app_id = token_data.get("app_id")
                     if access_token:
                         break
                     last_error_detail = "PayPal returned 200 OK without an access_token."
@@ -9295,6 +9340,8 @@ async def paypal_oauth_login(request: PayPalLoginRequest, db: Session = Depends(
                 access_token=access_token,
                 id_token=id_token,
                 expected_client_id=PAYPAL_CLIENT_ID,
+                granted_scope=granted_scope,
+                token_app_id=token_app_id,
             )
 
     user_email = user_email.strip().lower()
