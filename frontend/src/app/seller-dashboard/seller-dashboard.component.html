@@ -199,7 +199,7 @@
   </header>
 
   <!-- Sequential Milestone Fulfillment Execution Desk (Phase 4) -->
-  @if (activeProject && activeMilestones && activeMilestones.length > 0) {
+  @if (activeProject && !isCompletedProject(activeProject) && activeMilestones && activeMilestones.length > 0) {
     <section class="fintech-card active-fulfillment-card mb-4">
       <div class="active-card-top">
         <div>
@@ -573,7 +573,7 @@
           </div>
         } @else {
           <!-- Financial Lock Alert Banner (when deletion is disabled) -->
-          @if (!canDeleteProject(selectedDrawerData?.project)) {
+          @if (isEscrowVaultLocked(selectedDrawerData?.project)) {
             <div class="drawer-banner-notice drawer-banner-vault-lock">
               <div class="banner-icon-col">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0070BA" stroke-width="2.2">

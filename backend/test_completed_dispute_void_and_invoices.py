@@ -1,4 +1,7 @@
 import asyncio
+import base64
+import json
+import os
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -9,7 +12,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import auth_service
 import database
+import main
 import models
 import paypal_service
 from main import app, get_db, process_matured_warranty_payouts
@@ -931,6 +936,191 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
                 paypal_service._merchant_email_expires_at,
                 paypal_service._seq_num_cooldown_until,
             ) = prev_email_cache
+
+    def test_seller_and_buyer_can_sync_invoice_while_outsider_gets_404(self):
+        proj, _ = self._create_project(
+            status=models.ProjectStatus.COMPLETED,
+            agreement_status="COMPLETED",
+            total_price=4000.0,
+            captured_amount=4000.0,
+            milestones=[
+                {
+                    "title": "Milestone 1",
+                    "description": "Core Execution",
+                    "price_allocation": 2000.0,
+                    "status": "approved",
+                    "is_paid": True,
+                    "paypal_capture_id": "CAP-AUTH-M1",
+                },
+                {
+                    "title": "Milestone 2",
+                    "description": "Final Quality",
+                    "price_allocation": 2000.0,
+                    "status": "approved",
+                    "is_paid": True,
+                    "paypal_capture_id": "CAP-AUTH-M2",
+                },
+            ],
+        )
+        outsider = models.User(
+            email="outsider_sync_suite@example.com",
+            password_hash="hash",
+            full_name="Outsider User",
+            role_type="seller",
+        )
+        self.db.add(outsider)
+        self.db.commit()
+        self.db.refresh(outsider)
+
+        seller_token = auth_service.create_access_token(self.seller.id, self.seller.email, "seller")
+        buyer_token = auth_service.create_access_token(self.buyer.id, self.buyer.email, "buyer")
+        outsider_token = auth_service.create_access_token(outsider.id, outsider.email, "seller")
+
+        async def _mock_create_invoice(**kwargs):
+            idx = kwargs["milestone_index"]
+            return {
+                "paypal_invoice_id": f"INV2-AUTH-M{idx}",
+                "invoice_number": f"PL-AUTH-{idx}",
+                "invoice_url": f"https://www.sandbox.paypal.com/invoice/p/#INV2-AUTH-M{idx}",
+                "status": "PAID",
+                "amount": kwargs["amount"],
+                "currency": "USD",
+                "paypal_capture_id": kwargs["capture_id"],
+                "payment_record_id": f"PAY-AUTH-{idx}",
+                "qr_code_base64": None,
+                "issued_at": "2026-11-10T14:00:00Z",
+            }
+
+        with patch.dict(os.environ, {"ALLOW_INSECURE_TEST_AUTH": "0"}), patch(
+            "paypal_service.create_and_finalize_milestone_invoice",
+            side_effect=_mock_create_invoice,
+        ):
+            seller_resp = self.client.post(
+                f"/api/projects/{proj.id}/milestones/0/generate-invoice",
+                headers={"Authorization": f"Bearer {seller_token}"},
+            )
+            self.assertEqual(seller_resp.status_code, 200, seller_resp.text)
+            self.assertEqual(seller_resp.json()["invoice"]["paypal_invoice_id"], "INV2-AUTH-M0")
+
+            buyer_resp = self.client.post(
+                f"/api/projects/{proj.id}/milestones/1/generate-invoice",
+                headers={"Authorization": f"Bearer {buyer_token}"},
+            )
+            self.assertEqual(buyer_resp.status_code, 200, buyer_resp.text)
+            self.assertEqual(buyer_resp.json()["invoice"]["paypal_invoice_id"], "INV2-AUTH-M1")
+
+            outsider_resp = self.client.post(
+                f"/api/projects/{proj.id}/milestones/0/generate-invoice",
+                headers={"Authorization": f"Bearer {outsider_token}"},
+            )
+            self.assertEqual(outsider_resp.status_code, 404, outsider_resp.text)
+
+    def test_paypal_oauth_login_profile_fallbacks_and_oidc_id_token(self):
+        import httpx
+
+        RealAsyncClient = httpx.AsyncClient
+        mode = {"scenario": "oidc_fallback"}
+        captured_get_headers = []
+
+        def _make_jwt(claims: dict) -> str:
+            header = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode()).decode().rstrip("=")
+            payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+            return f"{header}.{payload}.sig"
+
+        def _oauth_handler(request: httpx.Request) -> httpx.Response:
+            full_url = str(request.url)
+            if request.method == "POST" and request.url.path.endswith("/v1/oauth2/token"):
+                token_body = {
+                    "access_token": "A21-SANDBOX-TOKEN",
+                    "token_type": "Bearer",
+                    "expires_in": 900,
+                }
+                if mode["scenario"] == "id_token_fallback":
+                    token_body["id_token"] = _make_jwt(
+                        {
+                            "iss": "https://www.sandbox.paypal.com",
+                            "aud": "test-pp-client",
+                            "exp": int((datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()),
+                            "email": "id_token_seller@example.com",
+                            "email_verified": True,
+                            "name": "ID Token Seller",
+                        }
+                    )
+                return httpx.Response(200, json=token_body)
+
+            if request.method == "GET":
+                captured_get_headers.append(dict(request.headers))
+                if mode["scenario"] == "oidc_fallback":
+                    if "schema=paypalv1.1" in full_url:
+                        return httpx.Response(
+                            403,
+                            json={"name": "NOT_AUTHORIZED", "message": "Legacy schema not enabled"},
+                        )
+                    if request.url.path.endswith("/v1/identity/openidconnect/userinfo"):
+                        return httpx.Response(
+                            200,
+                            json={
+                                "sub": "user-123",
+                                "email": "oidc_buyer@example.com",
+                                "email_verified": "true",
+                                "given_name": "OIDC",
+                                "family_name": "Buyer",
+                            },
+                        )
+                elif mode["scenario"] in {"id_token_fallback", "all_fail"}:
+                    return httpx.Response(
+                        403,
+                        json={"error": "insufficient_scope", "error_description": "Insufficient scope for profile"},
+                    )
+
+            return httpx.Response(404, json={"message": f"Unexpected {request.method} {full_url}"})
+
+        transport = httpx.MockTransport(_oauth_handler)
+
+        def _mock_client_factory(*args, **kwargs):
+            kwargs["transport"] = transport
+            return RealAsyncClient(*args, **kwargs)
+
+        with patch.object(main, "PAYPAL_CLIENT_ID", "test-pp-client"), patch.object(
+            main, "PAYPAL_CLIENT_SECRET", "test-pp-secret"
+        ), patch("main.httpx.AsyncClient", side_effect=_mock_client_factory):
+            # 1) Legacy ?schema=paypalv1.1 returns 403 -> OIDC userinfo endpoint succeeds
+            mode["scenario"] = "oidc_fallback"
+            res_oidc = self.client.post(
+                "/api/auth/paypal-login",
+                json={"code": "AUTH_CODE_1", "redirect_uri": "http://localhost:4200", "role": "buyer"},
+            )
+            self.assertEqual(res_oidc.status_code, 200, res_oidc.text)
+            oidc_user = res_oidc.json()
+            self.assertEqual(oidc_user["email"], "oidc_buyer@example.com")
+            self.assertEqual(oidc_user["full_name"], "OIDC Buyer")
+            self.assertEqual(oidc_user["role_type"], "buyer")
+            self.assertTrue(oidc_user.get("access_token"))
+            self.assertTrue(captured_get_headers)
+            for hdrs in captured_get_headers:
+                self.assertNotIn("content-type", hdrs)
+
+            # 2) All userinfo endpoints return 403 -> id_token JWT from /token response succeeds
+            mode["scenario"] = "id_token_fallback"
+            res_idtok = self.client.post(
+                "/api/auth/paypal-login",
+                json={"code": "AUTH_CODE_2", "redirect_uri": "http://localhost:4200", "role": "seller"},
+            )
+            self.assertEqual(res_idtok.status_code, 200, res_idtok.text)
+            idtok_user = res_idtok.json()
+            self.assertEqual(idtok_user["email"], "id_token_seller@example.com")
+            self.assertEqual(idtok_user["full_name"], "ID Token Seller")
+            self.assertEqual(idtok_user["role_type"], "seller")
+
+            # 3) All fail and no id_token -> surfaces HTTP status & PayPal detail
+            mode["scenario"] = "all_fail"
+            res_fail = self.client.post(
+                "/api/auth/paypal-login",
+                json={"code": "AUTH_CODE_3", "redirect_uri": "http://localhost:4200", "role": "buyer"},
+            )
+            self.assertEqual(res_fail.status_code, 400, res_fail.text)
+            self.assertIn("HTTP 403", res_fail.json()["detail"])
+            self.assertIn("Insufficient scope for profile", res_fail.json()["detail"])
 
 
 if __name__ == "__main__":

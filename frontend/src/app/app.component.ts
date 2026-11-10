@@ -3,8 +3,10 @@ import { RouterOutlet, RouterLink, RouterLinkActive, Router } from '@angular/rou
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
+import { Subscription } from 'rxjs';
 import { API_BASE_URL } from './api.config';
 import { PROOFLENS_LOGO_BASE64 } from './assets.constants';
+import { PayPalOAuthService } from './paypal-oauth.service';
 
 interface CurrentUser {
   id: number;
@@ -35,6 +37,7 @@ export class AppComponent implements OnInit, OnDestroy {
   showNotificationsPopover = false;
   private notifPollInterval: any = null;
   private isFetchingNotifications = false;
+  private authUserSub: Subscription | null = null;
 
   // Floating Toast Notification System
   activeToast: {
@@ -64,14 +67,25 @@ export class AppComponent implements OnInit, OnDestroy {
     }
   }
 
-  constructor(private http: HttpClient, private router: Router) {}
+  constructor(
+    private http: HttpClient,
+    private router: Router,
+    private paypalOAuth: PayPalOAuthService
+  ) {}
 
   ngOnInit() {
     this.loadStoredUser();
+    this.authUserSub = this.paypalOAuth.authUser$.subscribe((user) => {
+      this.currentUser = user;
+      this.showAuthModal = false;
+      this.loadNotifications();
+    });
+    const hasOAuthCode =
+      typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('code');
     this.loadOAuthConfig();
     this.checkForOAuthCallback();
     this.loadNotifications();
-    if (typeof window !== 'undefined' && this.currentUser) {
+    if (typeof window !== 'undefined' && this.currentUser && !hasOAuthCode) {
       const path = window.location.pathname;
       const pendingReturn = localStorage.getItem('prooflens_return_url');
       if (pendingReturn && this.currentUser.role_type === 'seller' && (path === '/' || path === '/login')) {
@@ -99,6 +113,10 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    if (this.authUserSub) {
+      this.authUserSub.unsubscribe();
+      this.authUserSub = null;
+    }
     if (this.notifPollInterval) {
       clearInterval(this.notifPollInterval);
       this.notifPollInterval = null;
@@ -258,7 +276,15 @@ export class AppComponent implements OnInit, OnDestroy {
     if (typeof window !== 'undefined') {
       const url = this.router.url;
       const path = window.location.pathname;
-      return url === '/login' || url.startsWith('/login?') || url === '/' || path === '/login' || path.startsWith('/login?');
+      return (
+        url === '/login' ||
+        url.startsWith('/login?') ||
+        url === '/' ||
+        url.startsWith('/?') ||
+        path === '/' ||
+        path === '/login' ||
+        path.startsWith('/login?')
+      );
     }
     return false;
   }
@@ -311,23 +337,24 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   loginWithCode(code: string) {
-    if (!code) return;
+    const trimmedCode = (code || '').trim();
+    if (!trimmedCode) return;
+    const onLoginView = this.isLoginPage;
     this.isAuthenticating = true;
-    const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-    const redirectUri = isLocalhost ? 'http://localhost:4200' : 'https://pay-pal-hackathon-phi.vercel.app';
+    const redirectUri = this.paypalOAuth.getRedirectUri();
     const role = localStorage.getItem('prooflens_pending_role') || 'buyer';
 
-    this.http.post<CurrentUser>(`${API_BASE_URL}/api/auth/paypal-login`, {
-      code: code.trim(),
-      redirect_uri: redirectUri,
-      role
-    }).subscribe({
+    this.paypalOAuth.exchangeCode(trimmedCode, redirectUri, role).subscribe({
       next: (user) => {
         this.isAuthenticating = false;
         this.currentUser = user;
-        localStorage.setItem('prooflens_user', JSON.stringify(user));
         this.showAuthModal = false;
         this.loadNotifications();
+
+        // LoginComponent manages redirect and inline status when mounted on / or /login.
+        if (onLoginView) {
+          return;
+        }
 
         const pendingReturn = localStorage.getItem('prooflens_return_url');
         if (pendingReturn && user.role_type === 'seller') {
@@ -336,12 +363,14 @@ export class AppComponent implements OnInit, OnDestroy {
           return;
         }
 
-        // Auto-navigate directly to respective dashboard
         const targetRoute = user.role_type === 'seller' ? '/seller' : '/buyer';
         this.router.navigate([targetRoute]);
       },
       error: (err) => {
         this.isAuthenticating = false;
+        if (onLoginView) {
+          return;
+        }
         const msg = err.error?.detail || err.message || 'PayPal authentication failed.';
         this.authNotification = {
           message: `PayPal Login Error: ${msg}`,

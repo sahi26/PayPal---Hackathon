@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import json
+import base64
 import secrets
 import uuid
 import re
@@ -125,7 +126,6 @@ BUYER_ONLY_ROUTES = (
     re.compile(r"^/api/projects/\d+/milestones/\d+/(?:approve|reject)$"),
     re.compile(r"^/api/projects/\d+/re-approve-escrow$"),
     re.compile(r"^/api/payments/\d+/reauthorize$"),
-    re.compile(r"^/api/projects/\d+/milestones/\d+/generate-invoice$"),
     re.compile(r"^/api/escrow/\d+/refund$"),
     re.compile(r"^/api/projects/\d+/warranty/(?:dispute|early-release)$"),
 )
@@ -8960,6 +8960,188 @@ def get_paypal_oauth_config(redirect_uri: Optional[str] = None):
         "mode": "live" if paypal_web_base == "https://www.paypal.com" else "sandbox"
     }
 
+def _is_truthy_claim(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return False
+
+
+def _extract_paypal_profile_identity(user_info: Dict[str, Any]) -> Tuple[Optional[str], str, bool]:
+    if not isinstance(user_info, dict):
+        return None, "PayPal User", False
+
+    emails = [item for item in (user_info.get("emails") or []) if isinstance(item, dict) and item.get("value")]
+    user_email: Optional[str] = None
+    matched_verified = False
+
+    if emails:
+        chosen = (
+            next((em for em in emails if _is_truthy_claim(em.get("primary")) and _is_truthy_claim(em.get("verified"))), None)
+            or next((em for em in emails if _is_truthy_claim(em.get("primary"))), None)
+            or next((em for em in emails if _is_truthy_claim(em.get("verified"))), None)
+            or emails[0]
+        )
+        user_email = str(chosen.get("value") or "").strip() or None
+        matched_verified = _is_truthy_claim(chosen.get("verified"))
+
+    if not user_email and user_info.get("email"):
+        user_email = str(user_info.get("email") or "").strip() or None
+
+    if user_email and not matched_verified and emails:
+        matched_verified = any(
+            str(item.get("value") or "").strip().lower() == user_email.lower()
+            and _is_truthy_claim(item.get("verified"))
+            for item in emails
+        )
+
+    given_name = str(user_info.get("given_name") or "").strip()
+    family_name = str(user_info.get("family_name") or "").strip()
+    combined_name = " ".join(part for part in [given_name, family_name] if part).strip()
+    fallback_local = user_email.split("@", 1)[0] if user_email and "@" in user_email else "PayPal User"
+    user_name = str(user_info.get("name") or "").strip() or combined_name or fallback_local
+
+    provider_email_verified = (
+        _is_truthy_claim(user_info.get("verified_account"))
+        or _is_truthy_claim(user_info.get("email_verified"))
+        or matched_verified
+    )
+    return user_email, user_name, provider_email_verified
+
+
+def _decode_paypal_id_token_claims(id_token: Optional[str], expected_client_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Extracts validated identity claims from a PayPal OIDC id_token returned directly
+    over server-to-server HTTPS TLS from PayPal's /v1/oauth2/token endpoint.
+    """
+    if not id_token or not isinstance(id_token, str):
+        return None
+    parts = id_token.strip().split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        payload_b64 = parts[1]
+        padding = "=" * (-len(payload_b64) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64 + padding).decode("utf-8"))
+    except Exception:
+        return None
+
+    if not isinstance(claims, dict):
+        return None
+
+    exp = claims.get("exp")
+    if isinstance(exp, (int, float)):
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        if int(exp) + 60 < now_ts:
+            return None
+
+    aud = claims.get("aud")
+    if aud is not None and expected_client_id:
+        if isinstance(aud, list):
+            if expected_client_id not in aud:
+                return None
+        elif str(aud) != expected_client_id:
+            return None
+
+    iss = claims.get("iss")
+    if iss and "paypal.com" not in str(iss).lower():
+        return None
+
+    return claims
+
+
+def _summarize_paypal_error_response(response: httpx.Response) -> str:
+    try:
+        if "json" in (response.headers.get("content-type", "") or "").lower():
+            data = response.json()
+            if isinstance(data, dict):
+                details = data.get("details")
+                detail_msg = ""
+                if isinstance(details, list) and details and isinstance(details[0], dict):
+                    detail_msg = details[0].get("description") or details[0].get("issue") or ""
+                return (
+                    str(data.get("error_description") or "")
+                    or str(data.get("message") or "")
+                    or str(detail_msg or "")
+                    or str(data.get("name") or "")
+                    or str(data.get("error") or "")
+                    or f"HTTP {response.status_code}"
+                ).strip()
+    except Exception:
+        pass
+    snippet = (response.text or "").strip().replace("\n", " ")[:180]
+    return snippet or f"HTTP {response.status_code}"
+
+
+async def _fetch_paypal_oauth_user_profile(
+    client: httpx.AsyncClient,
+    api_base: str,
+    access_token: str,
+    id_token: Optional[str],
+    expected_client_id: str,
+) -> Tuple[str, str, bool]:
+    userinfo_urls = [
+        f"{api_base}/v1/identity/oauth2/userinfo?schema=paypalv1.1",
+        f"{api_base}/v1/identity/openidconnect/userinfo",
+        f"{api_base}/v1/identity/oauth2/userinfo?schema=openid",
+    ]
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "Accept-Language": "en_US",
+    }
+
+    last_status: Optional[int] = None
+    last_error_detail: Optional[str] = None
+
+    for url in userinfo_urls:
+        for attempt in range(2):
+            try:
+                resp = await client.get(url, headers=headers)
+            except httpx.TransportError as exc:
+                last_error_detail = f"{type(exc).__name__}: {exc}"
+                if attempt == 0:
+                    await asyncio.sleep(0.15)
+                    continue
+                break
+
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                except Exception:
+                    last_status = resp.status_code
+                    last_error_detail = "Malformed JSON profile response from PayPal"
+                    break
+                email, name, verified = _extract_paypal_profile_identity(data)
+                if email:
+                    return email, name, verified
+                last_status = resp.status_code
+                last_error_detail = "PayPal profile response omitted the email claim"
+                break
+
+            last_status = resp.status_code
+            last_error_detail = _summarize_paypal_error_response(resp)
+            if resp.status_code in {429, 500, 502, 503, 504} and attempt == 0:
+                await asyncio.sleep(0.15)
+                continue
+            break
+
+    id_claims = _decode_paypal_id_token_claims(id_token, expected_client_id)
+    if id_claims:
+        email, name, verified = _extract_paypal_profile_identity(id_claims)
+        if email:
+            return email, name, verified
+
+    status_label = f"HTTP {last_status}" if last_status is not None else "network error"
+    detail_msg = last_error_detail or "Unknown PayPal profile lookup failure"
+    print(f"PayPal OAuth profile lookup failed ({status_label}): {detail_msg}")
+    raise HTTPException(
+        status_code=400,
+        detail=f"Failed to fetch PayPal user profile ({status_label}): {detail_msg}",
+    )
+
+
 @app.post("/api/auth/paypal-login", response_model=UserResponse)
 async def paypal_oauth_login(request: PayPalLoginRequest, db: Session = Depends(get_db)):
     auth_code = request.code.strip()
@@ -9022,69 +9204,63 @@ async def paypal_oauth_login(request: PayPalLoginRequest, db: Session = Depends(
                     candidates.append(u)
 
         token_url = f"{paypal_service.PAYPAL_API_BASE}/v1/oauth2/token"
-        access_token = None
-        last_error_detail = None
+        access_token: Optional[str] = None
+        id_token: Optional[str] = None
+        last_error_detail: Optional[str] = None
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=8.0)) as client:
             for cand_redirect in candidates:
-                token_response = await client.post(
-                    token_url,
-                    auth=(PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET),
-                    data={
-                        "grant_type": "authorization_code",
-                        "code": auth_code,
-                        "redirect_uri": cand_redirect,
-                    },
-                    headers={"Accept": "application/json", "Accept-Language": "en_US"},
-                )
+                try:
+                    token_response = await client.post(
+                        token_url,
+                        auth=(PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET),
+                        data={
+                            "grant_type": "authorization_code",
+                            "code": auth_code,
+                            "redirect_uri": cand_redirect,
+                        },
+                        headers={"Accept": "application/json", "Accept-Language": "en_US"},
+                    )
+                except httpx.TransportError as exc:
+                    last_error_detail = f"Failed to reach PayPal token endpoint: {exc}"
+                    continue
 
                 if token_response.status_code == 200:
-                    access_token = token_response.json().get("access_token")
+                    token_data = token_response.json()
+                    access_token = token_data.get("access_token")
+                    id_token = token_data.get("id_token")
+                    if access_token:
+                        break
+                    last_error_detail = "PayPal returned 200 OK without an access_token."
                     break
                 else:
-                    error_data = token_response.json() if token_response.headers.get("content-type", "").startswith("application/json") else {}
-                    err_desc = error_data.get("error_description", f"HTTP {token_response.status_code}")
+                    error_data = {}
+                    if "json" in token_response.headers.get("content-type", "").lower():
+                        try:
+                            error_data = token_response.json()
+                        except Exception:
+                            error_data = {}
+                    err_desc = (
+                        error_data.get("error_description")
+                        or error_data.get("message")
+                        or error_data.get("error")
+                        or f"HTTP {token_response.status_code}"
+                    )
                     last_error_detail = f"{err_desc} (tried redirect_uri: {cand_redirect})"
-                    if "redirect" not in err_desc.lower():
+                    err_hint = f"{err_desc} {error_data.get('error', '')}".lower()
+                    if "redirect" not in err_hint:
                         break
 
             if not access_token:
                 raise HTTPException(status_code=400, detail=last_error_detail or "Failed to exchange authorization code with PayPal")
 
-            access_token = token_response.json().get("access_token")
-
-        profile_url = f"{paypal_service.PAYPAL_API_BASE}/v1/identity/oauth2/userinfo?schema=paypalv1.1"
-
-        async with httpx.AsyncClient() as client:
-            profile_response = await client.get(
-                profile_url,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                },
+            user_email, user_name, provider_email_verified = await _fetch_paypal_oauth_user_profile(
+                client=client,
+                api_base=paypal_service.PAYPAL_API_BASE,
+                access_token=access_token,
+                id_token=id_token,
+                expected_client_id=PAYPAL_CLIENT_ID,
             )
-
-            if profile_response.status_code != 200:
-                raise HTTPException(status_code=400, detail="Failed to fetch PayPal user profile from PayPal Sandbox API")
-
-            user_info = profile_response.json()
-
-        user_email = None
-        if "emails" in user_info and user_info["emails"]:
-            user_email = user_info["emails"][0].get("value")
-        elif "email" in user_info:
-            user_email = user_info.get("email")
-
-        if not user_email:
-            raise HTTPException(status_code=400, detail="Could not retrieve email from PayPal profile")
-
-        user_name = user_info.get("name") or user_info.get("given_name", "PayPal User")
-        provider_email_verified = user_info.get("verified_account") is True or any(
-            item.get("value", "").strip().lower() == user_email.strip().lower()
-            and item.get("verified") is True
-            for item in user_info.get("emails", [])
-            if isinstance(item, dict)
-        )
 
     user_email = user_email.strip().lower()
     db_user = db.query(models.User).filter(func.lower(models.User.email) == user_email).first()

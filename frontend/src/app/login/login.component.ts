@@ -5,6 +5,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { API_BASE_URL } from '../api.config';
 import { PROOFLENS_LOGO_BASE64 } from '../assets.constants';
+import { PayPalOAuthService } from '../paypal-oauth.service';
 
 interface CurrentUser {
   id: number;
@@ -31,11 +32,13 @@ export class LoginComponent implements OnInit {
   isRedirecting: boolean = false;
   errorMessage: string | null = null;
   returnUrl: string | null = null;
+  private handledCodes = new Set<string>();
 
   constructor(
     private route: ActivatedRoute,
     private router: Router,
-    private http: HttpClient
+    private http: HttpClient,
+    private paypalOAuth: PayPalOAuthService
   ) {}
 
   ngOnInit() {
@@ -91,8 +94,9 @@ export class LoginComponent implements OnInit {
 
     // 3. Listen for PayPal OAuth Callback (?code=...)
     this.route.queryParams.subscribe(params => {
-      const code = params['code'];
-      if (code) {
+      const code = (params['code'] || '').trim();
+      if (code && !this.handledCodes.has(code)) {
+        this.handledCodes.add(code);
         this.processPayPalCallback(code);
       }
     });
@@ -161,24 +165,12 @@ export class LoginComponent implements OnInit {
     this.errorMessage = null;
 
     const role = localStorage.getItem('prooflens_pending_role') || this.selectedRole || 'buyer';
-    const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-    let redirectUri = isLocalhost ? 'http://localhost:4200' : 'https://pay-pal-hackathon-phi.vercel.app';
-    const storedUri = localStorage.getItem('prooflens_redirect_uri');
-    if (storedUri && (isLocalhost || !storedUri.includes('localhost'))) {
-      redirectUri = storedUri.trim();
-    }
+    const redirectUri = this.paypalOAuth.getRedirectUri();
 
-    this.http.post<CurrentUser>(`${API_BASE_URL}/api/auth/paypal-login`, {
-      code,
-      redirect_uri: redirectUri,
-      role
-    }).subscribe({
+    this.paypalOAuth.exchangeCode(code, redirectUri, role).subscribe({
       next: (user) => {
         this.isAuthenticating = false;
         this.currentUser = user;
-        localStorage.setItem('prooflens_user', JSON.stringify(user));
-        localStorage.removeItem('prooflens_pending_role');
-
         this.proceedToConsole();
       },
       error: (err) => {

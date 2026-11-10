@@ -230,13 +230,19 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
             </button>
           `;
 
+        const actionLabel = status === 'completed' ? 'View Summary' : 'Submit Proof';
+        const actionTitle =
+          status === 'completed'
+            ? 'View Completed Project Receipts & Settlement Details'
+            : 'Submit Milestone Proof & Fulfill';
+
         const submitProofBtnHtml = isAccepted
           ? `
             <button onclick="window.dispatchEvent(new CustomEvent('sellerOpenFulfillment', {detail: ${id}}))"
-                    title="Submit Milestone Proof & Fulfill"
+                    title="${actionTitle}"
                     class="btn-grid-proof"
                     style="background:linear-gradient(180deg, #10B981 0%, #059669 100%); color:white; border:none; min-width:105px; height:28px; padding:0 10px; border-radius:6px; font-size:11.5px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:4px; box-shadow:0 1px 3px rgba(16,185,129,0.3); transition:all 0.15s ease;">
-              <span>Submit Proof</span>
+              <span>${actionLabel}</span>
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17l9.2-9.2M17 17V7H7"/></svg>
             </button>
           `
@@ -353,6 +359,18 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
     if (!p) return false;
     const st = (p.status || '').toLowerCase();
     return !!p.is_accepted || ['accepted', 'active', 'in_review', 'warranty_period', 'completed', 'pending_funds'].includes(st);
+  }
+
+  isCompletedProject(p: any): boolean {
+    if (!p) return false;
+    const st = (p.status || '').toLowerCase();
+    return st === 'completed' || st === 'cancelled' || st === 'partially_completed_canceled';
+  }
+
+  isEscrowVaultLocked(p: any): boolean {
+    if (!p) return false;
+    const st = (p.status || '').toLowerCase();
+    return !this.canDeleteProject(p) && !this.isCompletedProject(p) && st !== 'rejected';
   }
 
   canDeleteProject(p: any): boolean {
@@ -497,12 +515,21 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
 
           const accepted = this.projects.find(p =>
             p.is_accepted &&
-            ['accepted', 'active', 'in_review', 'warranty_period', 'completed', 'negotiating', 'pending_funds']
+            ['accepted', 'active', 'in_review', 'warranty_period', 'negotiating', 'pending_funds']
               .includes((p.status || '').toLowerCase())
           );
-          if (accepted && (!this.activeProject || this.activeProject.id !== accepted.id)) {
-            this.activeProject = accepted;
-            this.loadActiveMilestones(accepted.id);
+          if (accepted) {
+            if (!this.activeProject || this.activeProject.id !== accepted.id) {
+              this.activeProject = accepted;
+              this.loadActiveMilestones(accepted.id);
+            } else {
+              this.activeProject = accepted;
+            }
+          } else {
+            this.activeProject = null;
+            this.activeMilestones = [];
+            this.activeEvidenceList = [];
+            this.activeMilestoneIndex = 0;
           }
         },
         error: () => {
