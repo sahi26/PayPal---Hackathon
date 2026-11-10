@@ -136,7 +136,7 @@
               </button>
             }
 
-            @if (currentRole === 'buyer') {
+            @if (canShowVoidEscrowButton()) {
               @if (canBuyerExecuteVoid()) {
                 <button (click)="openVoidModal()" class="pill-btn pill-btn-emerald" [title]="isGhostingTimeoutElapsed() && getVoidEscrowStatus() !== 'SELLER_AGREED' ? 'Contractor non-responsive >48h. Administrative Inactivity Protocol active.' : 'Contractor agreed to cancellation. Ready to void escrow hold.'">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -178,7 +178,7 @@
               }
             }
 
-            @if (currentRole === 'buyer') {
+            @if (currentRole === 'buyer' && !isProjectCanceled()) {
               <button (click)="openRevisionRoom()" class="pill-btn pill-btn-amber" title="Request or view project scope changes and addenda">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
                   <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -191,16 +191,18 @@
               </button>
             }
 
-            <button (click)="reauthorizeEscrowHold(true)" [disabled]="isReauthorizingEscrow" class="pill-btn pill-btn-purple" title="Extend 29-Day PayPal Escrow Authorization Hold">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                <path d="M23 4v6h-6M1 20v-6h6"/>
-                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-              </svg>
-              <span>{{ isReauthorizingEscrow ? 'Renewing...' : 'Extend 29-Day Hold' }}</span>
-              @if (isEscrowExpiringSoon()) {
-                <span class="pill-badge pill-badge-amber">Expiring Soon</span>
-              }
-            </button>
+            @if (canShowExtendHoldButton()) {
+              <button (click)="reauthorizeEscrowHold(true)" [disabled]="isReauthorizingEscrow" class="pill-btn pill-btn-purple" title="Extend 29-Day PayPal Escrow Authorization Hold">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M23 4v6h-6M1 20v-6h6"/>
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+                <span>{{ isReauthorizingEscrow ? 'Renewing...' : 'Extend 29-Day Hold' }}</span>
+                @if (isEscrowExpiringSoon()) {
+                  <span class="pill-badge pill-badge-amber">Expiring Soon</span>
+                }
+              </button>
+            }
 
             @if (canShowDisputeButton()) {
               <button (click)="openDisputeRoom()" class="pill-btn pill-btn-rose" title="Open dispute resolution workspace and mediation chat">
@@ -682,7 +684,7 @@
 
                         <p class="inv-desc-text">
                           Authoritative settlement recorded in PayPal Invoicing v2. Milestone capture reference:
-                          <code>{{ getMilestoneInvoice(selectedMilestoneIndex)?.paypal_capture_id || 'SETTLED' }}</code>
+                          <code>{{ getMilestoneInvoice(selectedMilestoneIndex)?.paypal_capture_id || milestones[selectedMilestoneIndex]?.paypal_capture_id || 'SETTLED' }}</code>
                         </p>
 
                         <div class="inv-actions-row">
@@ -696,14 +698,25 @@
                             <span>Print / View Official Receipt</span>
                           </button>
 
-                          <a [href]="getPayPalInvoiceUrl(selectedMilestoneIndex)" target="_blank" rel="noopener noreferrer" class="btn-paypal-portal">
-                            <span>View on PayPal Portal</span>
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                              <polyline points="15 3 21 3 21 9"/>
-                              <line x1="10" y1="14" x2="21" y2="3"/>
-                            </svg>
-                          </a>
+                          @if (getPayPalInvoiceUrl(selectedMilestoneIndex); as ppInvUrl) {
+                            <a [href]="ppInvUrl" target="_blank" rel="noopener noreferrer" class="btn-paypal-portal">
+                              <span>View on PayPal Portal</span>
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                                <polyline points="15 3 21 3 21 9"/>
+                                <line x1="10" y1="14" x2="21" y2="3"/>
+                              </svg>
+                            </a>
+                          } @else if (isMilestonePaid(selectedMilestoneIndex)) {
+                            <button
+                              type="button"
+                              (click)="syncMilestoneInvoice(selectedMilestoneIndex)"
+                              [disabled]="syncingInvoiceIndex === selectedMilestoneIndex"
+                              class="btn-paypal-portal"
+                            >
+                              <span>{{ syncingInvoiceIndex === selectedMilestoneIndex ? 'Syncing PayPal Invoice...' : 'Sync PayPal Invoice' }}</span>
+                            </button>
+                          }
 
                           <button (click)="openRefundModal(selectedMilestoneIndex)" class="btn-refund-action" title="Issue partial or full refund for this milestone payment">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
@@ -713,6 +726,11 @@
                             <span>Issue Refund</span>
                           </button>
                         </div>
+                        @if (invoiceSyncError && !isInvoicesDrawerOpen) {
+                          <div style="margin-top:0.55rem; background:#fee2e2; border:1px solid #fca5a5; color:#b91c1c; padding:0.5rem 0.75rem; border-radius:6px; font-size:0.78rem; font-weight:600;">
+                            {{ invoiceSyncError }}
+                          </div>
+                        }
                       </div>
                     </div>
                   } @else if (isMilestoneResubmissionRequested(selectedMilestoneIndex)) {
@@ -1741,6 +1759,11 @@
             </div>
 
             <div class="invoices-drawer-body">
+              @if (invoiceSyncError) {
+                <div style="background:#fee2e2; border:1px solid #fca5a5; color:#b91c1c; padding:0.75rem 0.9rem; border-radius:8px; font-size:0.82rem; font-weight:600; margin-bottom:0.85rem;">
+                  {{ invoiceSyncError }}
+                </div>
+              }
               @if (projectInvoices.length === 0) {
                 <div class="empty-invoices-box">
                   <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2">
@@ -1752,12 +1775,15 @@
                 </div>
               } @else {
                 <div class="invoices-list">
-                  @for (inv of projectInvoices; track inv.id || $index) {
+                  @for (inv of projectInvoices; track (inv.milestone_index ?? inv.id ?? $index)) {
                     <div class="invoice-item-card">
                       <div class="invoice-item-top">
                         <div class="invoice-id-col">
                           <span class="inv-number-badge">{{ inv.invoice_number }}</span>
-                          <span class="inv-ms-title">Milestone {{ inv.milestone_index + 1 }}</span>
+                          <span class="inv-ms-title">
+                            Milestone {{ (inv.milestone_index ?? $index) + 1 }}
+                            @if (inv.milestone_title) { &bull; {{ inv.milestone_title }} }
+                          </span>
                         </div>
                         <div class="invoice-amount-col">
                           <span class="inv-amt">${{ Number(inv.amount).toFixed(2) }} USD</span>
@@ -1771,14 +1797,25 @@
                       </div>
 
                       <div class="invoice-btn-group">
-                        <button (click)="openReceiptModal(inv.milestone_index)" class="btn-receipt-action">
+                        <button (click)="openReceiptModal(inv.milestone_index ?? $index)" class="btn-receipt-action">
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                           <span>Printable Receipt</span>
                         </button>
-                        <a [href]="inv.invoice_url || 'https://www.sandbox.paypal.com'" target="_blank" rel="noopener noreferrer" class="btn-paypal-portal">
-                          <span>View on PayPal</span>
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/></svg>
-                        </a>
+                        @if (getInvoicePortalUrl(inv); as portalUrl) {
+                          <a [href]="portalUrl" target="_blank" rel="noopener noreferrer" class="btn-paypal-portal">
+                            <span>View on PayPal</span>
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/></svg>
+                          </a>
+                        } @else {
+                          <button
+                            type="button"
+                            (click)="syncMilestoneInvoice(inv.milestone_index ?? $index)"
+                            [disabled]="syncingInvoiceIndex === (inv.milestone_index ?? $index)"
+                            class="btn-paypal-portal"
+                          >
+                            <span>{{ syncingInvoiceIndex === (inv.milestone_index ?? $index) ? 'Syncing...' : 'Sync PayPal Invoice' }}</span>
+                          </button>
+                        }
                       </div>
                     </div>
                   }

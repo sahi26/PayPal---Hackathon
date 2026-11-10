@@ -53,6 +53,8 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
   selectedReceiptMilestoneIndex = 0;
   isInvoicesDrawerOpen = false;
   projectInvoices: any[] = [];
+  syncingInvoiceIndex: number | null = null;
+  invoiceSyncError: string | null = null;
 
   // Extended PayPal APIs State
   isTrackingModalOpen = false;
@@ -423,6 +425,7 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
           this.isLoading = false;
           this.loadProjectEvidence();
           this.loadActiveDispute();
+          this.loadProjectInvoices();
 
           const explicitMs = this.route.snapshot.queryParams['ms'];
           if (explicitMs === undefined || explicitMs === null || explicitMs === '') {
@@ -513,6 +516,37 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
     return s === 'cancelled' || s === 'partially_completed_canceled' || s === 'rejected';
   }
 
+  isProjectCompleted(): boolean {
+    const s = (this.projectData?.project?.status || '').toLowerCase();
+    if (s === 'completed') return true;
+    const list = this.projectData?.agreement?.milestones || this.milestones || [];
+    if (!list || list.length === 0) return false;
+    const allDone = list.every((m: any) => {
+      const st = (m?.status || '').toLowerCase();
+      return (st === 'approved' || st === 'completed') && !!(m?.is_paid || m?.paypal_capture_id);
+    });
+    const remainingHold = Number(this.projectData?.project?.remaining_escrow_hold || 0);
+    return allDone && remainingHold <= 0;
+  }
+
+  hasActiveEscrowHold(): boolean {
+    const remainingHold = Number(this.projectData?.project?.remaining_escrow_hold || 0);
+    if (remainingHold > 0) return true;
+    const payStatus = (this.projectData?.payment?.status || '').toLowerCase();
+    return payStatus === 'authorized' || payStatus === 'reauthorized' || payStatus === 'partially_captured';
+  }
+
+  canShowVoidEscrowButton(): boolean {
+    if (this.currentRole !== 'buyer') return false;
+    if (this.isProjectCompleted() || this.isProjectCanceled()) return false;
+    return this.hasActiveEscrowHold();
+  }
+
+  canShowExtendHoldButton(): boolean {
+    if (this.isProjectCompleted() || this.isProjectCanceled()) return false;
+    return this.hasActiveEscrowHold();
+  }
+
   isPartiallyCompletedCanceled(): boolean {
     const s = (this.projectData?.project?.status || '').toLowerCase();
     return s === 'partially_completed_canceled' || (s === 'cancelled' && (this.projectData?.project?.captured_amount || 0) > 0);
@@ -540,7 +574,9 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
         s === 'partially_completed_canceled' || s === 'rejected') {
       return false;
     }
-    return s === 'active' || s === 'warranty_period' || s === 'disputed' || s === 'in_review';
+    return s === 'active' || s === 'completed' || s === 'warranty_period' ||
+           s === 'disputed' || s === 'in_review' || s === 'funds_at_risk' ||
+           !!this.activeDispute;
   }
 
   isWarrantyPeriodActive(): boolean {
@@ -1447,18 +1483,28 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
   isMilestonePaid(index: number): boolean {
     const ms = this.milestones[index];
     if (!ms) return false;
-    return !!(ms.is_paid || ms.invoice || ms.paypal_capture_id);
+    const hasDrawerInv = (this.projectInvoices || []).some(
+      (inv: any) => Number(inv?.milestone_index) === index
+    );
+    return !!(ms.is_paid || ms.invoice || ms.paypal_capture_id || hasDrawerInv);
   }
 
   getMilestoneInvoice(index: number): any {
-    return this.milestones[index]?.invoice || null;
+    const invFromDrawer = (this.projectInvoices || []).find(
+      (inv: any) => Number(inv?.milestone_index) === index
+    );
+    return this.milestones[index]?.invoice || invFromDrawer || null;
   }
 
-  getPayPalInvoiceUrl(index: number): string {
+  getPayPalInvoiceUrl(index: number): string | null {
     const inv = this.getMilestoneInvoice(index);
+    return this.getInvoicePortalUrl(inv);
+  }
+
+  getInvoicePortalUrl(inv: any): string | null {
     if (inv?.invoice_url) return inv.invoice_url;
     if (inv?.paypal_invoice_id) return `https://www.sandbox.paypal.com/invoice/p/#${inv.paypal_invoice_id}`;
-    return 'https://www.sandbox.paypal.com';
+    return null;
   }
 
   getReceiptUrl(index: number): string {
@@ -1478,15 +1524,54 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
     this.isReceiptModalOpen = false;
   }
 
-  openInvoicesDrawer() {
-    this.isInvoicesDrawerOpen = true;
+  loadProjectInvoices() {
+    if (!this.projectId) return;
     this.http.get<any>(`${API_BASE_URL}/api/projects/${this.projectId}/invoices`)
       .subscribe({
         next: (res) => {
-          this.projectInvoices = res.invoices || [];
+          const fetched: any[] = Array.isArray(res?.invoices) ? res.invoices : [];
+          this.projectInvoices = fetched;
+          for (const inv of fetched) {
+            const idx = Number(inv?.milestone_index);
+            if (!isNaN(idx) && this.milestones[idx]) {
+              if (!this.milestones[idx].invoice || inv.invoice_url) {
+                this.milestones[idx].invoice = inv;
+              }
+              if (inv.paypal_capture_id && !this.milestones[idx].paypal_capture_id) {
+                this.milestones[idx].paypal_capture_id = inv.paypal_capture_id;
+              }
+              this.milestones[idx].is_paid = true;
+            }
+          }
         },
         error: (err) => console.warn('Could not load project invoices:', err)
       });
+  }
+
+  syncMilestoneInvoice(milestoneIndex: number) {
+    if (!this.projectId || this.syncingInvoiceIndex !== null) return;
+    this.syncingInvoiceIndex = milestoneIndex;
+    this.invoiceSyncError = null;
+    this.http.post<any>(`${API_BASE_URL}/api/projects/${this.projectId}/milestones/${milestoneIndex}/generate-invoice`, {})
+      .subscribe({
+        next: (res) => {
+          this.syncingInvoiceIndex = null;
+          if (res?.invoice && this.milestones[milestoneIndex]) {
+            this.milestones[milestoneIndex].invoice = res.invoice;
+          }
+          this.loadProjectInvoices();
+        },
+        error: (err) => {
+          this.syncingInvoiceIndex = null;
+          this.invoiceSyncError = err.error?.detail || err.message || 'Could not sync invoice with PayPal.';
+        }
+      });
+  }
+
+  openInvoicesDrawer() {
+    this.invoiceSyncError = null;
+    this.isInvoicesDrawerOpen = true;
+    this.loadProjectInvoices();
   }
 
   closeInvoicesDrawer() {
@@ -1494,7 +1579,16 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
   }
 
   getPaidInvoicesCount(): number {
-    return (this.milestones || []).filter((_, idx) => this.isMilestonePaid(idx)).length;
+    const paidIndices = new Set<number>();
+    (this.milestones || []).forEach((_, idx) => {
+      if (this.isMilestonePaid(idx)) paidIndices.add(idx);
+    });
+    (this.projectInvoices || []).forEach((inv: any) => {
+      if (inv?.milestone_index !== undefined && inv?.milestone_index !== null) {
+        paidIndices.add(Number(inv.milestone_index));
+      }
+    });
+    return Math.max(paidIndices.size, (this.projectInvoices || []).length);
   }
 
   openTrackingModal() {
@@ -1613,6 +1707,7 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
   }
 
   isVoidPendingSellerConsent(): boolean {
+    if (this.isProjectCompleted() || this.isProjectCanceled()) return false;
     return this.getVoidEscrowStatus() === 'PENDING_SELLER_CONSENT';
   }
 

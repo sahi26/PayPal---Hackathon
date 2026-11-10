@@ -1523,6 +1523,70 @@ def reconcile_project_completion(project: models.Project) -> bool:
     return False
 
 
+def _is_project_cancelled_or_rejected(project: models.Project) -> bool:
+    return project.status in [
+        models.ProjectStatus.CANCELLED,
+        models.ProjectStatus.PARTIALLY_COMPLETED_CANCELED,
+        models.ProjectStatus.REJECTED,
+    ]
+
+
+def _is_project_completed_and_captured(project: models.Project) -> bool:
+    if not project:
+        return False
+    if project.status == models.ProjectStatus.COMPLETED:
+        return True
+    agreement = getattr(project, "agreement", None)
+    milestones = (agreement.milestones or []) if agreement else []
+    if not agreement or not milestones:
+        return False
+    all_paid = all(
+        (m.get("status") or "").lower() in ["approved", "completed"]
+        and bool(m.get("is_paid") or m.get("paypal_capture_id"))
+        for m in milestones
+    )
+    if not all_paid:
+        return False
+    lock_in_amount = float(getattr(agreement, "lock_in_amount", 0.0) or 0.0)
+    lock_in_type = (getattr(agreement, "lock_in_type", "NONE") or "NONE").upper()
+    retainage_pending = (
+        lock_in_type in ["FINAL_MILESTONE", "CUSTOM"]
+        and lock_in_amount > 0
+        and getattr(agreement, "warranty_payout_status", None) != "SUCCESS"
+    )
+    if retainage_pending:
+        return False
+    captured_amount = float(getattr(project, "captured_amount", 0.0) or 0.0)
+    total_price = float(project.total_price or 0.0)
+    return captured_amount + 0.01 >= total_price
+
+
+def _restore_project_status_after_dispute(project: models.Project) -> None:
+    if not project:
+        return
+    project.status = models.ProjectStatus.ACTIVE
+    agreement = getattr(project, "agreement", None)
+    if agreement and (agreement.milestones or []):
+        if getattr(agreement, "status", None) in ["DISPUTED", "COMPLETED", "WARRANTY_PERIOD", "ACTIVE", None]:
+            agreement.status = "ACTIVE"
+        all_milestones_complete = all(
+            (m.get("status") or "").lower() in ["approved", "completed"]
+            for m in (agreement.milestones or [])
+        )
+        lock_in_amount = float(getattr(agreement, "lock_in_amount", 0.0) or 0.0)
+        lock_in_type = (getattr(agreement, "lock_in_type", "NONE") or "NONE").upper()
+        retainage_pending = (
+            lock_in_type in ["FINAL_MILESTONE", "CUSTOM"]
+            and lock_in_amount > 0
+            and getattr(agreement, "warranty_payout_status", None) != "SUCCESS"
+        )
+        if all_milestones_complete and retainage_pending:
+            project.status = models.ProjectStatus.WARRANTY_PERIOD
+            agreement.status = "WARRANTY_PERIOD"
+        else:
+            reconcile_project_completion(project)
+
+
 def calculate_milestone_deadlines(
     deadline_str: Optional[str],
     num_milestones: Optional[int] = 3,
@@ -7561,6 +7625,252 @@ async def submit_milestone_evidence(
         "fraud_flags": flags
     }
 
+def _serialize_invoice_record(inv: models.Invoice, milestone_title: Optional[str] = None) -> Dict[str, Any]:
+    meta = inv.metadata_json or {}
+    m_idx = int(inv.milestone_index or 0)
+    return {
+        "id": inv.id,
+        "project_id": inv.project_id,
+        "milestone_index": m_idx,
+        "milestone_title": milestone_title or meta.get("deliverable_title") or f"Milestone {m_idx + 1}",
+        "paypal_invoice_id": inv.paypal_invoice_id,
+        "invoice_number": inv.invoice_number,
+        "invoice_url": inv.invoice_url,
+        "amount": inv.amount,
+        "currency": inv.currency,
+        "status": inv.status,
+        "paypal_capture_id": inv.paypal_capture_id,
+        "buyer_email": inv.buyer_email,
+        "seller_email": inv.seller_email,
+        "items": inv.items,
+        "metadata": meta,
+        "issued_at": inv.issued_at.isoformat() if inv.issued_at else None,
+        "paid_at": inv.paid_at.isoformat() if inv.paid_at else None,
+        "needs_paypal_sync": not bool(inv.paypal_invoice_id and inv.invoice_url),
+    }
+
+
+def _resolve_milestone_capture_id(
+    db: Session,
+    project: models.Project,
+    agreement: Optional[models.Agreement],
+    milestone_index: int,
+    ms: Dict[str, Any],
+) -> Optional[str]:
+    cap_id = ms.get("paypal_capture_id")
+    if cap_id:
+        return cap_id
+    milestones = (agreement.milestones or []) if agreement else []
+    if (
+        agreement
+        and milestones
+        and milestone_index == len(milestones) - 1
+        and getattr(agreement, "warranty_payout_status", None) == "SUCCESS"
+        and getattr(agreement, "warranty_payout_batch_id", None)
+    ):
+        return agreement.warranty_payout_batch_id
+    ms_payment = (
+        db.query(models.Payment)
+        .filter(
+            models.Payment.project_id == project.id,
+            models.Payment.milestone_index == milestone_index,
+            models.Payment.status == models.PaymentStatus.CAPTURED,
+            models.Payment.capture_id.isnot(None),
+        )
+        .order_by(models.Payment.id.desc())
+        .first()
+    )
+    if ms_payment and ms_payment.capture_id:
+        return ms_payment.capture_id
+    proj_payment = (
+        db.query(models.Payment)
+        .filter(
+            models.Payment.project_id == project.id,
+            models.Payment.milestone_index.is_(None),
+            models.Payment.status == models.PaymentStatus.CAPTURED,
+            models.Payment.capture_id.isnot(None),
+        )
+        .order_by(models.Payment.id.desc())
+        .first()
+    )
+    if proj_payment and proj_payment.capture_id:
+        return proj_payment.capture_id
+    return None
+
+
+def _upsert_invoice_db_record(
+    db: Session,
+    project: models.Project,
+    agreement: Optional[models.Agreement],
+    milestone_index: int,
+    invoice_data: Dict[str, Any],
+    amount: float,
+    currency: str,
+    capture_id: Optional[str],
+    buyer_email: str,
+    seller_email: str,
+    ev_hash: Optional[str] = None,
+    milestone_title: Optional[str] = None,
+) -> Optional[models.Invoice]:
+    try:
+        inv_record = (
+            db.query(models.Invoice)
+            .filter(
+                models.Invoice.project_id == project.id,
+                models.Invoice.milestone_index == milestone_index,
+            )
+            .order_by(models.Invoice.id.desc())
+            .first()
+        )
+        meta = {
+            "qr_code_base64": invoice_data.get("qr_code_base64"),
+            "deliverable_title": milestone_title,
+            "evidence_hash": ev_hash,
+            "payment_record_id": invoice_data.get("payment_record_id"),
+        }
+        if not inv_record:
+            inv_record = models.Invoice(
+                project_id=project.id,
+                milestone_index=milestone_index,
+                paypal_invoice_id=invoice_data.get("paypal_invoice_id"),
+                invoice_number=invoice_data.get("invoice_number"),
+                invoice_url=invoice_data.get("invoice_url"),
+                amount=amount,
+                currency=currency,
+                status=invoice_data.get("status") or "PAID",
+                paypal_capture_id=capture_id or invoice_data.get("paypal_capture_id"),
+                buyer_email=invoice_data.get("buyer_email") or buyer_email,
+                seller_email=invoice_data.get("seller_email") or seller_email,
+                items=invoice_data.get("items"),
+                metadata_json=meta,
+                paid_at=datetime.utcnow(),
+            )
+            db.add(inv_record)
+        else:
+            inv_record.paypal_invoice_id = invoice_data.get("paypal_invoice_id")
+            inv_record.invoice_number = invoice_data.get("invoice_number")
+            inv_record.invoice_url = invoice_data.get("invoice_url")
+            inv_record.amount = amount
+            inv_record.currency = currency
+            inv_record.status = invoice_data.get("status") or "PAID"
+            inv_record.paypal_capture_id = capture_id or invoice_data.get("paypal_capture_id")
+            inv_record.buyer_email = invoice_data.get("buyer_email") or buyer_email
+            inv_record.seller_email = invoice_data.get("seller_email") or seller_email
+            inv_record.items = invoice_data.get("items")
+            inv_record.metadata_json = meta
+            if not inv_record.paid_at:
+                inv_record.paid_at = datetime.utcnow()
+
+        db.commit()
+        db.refresh(inv_record)
+        if agreement:
+            db.refresh(agreement)
+        return inv_record
+    except Exception as inv_db_err:
+        print(f"[WARN] Invoice DB save notice: {inv_db_err}")
+        db.rollback()
+        return None
+
+
+async def _ensure_milestone_invoice(
+    db: Session,
+    project: models.Project,
+    agreement: models.Agreement,
+    milestone_index: int,
+    capture_id: Optional[str] = None,
+    amount: Optional[float] = None,
+    currency: str = "USD",
+    ev_hash: Optional[str] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    milestones = [dict(m) for m in (agreement.milestones or [])]
+    if milestone_index < 0 or milestone_index >= len(milestones):
+        return None, "Invalid milestone index."
+
+    ms = milestones[milestone_index]
+    resolved_capture_id = capture_id or _resolve_milestone_capture_id(db, project, agreement, milestone_index, ms)
+    if not resolved_capture_id:
+        return None, "A confirmed PayPal capture ID is required before invoicing."
+
+    if amount is None:
+        alloc = float(ms.get("price_allocation", 0.0) or 0.0)
+        if alloc <= 0 and project.total_price:
+            alloc = float(project.total_price) / max(1, len(milestones))
+        resolved_amount = round(alloc, 2)
+    else:
+        resolved_amount = round(float(amount), 2)
+
+    buyer_email = project.client_email or (project.buyer.email if project.buyer else "buyer@prooflens.com")
+    buyer_name = project.buyer.full_name if project.buyer else "ProofLens Client"
+    seller_email = project.seller.email if project.seller else "seller@prooflens.com"
+    seller_name = project.seller.full_name if project.seller else "Service Contractor"
+
+    if ev_hash is None:
+        recent_ev = (
+            db.query(models.Evidence)
+            .filter(
+                models.Evidence.project_id == project.id,
+                models.Evidence.milestone_index == milestone_index,
+            )
+            .order_by(models.Evidence.id.desc())
+            .first()
+        )
+        ev_hash = getattr(recent_ev, "file_hash", getattr(recent_ev, "cryptographic_hash", None)) if recent_ev else None
+
+    try:
+        invoice_data = await paypal_service.create_and_finalize_milestone_invoice(
+            project_id=project.id,
+            milestone_index=milestone_index,
+            milestone_title=ms.get("title", f"Milestone #{milestone_index + 1}"),
+            milestone_description=ms.get("description", "Deliverable verified"),
+            amount=resolved_amount,
+            currency=currency or "USD",
+            buyer_email=buyer_email,
+            buyer_name=buyer_name,
+            seller_email=seller_email,
+            seller_name=seller_name,
+            capture_id=resolved_capture_id,
+            evidence_hash=ev_hash,
+        )
+    except Exception as inv_err:
+        err_msg = (
+            str(inv_err.detail)
+            if isinstance(inv_err, HTTPException)
+            else "Invoice generation failed after capture; retry from the invoice action."
+        )
+        return None, err_msg
+
+    if not invoice_data:
+        return None, "Invoice service returned an empty payload."
+
+    invoice_data = dict(invoice_data)
+    invoice_data.setdefault("project_id", project.id)
+    invoice_data["milestone_index"] = milestone_index
+    invoice_data.setdefault("milestone_title", ms.get("title", f"Milestone #{milestone_index + 1}"))
+
+    milestones[milestone_index]["invoice"] = invoice_data
+    milestones[milestone_index]["is_paid"] = True
+    if resolved_capture_id and not milestones[milestone_index].get("paypal_capture_id"):
+        milestones[milestone_index]["paypal_capture_id"] = resolved_capture_id
+    agreement.milestones = milestones
+    flag_modified(agreement, "milestones")
+
+    _upsert_invoice_db_record(
+        db=db,
+        project=project,
+        agreement=agreement,
+        milestone_index=milestone_index,
+        invoice_data=invoice_data,
+        amount=resolved_amount,
+        currency=currency or "USD",
+        capture_id=resolved_capture_id,
+        buyer_email=buyer_email,
+        seller_email=seller_email,
+        ev_hash=ev_hash,
+        milestone_title=ms.get("title"),
+    )
+    return invoice_data, None
+
+
 @app.post("/api/milestones/{milestone_id}/approve")
 @app.post("/api/projects/{project_id}/milestones/{milestone_index}/approve")
 async def approve_milestone(
@@ -7861,71 +8171,17 @@ async def approve_milestone(
         raise HTTPException(status_code=400, detail="No active PayPal authorization found for milestone capture.")
 
     # 5. Automatically Generate and Finalize PayPal Invoicing v2 Invoice
-    invoice_data = None
-    buyer_email = project.client_email or (project.buyer.email if project.buyer else "buyer@prooflens.com")
-    buyer_name = project.buyer.full_name if project.buyer else "ProofLens Client"
-    seller_email = project.seller.email if project.seller else "seller@prooflens.com"
-    seller_name = project.seller.full_name if project.seller else "Service Contractor"
-
-    # Query recent verified evidence hash if present
-    recent_ev = db.query(models.Evidence).filter(
-        models.Evidence.project_id == p_id,
-        models.Evidence.milestone_index == m_idx
-    ).order_by(models.Evidence.id.desc()).first()
-    ev_hash = getattr(recent_ev, "file_hash", getattr(recent_ev, "cryptographic_hash", None)) if recent_ev else None
-
-    invoice_error = None
-    try:
-        invoice_data = await paypal_service.create_and_finalize_milestone_invoice(
-            project_id=p_id,
-            milestone_index=m_idx,
-            milestone_title=milestones[m_idx].get("title", f"Milestone #{m_idx+1}"),
-            milestone_description=milestones[m_idx].get("description", "Deliverable verified"),
-            amount=amount_released,
-            currency=currency_code,
-            buyer_email=buyer_email,
-            buyer_name=buyer_name,
-            seller_email=seller_email,
-            seller_name=seller_name,
-            capture_id=capture_id or f"CAP-{uuid.uuid4().hex[:10].upper()}",
-            evidence_hash=ev_hash
-        )
-    except Exception as inv_err:
-        invoice_error = str(inv_err.detail) if isinstance(inv_err, HTTPException) else "Invoice generation failed after capture; retry from the invoice action."
-
+    invoice_data, invoice_error = await _ensure_milestone_invoice(
+        db=db,
+        project=project,
+        agreement=agreement,
+        milestone_index=m_idx,
+        capture_id=capture_id,
+        amount=amount_released,
+        currency=currency_code,
+    )
     if invoice_data:
-        milestones[m_idx]["invoice"] = invoice_data
-        milestones[m_idx]["is_paid"] = True
-        agreement.milestones = milestones
-        flag_modified(agreement, "milestones")
-
-        try:
-            inv_record = models.Invoice(
-                project_id=p_id,
-                milestone_index=m_idx,
-                paypal_invoice_id=invoice_data.get("paypal_invoice_id"),
-                invoice_number=invoice_data.get("invoice_number"),
-                invoice_url=invoice_data.get("invoice_url"),
-                amount=amount_released,
-                currency=currency_code,
-                status="PAID",
-                paypal_capture_id=capture_id or invoice_data.get("paypal_capture_id"),
-                buyer_email=buyer_email,
-                seller_email=seller_email,
-                items=invoice_data.get("items"),
-                metadata_json={
-                    "qr_code_base64": invoice_data.get("qr_code_base64"),
-                    "deliverable_title": milestones[m_idx].get("title"),
-                    "evidence_hash": ev_hash,
-                    "payment_record_id": invoice_data.get("payment_record_id")
-                },
-                paid_at=datetime.utcnow()
-            )
-            db.add(inv_record)
-            db.commit()
-            db.refresh(agreement)
-        except Exception as inv_db_err:
-            print(f"[WARN] Invoice DB save notice: {inv_db_err}")
+        milestones = [dict(m) for m in (agreement.milestones or [])]
 
     if reconcile_project_completion(project):
         db.commit()
@@ -7980,90 +8236,197 @@ async def get_milestone_invoice(
 ):
     """
     Retrieves the invoice record for a specific milestone.
-    If the milestone is approved/paid but has no invoice record yet, generates it.
+    If the milestone is approved/paid but has no invoice record yet, generates or returns a settled fallback record.
     """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    milestones = (project.agreement.milestones or []) if (project and project.agreement) else []
+    ms_title = milestones[milestone_index].get("title") if 0 <= milestone_index < len(milestones) else None
+
     inv = db.query(models.Invoice).filter(
         models.Invoice.project_id == project_id,
         models.Invoice.milestone_index == milestone_index
-    ).first()
+    ).order_by(models.Invoice.id.desc()).first()
 
     if inv:
-        return {
-            "id": inv.id,
-            "project_id": inv.project_id,
-            "milestone_index": inv.milestone_index,
-            "paypal_invoice_id": inv.paypal_invoice_id,
-            "invoice_number": inv.invoice_number,
-            "invoice_url": inv.invoice_url,
-            "amount": inv.amount,
-            "currency": inv.currency,
-            "status": inv.status,
-            "paypal_capture_id": inv.paypal_capture_id,
-            "buyer_email": inv.buyer_email,
-            "seller_email": inv.seller_email,
-            "items": inv.items,
-            "metadata": inv.metadata_json or {},
-            "issued_at": inv.issued_at.isoformat() if inv.issued_at else None,
-            "paid_at": inv.paid_at.isoformat() if inv.paid_at else None
-        }
+        return _serialize_invoice_record(inv, milestone_title=ms_title)
 
-    # Fallback to checking agreement milestone
-    project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project or not project.agreement or not project.agreement.milestones:
         raise HTTPException(status_code=404, detail="Milestone invoice not found.")
 
-    milestones = project.agreement.milestones
-    if milestone_index >= len(milestones):
+    if milestone_index < 0 or milestone_index >= len(milestones):
         raise HTTPException(status_code=404, detail="Invalid milestone index.")
 
     ms = milestones[milestone_index]
-    if ms.get("invoice"):
-        return ms["invoice"]
+    if ms.get("invoice") and isinstance(ms.get("invoice"), dict):
+        inv_json = dict(ms["invoice"])
+        inv_json.setdefault("project_id", project_id)
+        inv_json["milestone_index"] = milestone_index
+        inv_json.setdefault("milestone_title", ms_title or f"Milestone {milestone_index + 1}")
+        return inv_json
+
+    ms_status = (ms.get("status") or "").lower()
+    is_paid_milestone = bool(
+        ms.get("is_paid")
+        or ms.get("paypal_capture_id")
+        or (project.status == models.ProjectStatus.COMPLETED and ms_status in ["approved", "completed"])
+    )
+    if is_paid_milestone:
+        capture_id = _resolve_milestone_capture_id(db, project, project.agreement, milestone_index, ms)
+        if capture_id:
+            generated_inv, _ = await _ensure_milestone_invoice(
+                db=db,
+                project=project,
+                agreement=project.agreement,
+                milestone_index=milestone_index,
+                capture_id=capture_id,
+            )
+            saved_inv = db.query(models.Invoice).filter(
+                models.Invoice.project_id == project_id,
+                models.Invoice.milestone_index == milestone_index
+            ).order_by(models.Invoice.id.desc()).first()
+            if saved_inv:
+                return _serialize_invoice_record(saved_inv, milestone_title=ms_title)
+            if generated_inv:
+                return generated_inv
 
     raise HTTPException(status_code=404, detail="No invoice generated for this milestone yet.")
 
 
 @app.get("/api/projects/{project_id}/invoices")
-def list_project_invoices(
+async def list_project_invoices(
     project_id: int,
     db: Session = Depends(get_db)
 ):
     """
-    Lists all milestone invoices for a project.
+    Lists all milestone invoices for a project, deduplicated per milestone and backfilled
+    if a paid/captured milestone is missing its persisted PayPal invoice record.
     """
-    invoices = db.query(models.Invoice).filter(
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    milestones = (project.agreement.milestones or []) if (project and project.agreement) else []
+
+    db_invoices = db.query(models.Invoice).filter(
         models.Invoice.project_id == project_id
-    ).order_by(models.Invoice.milestone_index.asc()).all()
+    ).order_by(models.Invoice.milestone_index.asc(), models.Invoice.id.desc()).all()
 
-    results = []
-    for inv in invoices:
-        results.append({
-            "id": inv.id,
-            "project_id": inv.project_id,
-            "milestone_index": inv.milestone_index,
-            "paypal_invoice_id": inv.paypal_invoice_id,
-            "invoice_number": inv.invoice_number,
-            "invoice_url": inv.invoice_url,
-            "amount": inv.amount,
-            "currency": inv.currency,
-            "status": inv.status,
-            "paypal_capture_id": inv.paypal_capture_id,
-            "buyer_email": inv.buyer_email,
-            "seller_email": inv.seller_email,
-            "items": inv.items,
-            "metadata": inv.metadata_json or {},
-            "issued_at": inv.issued_at.isoformat() if inv.issued_at else None,
-            "paid_at": inv.paid_at.isoformat() if inv.paid_at else None
-        })
+    by_idx: Dict[int, Dict[str, Any]] = {}
+    for inv in db_invoices:
+        m_idx = int(inv.milestone_index)
+        if m_idx not in by_idx:
+            ms_title = milestones[m_idx].get("title") if 0 <= m_idx < len(milestones) else None
+            by_idx[m_idx] = _serialize_invoice_record(inv, milestone_title=ms_title)
 
-    # If DB table empty, fallback to inspecting agreement milestones
-    if not results:
-        project = db.query(models.Project).filter(models.Project.id == project_id).first()
-        if project and project.agreement and project.agreement.milestones:
-            for idx, ms in enumerate(project.agreement.milestones):
-                if ms.get("invoice"):
-                    results.append(ms["invoice"])
+    if project and project.agreement and milestones:
+        agreement = project.agreement
+        for idx, ms in enumerate(milestones):
+            if idx in by_idx:
+                continue
 
+            if ms.get("invoice") and isinstance(ms.get("invoice"), dict):
+                inv_json = dict(ms["invoice"])
+                alloc = float(ms.get("price_allocation", 0.0) or 0.0)
+                if alloc <= 0 and project.total_price:
+                    alloc = float(project.total_price) / max(1, len(milestones))
+                amount_val = round(float(inv_json.get("amount") or alloc), 2)
+                buyer_email = project.client_email or (project.buyer.email if project.buyer else "buyer@prooflens.com")
+                seller_email = project.seller.email if project.seller else "seller@prooflens.com"
+                cap_id = inv_json.get("paypal_capture_id") or _resolve_milestone_capture_id(db, project, agreement, idx, ms)
+
+                inv_record = _upsert_invoice_db_record(
+                    db=db,
+                    project=project,
+                    agreement=agreement,
+                    milestone_index=idx,
+                    invoice_data=inv_json,
+                    amount=amount_val,
+                    currency=inv_json.get("currency") or "USD",
+                    capture_id=cap_id,
+                    buyer_email=buyer_email,
+                    seller_email=seller_email,
+                    milestone_title=ms.get("title"),
+                )
+                if inv_record:
+                    by_idx[idx] = _serialize_invoice_record(inv_record, milestone_title=ms.get("title"))
+                else:
+                    inv_json.setdefault("project_id", project_id)
+                    inv_json["milestone_index"] = idx
+                    inv_json.setdefault("milestone_title", ms.get("title") or f"Milestone {idx + 1}")
+                    inv_json.setdefault("paid_at", ms.get("paid_at") or inv_json.get("issued_at"))
+                    inv_json.setdefault("paypal_capture_id", cap_id)
+                    inv_json.setdefault("status", "PAID")
+                    by_idx[idx] = inv_json
+                continue
+
+            ms_status = (ms.get("status") or "").lower()
+            is_paid_milestone = bool(
+                ms.get("is_paid")
+                or ms.get("paypal_capture_id")
+                or (project.status == models.ProjectStatus.COMPLETED and ms_status in ["approved", "completed"])
+            )
+            if not is_paid_milestone:
+                continue
+
+            cap_id = _resolve_milestone_capture_id(db, project, agreement, idx, ms)
+            if cap_id:
+                generated_inv, _ = await _ensure_milestone_invoice(
+                    db=db,
+                    project=project,
+                    agreement=agreement,
+                    milestone_index=idx,
+                    capture_id=cap_id,
+                )
+                saved_inv = db.query(models.Invoice).filter(
+                    models.Invoice.project_id == project_id,
+                    models.Invoice.milestone_index == idx
+                ).order_by(models.Invoice.id.desc()).first()
+                if saved_inv:
+                    by_idx[idx] = _serialize_invoice_record(saved_inv, milestone_title=ms.get("title"))
+                    continue
+                if generated_inv:
+                    inv_copy = dict(generated_inv)
+                    inv_copy.setdefault("project_id", project_id)
+                    inv_copy["milestone_index"] = idx
+                    inv_copy.setdefault("milestone_title", ms.get("title") or f"Milestone {idx + 1}")
+                    inv_copy.setdefault("paid_at", ms.get("paid_at") or inv_copy.get("issued_at"))
+                    inv_copy.setdefault("status", "PAID")
+                    by_idx[idx] = inv_copy
+                    continue
+
+            alloc = float(ms.get("price_allocation", 0.0) or 0.0)
+            if alloc <= 0 and project.total_price:
+                alloc = float(project.total_price) / max(1, len(milestones))
+            amount_val = round(alloc, 2)
+            buyer_email = project.client_email or (project.buyer.email if project.buyer else "buyer@prooflens.com")
+            seller_email = project.seller.email if project.seller else "seller@prooflens.com"
+            paid_ts = ms.get("paid_at") or ms.get("approved_at")
+            by_idx[idx] = {
+                "id": None,
+                "project_id": project_id,
+                "milestone_index": idx,
+                "milestone_title": ms.get("title") or f"Milestone {idx + 1}",
+                "paypal_invoice_id": None,
+                "invoice_number": f"INV-{project_id}-M{idx + 1}",
+                "invoice_url": None,
+                "amount": amount_val,
+                "currency": "USD",
+                "status": "PAID",
+                "paypal_capture_id": cap_id or ms.get("paypal_capture_id"),
+                "buyer_email": buyer_email,
+                "seller_email": seller_email,
+                "items": [
+                    {
+                        "name": f"Milestone {idx + 1}: {ms.get('title') or 'Deliverable'}",
+                        "description": ms.get("description") or "Deliverable verified",
+                        "quantity": "1",
+                        "unit_amount": {"currency_code": "USD", "value": f"{amount_val:.2f}"}
+                    }
+                ],
+                "metadata": {"deliverable_title": ms.get("title"), "needs_paypal_sync": True},
+                "issued_at": paid_ts,
+                "paid_at": paid_ts,
+                "needs_paypal_sync": True
+            }
+
+    results = [by_idx[k] for k in sorted(by_idx.keys())]
     return {"project_id": project_id, "total_invoices": len(results), "invoices": results}
 
 
@@ -8080,7 +8443,7 @@ async def get_milestone_invoice_receipt_html(
     inv = db.query(models.Invoice).filter(
         models.Invoice.project_id == project_id,
         models.Invoice.milestone_index == milestone_index
-    ).first()
+    ).order_by(models.Invoice.id.desc()).first()
 
     inv_dict = {}
     if inv:
@@ -8099,24 +8462,27 @@ async def get_milestone_invoice_receipt_html(
         }
     else:
         project = db.query(models.Project).filter(models.Project.id == project_id).first()
-        if project and project.agreement and project.agreement.milestones and milestone_index < len(project.agreement.milestones):
+        if project and project.agreement and project.agreement.milestones and 0 <= milestone_index < len(project.agreement.milestones):
             ms = project.agreement.milestones[milestone_index]
             if ms.get("invoice"):
                 inv_dict = ms["invoice"]
             else:
-                alloc = float(ms.get("price_allocation", 0.0))
+                alloc = float(ms.get("price_allocation", 0.0) or 0.0)
+                if alloc <= 0 and project.total_price:
+                    alloc = float(project.total_price) / max(1, len(project.agreement.milestones))
+                cap_id = _resolve_milestone_capture_id(db, project, project.agreement, milestone_index, ms)
                 inv_dict = {
                     "invoice_number": f"INV-{project_id}-M{milestone_index+1}",
-                    "paypal_invoice_id": f"INV2-PREVIEW",
-                    "invoice_url": f"https://www.sandbox.paypal.com",
-                    "amount": alloc,
+                    "paypal_invoice_id": "PENDING_SYNC",
+                    "invoice_url": None,
+                    "amount": round(alloc, 2),
                     "currency": "USD",
-                    "paypal_capture_id": ms.get("paypal_capture_id", "PENDING_CAPTURE"),
-                    "buyer_email": project.client_email or "client@prooflens.com",
+                    "paypal_capture_id": cap_id or "PENDING_CAPTURE",
+                    "buyer_email": project.client_email or (project.buyer.email if project.buyer else "client@prooflens.com"),
                     "seller_email": project.seller.email if project.seller else "contractor@prooflens.com",
                     "items": [{"name": ms.get("title", f"Milestone #{milestone_index+1}"), "description": ms.get("description", ""), "unit_amount": {"value": f"{alloc:.2f}"}}],
                     "qr_code_base64": None,
-                    "issued_at": datetime.utcnow().isoformat()
+                    "issued_at": ms.get("paid_at") or datetime.utcnow().isoformat()
                 }
         else:
             raise HTTPException(status_code=404, detail="Milestone invoice not found.")
@@ -8135,6 +8501,12 @@ async def get_milestone_invoice_receipt_html(
             <td style="padding:14px;border-bottom:1px solid #f1f5f9;text-align:right;font-weight:700;color:#0070ba;">${float(unit_val):,.2f}</td>
         </tr>
         """
+
+    paypal_link_html = (
+        f'<a href="{inv_dict["invoice_url"]}" target="_blank" class="btn btn-outline">View Official PayPal Invoice ↗</a>'
+        if inv_dict.get("invoice_url")
+        else ""
+    )
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -8226,7 +8598,7 @@ async def get_milestone_invoice_receipt_html(
 
         <div class="no-print" style="margin-top:36px;text-align:center;">
             <button onclick="window.print()" class="btn">Print / Save as PDF</button>
-            <a href="{inv_dict.get('invoice_url', '#')}" target="_blank" class="btn btn-outline">View Official PayPal Invoice ↗</a>
+            {paypal_link_html}
         </div>
     </div>
 </body>
@@ -8253,16 +8625,11 @@ async def generate_milestone_invoice_on_demand(
         raise HTTPException(status_code=400, detail="Milestone not found.")
 
     ms = agreement.milestones[milestone_index]
-    captured_payment = db.query(models.Payment).filter(
-        models.Payment.project_id == project_id,
-        models.Payment.milestone_index == milestone_index,
-        models.Payment.status == models.PaymentStatus.CAPTURED
-    ).order_by(models.Payment.id.desc()).first()
-    capture_id = ms.get("paypal_capture_id") or (captured_payment.capture_id if captured_payment else None)
+    capture_id = _resolve_milestone_capture_id(db, project, agreement, milestone_index, ms)
     if not capture_id:
         raise HTTPException(status_code=409, detail="A confirmed PayPal capture is required before generating an invoice.")
 
-    alloc = float(ms.get("price_allocation", 0.0))
+    alloc = float(ms.get("price_allocation", 0.0) or 0.0)
     if alloc <= 0 and project.total_price:
         alloc = float(project.total_price) / max(1, len(agreement.milestones))
     amount = round(alloc, 2)
@@ -8284,50 +8651,35 @@ async def generate_milestone_invoice_on_demand(
         seller_name=seller_name,
         capture_id=capture_id
     )
+    invoice_data = dict(invoice_data)
+    invoice_data.setdefault("project_id", project_id)
+    invoice_data["milestone_index"] = milestone_index
+    invoice_data.setdefault("milestone_title", ms.get("title", f"Milestone #{milestone_index+1}"))
 
-    # Save to agreement milestones and Invoice model
     milestones = [dict(m) for m in agreement.milestones]
     milestones[milestone_index]["invoice"] = invoice_data
     milestones[milestone_index]["is_paid"] = True
+    if capture_id and not milestones[milestone_index].get("paypal_capture_id"):
+        milestones[milestone_index]["paypal_capture_id"] = capture_id
     agreement.milestones = milestones
     flag_modified(agreement, "milestones")
 
-    inv_record = db.query(models.Invoice).filter(
-        models.Invoice.project_id == project_id,
-        models.Invoice.milestone_index == milestone_index
-    ).first()
+    inv_record = _upsert_invoice_db_record(
+        db=db,
+        project=project,
+        agreement=agreement,
+        milestone_index=milestone_index,
+        invoice_data=invoice_data,
+        amount=amount,
+        currency="USD",
+        capture_id=capture_id,
+        buyer_email=buyer_email,
+        seller_email=seller_email,
+        milestone_title=ms.get("title"),
+    )
+    if inv_record:
+        invoice_data = _serialize_invoice_record(inv_record, milestone_title=ms.get("title"))
 
-    if not inv_record:
-        inv_record = models.Invoice(
-            project_id=project_id,
-            milestone_index=milestone_index,
-            paypal_invoice_id=invoice_data.get("paypal_invoice_id"),
-            invoice_number=invoice_data.get("invoice_number"),
-            invoice_url=invoice_data.get("invoice_url"),
-            amount=amount,
-            currency="USD",
-            status="PAID",
-            paypal_capture_id=capture_id,
-            buyer_email=buyer_email,
-            seller_email=seller_email,
-            items=invoice_data.get("items"),
-            metadata_json={"qr_code_base64": invoice_data.get("qr_code_base64")},
-            paid_at=datetime.utcnow()
-        )
-        db.add(inv_record)
-    else:
-        inv_record.paypal_invoice_id = invoice_data.get("paypal_invoice_id")
-        inv_record.invoice_number = invoice_data.get("invoice_number")
-        inv_record.invoice_url = invoice_data.get("invoice_url")
-        inv_record.amount = amount
-        inv_record.status = "PAID"
-        inv_record.paypal_capture_id = capture_id
-        inv_record.paid_at = datetime.utcnow()
-        inv_record.items = invoice_data.get("items")
-        inv_record.metadata_json = {"qr_code_base64": invoice_data.get("qr_code_base64")}
-
-    db.commit()
-    db.refresh(agreement)
     return {"message": "Invoice generated successfully.", "invoice": invoice_data}
 
 
@@ -10217,8 +10569,8 @@ def resolve_dispute(
     dispute.resolution_type = request.resolution_type
     dispute.resolution_notes = request.notes
 
-    # Unlock the project milestone fulfillment timeline
-    project.status = models.ProjectStatus.ACTIVE
+    # Unlock the project timeline and restore accurate post-dispute status
+    _restore_project_status_after_dispute(project)
 
     # Log audit entry
     res_label = "Executed Scope Change" if request.resolution_type == "SCOPE_CHANGE" else "Mutual Agreement"
@@ -10320,6 +10672,13 @@ def request_void_escrow(
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    if _is_project_cancelled_or_rejected(project):
+        raise HTTPException(status_code=400, detail="Project has already been cancelled.")
+    if _is_project_completed_and_captured(project):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot cancel or void escrow because all milestones have already been completed and captured."
+        )
 
     reason = req.reason if req and req.reason else "Buyer requested project cancellation"
     project.void_escrow_status = "PENDING_SELLER_CONSENT"
@@ -10365,6 +10724,13 @@ def respond_void_escrow_request(
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    if _is_project_cancelled_or_rejected(project):
+        raise HTTPException(status_code=400, detail="Project has already been cancelled.")
+    if _is_project_completed_and_captured(project):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot void escrow because all milestones have already been completed and captured."
+        )
 
     buyer_id = project.buyer_id
     if not buyer_id and project.buyer:
@@ -10439,6 +10805,13 @@ async def void_project_escrow(
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    if _is_project_cancelled_or_rejected(project):
+        raise HTTPException(status_code=400, detail="Project has already been cancelled.")
+    if _is_project_completed_and_captured(project):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot cancel or void escrow because all milestones have already been completed and captured."
+        )
 
     # Enforce mutual agreement if contractor is involved, unless contractor has ghosted (inactivity >48h or missed deadline)
     is_ghosting, ghosting_reason = check_contractor_ghosting(project, db)
@@ -10832,6 +11205,18 @@ async def process_matured_warranty_payouts(db: Optional[Session] = None) -> List
             db.refresh(ag)
             db.refresh(proj)
 
+            final_invoice = None
+            if ag.milestones:
+                final_invoice, _ = await _ensure_milestone_invoice(
+                    db=db,
+                    project=proj,
+                    agreement=ag,
+                    milestone_index=len(ag.milestones) - 1,
+                    capture_id=capture_id,
+                    amount=payout_amt,
+                    currency=currency_code,
+                )
+
             if proj.seller_id:
                 create_system_notification(
                     db=db,
@@ -10858,6 +11243,7 @@ async def process_matured_warranty_payouts(db: Optional[Session] = None) -> List
                 "amount": payout_amt,
                 "capture_id": capture_id,
                 "authorization_id": auth_id,
+                "invoice": final_invoice,
                 "capture_response": cap_res
             })
     except Exception as ex:
@@ -11006,6 +11392,18 @@ async def early_release_warranty_funds(project_id: int, db: Session = Depends(ge
     db.refresh(agreement)
     db.refresh(project)
 
+    final_invoice = None
+    if agreement.milestones:
+        final_invoice, _ = await _ensure_milestone_invoice(
+            db=db,
+            project=project,
+            agreement=agreement,
+            milestone_index=len(agreement.milestones) - 1,
+            capture_id=capture_id,
+            amount=payout_amt,
+            currency=currency_code,
+        )
+
     # Notifications to buyer and seller
     if project.seller_id:
         create_system_notification(
@@ -11035,6 +11433,7 @@ async def early_release_warranty_funds(project_id: int, db: Session = Depends(ge
         "amount": payout_amt,
         "capture_id": capture_id,
         "authorization_id": auth_id,
+        "invoice": final_invoice,
         "capture_response": cap_res
     }
 
@@ -11350,7 +11749,7 @@ async def process_paypal_webhook_event(event_payload: Dict[str, Any], db: Sessio
 
             project = db.query(models.Project).filter(models.Project.id == dispute.project_id).first()
             if project:
-                project.status = models.ProjectStatus.ACTIVE
+                _restore_project_status_after_dispute(project)
 
                 system_log = models.DisputeChatHistory(
                     dispute_id=dispute.id,
