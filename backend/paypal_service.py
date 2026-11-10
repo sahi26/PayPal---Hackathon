@@ -511,6 +511,16 @@ async def provide_dispute_evidence(
     Pushes compiled ProofLens Evidence Dossier directly to PayPal Disputes API:
     POST /v1/customer/disputes/{dispute_id}/provide-evidence
     """
+    if APP_ENV != "production" and (
+        dispute_id.startswith("MOCK-")
+        or (APP_ENV == "test" and not has_network_connection())
+    ):
+        return {
+            "dispute_id": dispute_id,
+            "status": "EVIDENCE_SUBMITTED",
+            "paypal_response": {"status": "SUCCESS"},
+        }
+
     headers = await get_paypal_headers()
     url = f"{PAYPAL_API_BASE}/v1/customer/disputes/{dispute_id}/provide-evidence"
 
@@ -522,15 +532,19 @@ async def provide_dispute_evidence(
     try:
         async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.post(url, json=payload, headers=headers)
+            if response.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                response = await client.post(url, json=payload, headers=fresh_headers)
             if response.status_code in (200, 201, 204):
                 return {
                     "dispute_id": dispute_id,
                     "status": "EVIDENCE_SUBMITTED",
                     "paypal_response": response.json() if response.text else {"status": "SUCCESS"},
                 }
+            err_msg = _extract_paypal_error_message(response)
             raise HTTPException(
                 status_code=502,
-                detail=f"PayPal API Error: Provide dispute evidence failed ({response.status_code}): {response.text or 'No response body'}"
+                detail=f"PayPal API Error: Provide dispute evidence failed ({response.status_code}): {err_msg}"
             )
     except HTTPException:
         raise
@@ -549,9 +563,16 @@ async def get_dispute_details(dispute_id: str) -> Dict[str, Any]:
     try:
         async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.get(url, headers=headers)
+            if response.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                response = await client.get(url, headers=fresh_headers)
             if response.status_code == 200:
                 return response.json()
-            raise HTTPException(status_code=502, detail="PayPal dispute lookup failed.")
+            err_msg = _extract_paypal_error_message(response)
+            raise HTTPException(
+                status_code=502,
+                detail=f"PayPal dispute lookup failed ({response.status_code}): {err_msg}",
+            )
     except HTTPException:
         raise
     except Exception as ex:
@@ -564,9 +585,22 @@ async def escalate_dispute_to_claim(dispute_id: str, note: str = "") -> Dict[str
     POST /v1/customer/disputes/{dispute_id}/escalate
     Triggers PayPal's 20-day adjudication window for manual human claim investigation.
     """
+    if APP_ENV != "production" and (
+        dispute_id.startswith("MOCK-")
+        or (APP_ENV == "test" and not has_network_connection())
+    ):
+        return {
+            "dispute_id": dispute_id,
+            "claim_id": f"CLAIM-TEST-{dispute_id}",
+            "status": "ESCALATED_HUMAN",
+            "lifecycle_stage": "CLAIM_HUMAN_REVIEW",
+            "adjudication_cycle_days": 20,
+            "paypal_response": {"status": "SUCCESS"},
+        }
+
     headers = await get_paypal_headers()
     url = f"{PAYPAL_API_BASE}/v1/customer/disputes/{dispute_id}/escalate"
-    
+
     payload = {
         "note": note or "ProofLens dispute escalated to official PayPal Claim for 20-day human adjudicator arbitration."
     }
@@ -574,6 +608,9 @@ async def escalate_dispute_to_claim(dispute_id: str, note: str = "") -> Dict[str
     try:
         async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.post(url, json=payload, headers=headers)
+            if response.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                response = await client.post(url, json=payload, headers=fresh_headers)
             if response.status_code in (200, 201, 204):
                 res_data = response.json() if response.text else {}
                 return {
@@ -584,9 +621,10 @@ async def escalate_dispute_to_claim(dispute_id: str, note: str = "") -> Dict[str
                     "adjudication_cycle_days": 20,
                     "paypal_response": res_data
                 }
+            err_msg = _extract_paypal_error_message(response)
             raise HTTPException(
                 status_code=502,
-                detail=f"PayPal API Error: Escalate dispute to claim failed ({response.status_code}): {response.text or 'No response body'}"
+                detail=f"PayPal API Error: Escalate dispute to claim failed ({response.status_code}): {err_msg}"
             )
     except HTTPException:
         raise
@@ -594,22 +632,37 @@ async def escalate_dispute_to_claim(dispute_id: str, note: str = "") -> Dict[str
         raise HTTPException(status_code=502, detail=f"PayPal API Error: Escalate dispute to claim failed: {ex}") from ex
 
 
-
-async def list_disputes() -> List[Dict[str, Any]]:
+async def list_disputes(
+    disputed_transaction_id: Optional[str] = None,
+    page_size: int = 20,
+) -> List[Dict[str, Any]]:
     """
     Lists customer disputes from PayPal Disputes API:
     GET /v1/customer/disputes
     """
+    if APP_ENV != "production" and (APP_ENV == "test" and not has_network_connection()):
+        return []
+
     headers = await get_paypal_headers()
     url = f"{PAYPAL_API_BASE}/v1/customer/disputes"
+    params: Dict[str, Any] = {"page_size": max(1, min(int(page_size or 20), 50))}
+    if disputed_transaction_id:
+        params["disputed_transaction_id"] = disputed_transaction_id
 
     try:
         async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
-            response = await client.get(url, headers=headers)
+            response = await client.get(url, headers=headers, params=params)
+            if response.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                response = await client.get(url, headers=fresh_headers, params=params)
             if response.status_code == 200:
                 data = response.json()
                 return data.get("items", [])
-            raise HTTPException(status_code=502, detail="PayPal dispute list could not be retrieved.")
+            err_msg = _extract_paypal_error_message(response)
+            raise HTTPException(
+                status_code=502,
+                detail=f"PayPal dispute list could not be retrieved ({response.status_code}): {err_msg}",
+            )
     except HTTPException:
         raise
     except Exception as ex:

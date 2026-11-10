@@ -737,9 +737,14 @@ class DisputeMessageRequest(BaseModel):
 
 class EscalateDisputeRequest(BaseModel):
     notes: Optional[str] = None
+    paypal_dispute_id: Optional[str] = None
 
 class EscalateToHumanRequest(BaseModel):
     note: Optional[str] = None
+    paypal_dispute_id: Optional[str] = None
+
+class SyncPayPalDisputeRequest(BaseModel):
+    paypal_dispute_id: Optional[str] = None
 
 class ResolveDisputeRequest(BaseModel):
     resolution_type: str = "MUTUAL_SETTLEMENT" # "SCOPE_CHANGE" or "MUTUAL_SETTLEMENT"
@@ -10544,6 +10549,16 @@ def format_paypal_dispute_notes(dossier: dict) -> str:
     return "\n".join(lines)[:1990]
 
 
+def _is_synthetic_dispute_id(project_id: int, value: Optional[str]) -> bool:
+    if not value:
+        return False
+    if re.fullmatch(rf"PP-D-{project_id}-[A-F0-9]{{6}}", value, flags=re.IGNORECASE):
+        return True
+    if value.strip().upper() == f"PP-D-{project_id}-TEST":
+        return True
+    return False
+
+
 def require_webhook_paypal_dispute_id(dispute: models.DisputeRecord) -> str:
     paypal_dispute_id = dispute.dispute_id
     if not paypal_dispute_id:
@@ -10569,6 +10584,233 @@ def require_webhook_paypal_dispute_id(dispute: models.DisputeRecord) -> str:
             detail="The stored dispute ID is a local placeholder. Wait for PayPal's CUSTOMER.DISPUTE.CREATED webhook before escalation."
         )
     return paypal_dispute_id
+
+
+def _paypal_dispute_matches_project(
+    item: Dict[str, Any],
+    tx_ids: set,
+    custom_refs: set,
+    inv_refs: set,
+) -> bool:
+    if not isinstance(item, dict):
+        return False
+    for tx in item.get("disputed_transactions") or []:
+        if not isinstance(tx, dict):
+            continue
+        candidates = {
+            str(v).strip()
+            for v in (
+                tx.get("seller_transaction_id"),
+                tx.get("buyer_transaction_id"),
+                tx.get("reference_id"),
+                tx.get("custom"),
+                tx.get("invoice_number"),
+            )
+            if v
+        }
+        if candidates & tx_ids or candidates & custom_refs or candidates & inv_refs:
+            return True
+    item_custom = str(item.get("custom") or item.get("custom_id") or "").strip()
+    if item_custom and item_custom in custom_refs:
+        return True
+    return False
+
+
+async def _resolve_or_sync_paypal_dispute_id(
+    project: models.Project,
+    dispute: models.DisputeRecord,
+    db: Session,
+    explicit_dispute_id: Optional[str] = None,
+    verify_explicit: bool = True,
+) -> Tuple[Optional[str], str, Optional[str]]:
+    """
+    Resolves an authentic PayPal Dispute Case ID for a ProofLens dispute:
+    1. Validates & verifies an explicitly supplied PayPal Dispute ID (if given).
+    2. Uses the existing webhook-linked dispute.dispute_id (clearing legacy placeholders in non-test envs).
+    3. Auto-discovers matching open/recent PayPal disputes via PayPal Disputes API (`list_disputes`)
+       using the project's captured transaction/order/invoice references.
+    4. Never invents fake IDs in non-test environments; returns (None, 'none', explanation) cleanly
+       so ProofLens internal Tier 2 forensic dossier & Tier 3 escalation remain unblocked.
+    """
+    app_env = os.getenv("APP_ENV", "development").lower()
+    cleaned_explicit = (explicit_dispute_id or "").strip() or None
+
+    if cleaned_explicit:
+        if app_env != "test" and _is_synthetic_dispute_id(project.id, cleaned_explicit):
+            raise HTTPException(
+                status_code=400,
+                detail="Please enter the official PayPal Resolution Center Case ID (e.g. PP-D-...), not a local placeholder."
+            )
+        if app_env != "test" and verify_explicit:
+            try:
+                await paypal_service.get_dispute_details(cleaned_explicit)
+            except HTTPException as lookup_err:
+                detail_str = str(lookup_err.detail or "")
+                if "404" in detail_str or "NOT_FOUND" in detail_str.upper():
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"PayPal dispute '{cleaned_explicit}' was not found in PayPal Sandbox/API."
+                    ) from lookup_err
+                raise
+        dispute.dispute_id = cleaned_explicit
+        return cleaned_explicit, "explicit", f"Linked PayPal Dispute Case #{cleaned_explicit}."
+
+    stored_id = (dispute.dispute_id or "").strip() or None
+    if stored_id:
+        if app_env != "test" and _is_synthetic_dispute_id(project.id, stored_id):
+            dispute.dispute_id = None
+            stored_id = None
+        else:
+            return stored_id, "existing", None
+
+    if app_env == "test":
+        test_id = f"PP-D-{project.id}-TEST"
+        dispute.dispute_id = test_id
+        return test_id, "test_auto", None
+
+    payments = db.query(models.Payment).filter(models.Payment.project_id == project.id).all()
+    capture_ids: List[str] = []
+    tx_ids = set()
+    for p in payments:
+        if p.capture_id:
+            cap_str = str(p.capture_id).strip()
+            if cap_str and cap_str not in capture_ids:
+                capture_ids.append(cap_str)
+            tx_ids.add(cap_str)
+        for field_val in (p.authorization_id, p.paypal_authorization_id, p.paypal_order_id):
+            if field_val:
+                tx_ids.add(str(field_val).strip())
+    if project.paypal_authorization_id:
+        tx_ids.add(str(project.paypal_authorization_id).strip())
+
+    invoices = db.query(models.Invoice).filter(models.Invoice.project_id == project.id).all()
+    inv_refs = set()
+    for inv in invoices:
+        for field_val in (inv.paypal_invoice_id, inv.invoice_number):
+            if field_val:
+                inv_refs.add(str(field_val).strip())
+
+    custom_refs = {str(project.id), f"project_{project.id}", f"PL-{project.id}"}
+
+    if paypal_service.PAYPAL_CLIENT_ID and paypal_service.PAYPAL_CLIENT_SECRET:
+        try:
+            for cap_id in capture_ids[:5]:
+                matched_items = await paypal_service.list_disputes(disputed_transaction_id=cap_id, page_size=10)
+                for item in matched_items:
+                    pp_id = item.get("dispute_id")
+                    if pp_id and not _is_synthetic_dispute_id(project.id, pp_id):
+                        dispute.dispute_id = pp_id
+                        return pp_id, "auto_discovered", f"Auto-synced PayPal Dispute Case #{pp_id} via capture {cap_id}."
+
+            recent_items = await paypal_service.list_disputes(page_size=20)
+            for item in recent_items:
+                pp_id = item.get("dispute_id")
+                if not pp_id or _is_synthetic_dispute_id(project.id, pp_id):
+                    continue
+                if _paypal_dispute_matches_project(item, tx_ids, custom_refs, inv_refs):
+                    dispute.dispute_id = pp_id
+                    return pp_id, "auto_discovered", f"Auto-synced PayPal Dispute Case #{pp_id} from PayPal Disputes API."
+
+            # Summary list responses may omit disputed_transactions; inspect at most top 5 open items when project has captures
+            if capture_ids:
+                inspected = 0
+                for item in recent_items:
+                    if inspected >= 5:
+                        break
+                    if item.get("disputed_transactions"):
+                        continue
+                    pp_id = item.get("dispute_id")
+                    if not pp_id or (item.get("status") or "").upper() == "RESOLVED":
+                        continue
+                    inspected += 1
+                    try:
+                        details = await paypal_service.get_dispute_details(pp_id)
+                        if _paypal_dispute_matches_project(details, tx_ids, custom_refs, inv_refs):
+                            dispute.dispute_id = pp_id
+                            return pp_id, "auto_discovered", f"Auto-synced PayPal Dispute Case #{pp_id} from PayPal Disputes API."
+                    except Exception:
+                        continue
+        except Exception as sync_err:
+            print(f"[PAYPAL_DISPUTE_SYNC] Non-fatal PayPal dispute lookup notice for project #{project.id}: {sync_err}")
+
+    if not capture_ids:
+        note = (
+            "No captured PayPal milestone payment is on file yet (escrow is still an uncaptured authorization hold). "
+            "PayPal Resolution Center disputes only apply to captured payments; ProofLens internal Tier 2 Forensic Dossier "
+            "& Tier 3 adjudication work normally in the meantime."
+        )
+    else:
+        note = (
+            "No PayPal Resolution Center dispute (CUSTOMER.DISPUTE.CREATED) found yet for this project's captured transactions. "
+            "You can continue with ProofLens Tier 2/3 escalation now and link/sync the PayPal Case ID (PP-D-...) later once filed."
+        )
+    return None, "none", note
+
+
+def _compile_and_store_dispute_dossier(
+    project: models.Project,
+    dispute: models.DisputeRecord,
+    db: Session,
+    paypal_dispute_id: Optional[str] = None,
+    pushed_to_paypal: bool = False,
+) -> Tuple[dict, dict, list, models.Dossier]:
+    agreement = project.agreement
+
+    before_items = db.query(models.Evidence).filter(
+        models.Evidence.project_id == project.id,
+        models.Evidence.evidence_type == "before_evidence"
+    ).order_by(models.Evidence.id.asc()).all()
+
+    milestone_items = db.query(models.Evidence).filter(
+        models.Evidence.project_id == project.id,
+        models.Evidence.evidence_type == "milestone_evidence"
+    ).order_by(models.Evidence.id.asc()).all()
+
+    ai_classification = classify_dispute_with_ai(
+        project=project,
+        agreement=agreement,
+        before_items=before_items,
+        milestone_items=milestone_items,
+        dispute_reason=dispute.reason,
+        disputed_by=dispute.disputed_by
+    )
+
+    dossier = compile_evidence_dossier(
+        project=project,
+        agreement=agreement,
+        before_items=before_items,
+        milestone_items=milestone_items,
+        dispute_reason=dispute.reason,
+        disputed_by=dispute.disputed_by,
+        ai_classification=ai_classification
+    )
+    dossier["paypal_dispute_id"] = paypal_dispute_id
+    dossier["paypal_sync_status"] = "SUBMITTED_TO_PAYPAL" if pushed_to_paypal else "PROOFLENS_INTERNAL_READY"
+
+    dossier_record = models.Dossier(
+        dispute_id=dispute.id,
+        project_id=project.id,
+        dossier_id=dossier["dossier_id"],
+        summary=dossier.get("executive_summary"),
+        ai_classification=dossier.get("ai_dispute_classification"),
+        validity_flag=dossier.get("ai_validity_flag"),
+        confidence_score=dossier.get("ai_confidence_score"),
+        dossier_data=dossier,
+        pushed_to_paypal=pushed_to_paypal,
+    )
+    try:
+        db.add(dossier_record)
+    except Exception as e:
+        print(f"Dossier record creation notice: {e}")
+
+    dispute.dispute_classification = ai_classification.get("dispute_classification")
+    dispute.validity_flag = ai_classification.get("validity_flag")
+    dispute.ai_confidence_score = ai_classification.get("confidence_score")
+    dispute.ai_analysis = ai_classification.get("discrepancy_analysis")
+    dispute.compiled_dossier = dossier
+    flag_modified(dispute, "compiled_dossier")
+
+    return ai_classification, dossier, milestone_items, dossier_record
 
 
 @app.post("/api/disputes/{project_id}/open")
@@ -10667,13 +10909,30 @@ def get_active_dispute(project_id: int, db: Session = Depends(get_db)):
     Returns the current active dispute, its escalation tier, and all internal chat messages.
     """
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    app_env = os.getenv("APP_ENV", "development").lower()
+    payments = db.query(models.Payment).filter(models.Payment.project_id == project_id).all()
+    has_captured_payment = any(bool(p.capture_id) for p in payments) or float(project.captured_amount or 0) > 0
 
     dispute = db.query(models.DisputeRecord).filter(
         models.DisputeRecord.project_id == project_id
     ).order_by(models.DisputeRecord.id.desc()).first()
 
     if not dispute:
-        return {"active": False, "dispute": None, "chat_history": []}
+        return {
+            "active": False,
+            "dispute": None,
+            "project": {
+                "id": project.id,
+                "title": project.title,
+                "status": project.status.value if hasattr(project.status, "value") else str(project.status),
+                "total_price": project.total_price,
+                "has_captured_payment": has_captured_payment,
+            },
+            "chat_history": [],
+        }
 
     is_active = dispute.status in [
         models.DisputeStatus.INTERNAL_NEGOTIATION,
@@ -10689,6 +10948,10 @@ def get_active_dispute(project_id: int, db: Session = Depends(get_db)):
         tier_num = 3
     elif dispute.status == models.DisputeStatus.RESOLVED:
         tier_num = 4
+
+    visible_dispute_id = dispute.dispute_id
+    if app_env != "test" and _is_synthetic_dispute_id(project_id, visible_dispute_id):
+        visible_dispute_id = None
 
     # Fetch chat messages
     messages = db.query(models.DisputeChatHistory).filter(
@@ -10714,7 +10977,7 @@ def get_active_dispute(project_id: int, db: Session = Depends(get_db)):
         "dispute": {
             "id": dispute.id,
             "project_id": dispute.project_id,
-            "dispute_id": dispute.dispute_id,
+            "dispute_id": visible_dispute_id,
             "reason": dispute.reason,
             "disputed_by": dispute.disputed_by,
             "milestone_index": dispute.milestone_index,
@@ -10726,7 +10989,7 @@ def get_active_dispute(project_id: int, db: Session = Depends(get_db)):
             "ai_confidence_score": dispute.ai_confidence_score,
             "ai_analysis": dispute.ai_analysis,
             "has_dossier": bool(dispute.compiled_dossier),
-            "pushed_to_paypal": dispute.pushed_to_paypal,
+            "pushed_to_paypal": bool(dispute.pushed_to_paypal),
             "paypal_claim_id": dispute.paypal_claim_id,
             "escalated_to_human_at": dispute.escalated_to_human_at.isoformat() if dispute.escalated_to_human_at else None,
             "created_at": dispute.created_at.isoformat() if dispute.created_at else None
@@ -10735,7 +10998,8 @@ def get_active_dispute(project_id: int, db: Session = Depends(get_db)):
             "id": project.id,
             "title": project.title,
             "status": project.status.value if hasattr(project.status, "value") else str(project.status),
-            "total_price": project.total_price
+            "total_price": project.total_price,
+            "has_captured_payment": has_captured_payment,
         },
         "chat_history": chat_payload
     }
@@ -10794,7 +11058,9 @@ async def escalate_dispute_programmatic(
     """
     Phase 3: Programmatic Dossier Escalation (Tier 2).
     Compiles the authoritative ProofLens Evidence Dossier from the agreement, baseline evidence,
-    and milestone submission hashes, and submits it to the PayPal Disputes API (provide-evidence).
+    and milestone submission hashes, and submits it to the PayPal Disputes API (provide-evidence)
+    whenever a real PayPal Dispute ID is linked or auto-discovered (without blocking internal Tier 2
+    forensic dossier generation if no PayPal dispute webhook has fired yet).
     """
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
@@ -10807,82 +11073,67 @@ async def escalate_dispute_programmatic(
     if not dispute:
         raise HTTPException(status_code=404, detail="No active dispute record found for this project.")
 
+    app_env = os.getenv("APP_ENV", "development").lower()
     was_resolved = dispute.status == models.DisputeStatus.RESOLVED
     prior_resolution_type = dispute.resolution_type
-    paypal_dispute_id = require_webhook_paypal_dispute_id(dispute)
+    explicit_id = request.paypal_dispute_id if request else None
 
-    agreement = project.agreement
+    paypal_dispute_id, sync_source, sync_note = await _resolve_or_sync_paypal_dispute_id(
+        project,
+        dispute,
+        db,
+        explicit_dispute_id=explicit_id,
+        verify_explicit=True,
+    )
 
-    # 1. Retrieve all chronological evidence items
-    before_items = db.query(models.Evidence).filter(
-        models.Evidence.project_id == project.id,
-        models.Evidence.evidence_type == "before_evidence"
-    ).order_by(models.Evidence.id.asc()).all()
-
-    milestone_items = db.query(models.Evidence).filter(
-        models.Evidence.project_id == project.id,
-        models.Evidence.evidence_type == "milestone_evidence"
-    ).order_by(models.Evidence.id.asc()).all()
-
-    # 2. Run AI dispute classification with strict validity flags
-    ai_classification = classify_dispute_with_ai(
+    ai_classification, dossier, milestone_items, dossier_record = _compile_and_store_dispute_dossier(
         project=project,
-        agreement=agreement,
-        before_items=before_items,
-        milestone_items=milestone_items,
-        dispute_reason=dispute.reason,
-        disputed_by=dispute.disputed_by
+        dispute=dispute,
+        db=db,
+        paypal_dispute_id=paypal_dispute_id,
+        pushed_to_paypal=False,
     )
 
-    # 3. Compile authoritative Evidence Dossier
-    dossier = compile_evidence_dossier(
-        project=project,
-        agreement=agreement,
-        before_items=before_items,
-        milestone_items=milestone_items,
-        dispute_reason=dispute.reason,
-        disputed_by=dispute.disputed_by,
-        ai_classification=ai_classification
-    )
+    pushed = False
+    paypal_res: Dict[str, Any]
+    if paypal_dispute_id:
+        notes_text = format_paypal_dispute_notes(dossier)
+        try:
+            paypal_res = await paypal_service.provide_dispute_evidence(
+                dispute_id=paypal_dispute_id,
+                evidence_type="PROOF_OF_FULFILLMENT",
+                notes=notes_text
+            )
+            pushed = True
+            dossier["paypal_dispute_id"] = paypal_dispute_id
+            dossier["paypal_sync_status"] = "SUBMITTED_TO_PAYPAL"
+            dossier_record.pushed_to_paypal = True
+            dossier_record.dossier_data = dossier
+            flag_modified(dossier_record, "dossier_data")
+            dispute.compiled_dossier = dossier
+            flag_modified(dispute, "compiled_dossier")
+        except HTTPException as push_err:
+            if app_env == "test" or explicit_id:
+                raise
+            sync_note = str(push_err.detail or "PayPal API rejected evidence in current dispute stage.")
+            paypal_res = {
+                "status": "PAYPAL_SYNC_PENDING",
+                "dispute_id": paypal_dispute_id,
+                "detail": sync_note,
+            }
+    else:
+        paypal_res = {
+            "status": "PENDING_PAYPAL_CASE",
+            "detail": sync_note or "No PayPal Resolution Center case ID linked yet.",
+        }
 
-    # 4. Save Dossier Record
-    try:
-        dossier_record = models.Dossier(
-            dispute_id=dispute.id,
-            project_id=project.id,
-            dossier_id=dossier["dossier_id"],
-            summary=dossier.get("executive_summary"),
-            ai_classification=dossier.get("ai_dispute_classification"),
-            validity_flag=dossier.get("ai_validity_flag"),
-            confidence_score=dossier.get("ai_confidence_score"),
-            dossier_data=dossier,
-            pushed_to_paypal=True
-        )
-        db.add(dossier_record)
-    except Exception as e:
-        print(f"Dossier record creation notice: {e}")
-
-    # 5. Programmatic Push to PayPal Disputes API
-    notes_text = format_paypal_dispute_notes(dossier)
-
-    paypal_res = await paypal_service.provide_dispute_evidence(
-        dispute_id=paypal_dispute_id,
-        evidence_type="PROOF_OF_FULFILLMENT",
-        notes=notes_text
-    )
-
-    # 6. Update dispute state to Tier 2: ESCALATED_PROGRAMMATIC
+    # Update dispute state to Tier 2: ESCALATED_PROGRAMMATIC
     dispute.dispute_id = paypal_dispute_id
     dispute.status = models.DisputeStatus.ESCALATED_PROGRAMMATIC
     if was_resolved:
         dispute.resolution_type = None
         dispute.resolution_notes = None
-    dispute.dispute_classification = ai_classification.get("dispute_classification")
-    dispute.validity_flag = ai_classification.get("validity_flag")
-    dispute.ai_confidence_score = ai_classification.get("confidence_score")
-    dispute.ai_analysis = ai_classification.get("discrepancy_analysis")
-    dispute.compiled_dossier = dossier
-    dispute.pushed_to_paypal = True
+    dispute.pushed_to_paypal = pushed
     dispute.paypal_submission_response = paypal_res
     project.status = models.ProjectStatus.DISPUTED
 
@@ -10897,14 +11148,21 @@ async def escalate_dispute_programmatic(
         if was_resolved
         else "Case Escalated to Tier 2 (Programmatic Escalation). "
     )
+    if pushed and paypal_dispute_id:
+        sync_detail = f"submitted to PayPal Disputes API for case {paypal_dispute_id}."
+    elif paypal_dispute_id:
+        sync_detail = f"saved internally with linked PayPal case {paypal_dispute_id} ({sync_note or 'pending PayPal API stage'})."
+    else:
+        sync_detail = f"saved internally (pending PayPal Case sync). {sync_note or ''}".strip()
+
     system_log = models.DisputeChatHistory(
         dispute_id=dispute.id,
         sender_role="system",
-        sender_name="PayPal Disputes Sync",
+        sender_name="PayPal Disputes Sync" if pushed else "ProofLens Forensic Gateway",
         message=(
             f"{prefix}"
             f"Authoritative Evidence Dossier ({dossier['dossier_id']}) compiled with {len(milestone_items)} verified milestone proof(s) "
-            f"and cryptographic SHA-256 hashes, submitted to PayPal Disputes API for case {paypal_dispute_id}.{extra_note}"
+            f"and cryptographic SHA-256 hashes, {sync_detail}{extra_note}"
         ),
         proposal_type="escalation_programmatic"
     )
@@ -10914,7 +11172,11 @@ async def escalate_dispute_programmatic(
     db.refresh(dispute)
 
     return {
-        "message": "Dispute escalated to Tier 2: Programmatic PayPal Evidence Submission.",
+        "message": (
+            "Dispute escalated to Tier 2: Programmatic PayPal Evidence Submission."
+            if pushed
+            else "Dispute escalated to Tier 2: ProofLens Forensic Evidence Dossier compiled (pending PayPal Case sync)."
+        ),
         "dispute_id": dispute.id,
         "paypal_dispute_id": paypal_dispute_id,
         "status": dispute.status.value if hasattr(dispute.status, "value") else str(dispute.status),
@@ -10922,7 +11184,9 @@ async def escalate_dispute_programmatic(
         "ai_classification": ai_classification.get("dispute_classification"),
         "validity_flag": ai_classification.get("validity_flag"),
         "confidence_score": ai_classification.get("confidence_score"),
-        "pushed_to_paypal": True,
+        "pushed_to_paypal": pushed,
+        "sync_source": sync_source,
+        "sync_note": sync_note,
         "paypal_response": paypal_res,
         "evidence_dossier": dossier
     }
@@ -10935,8 +11199,9 @@ async def escalate_dispute_to_human(
 ):
     """
     Phase 4: Human Review Escalation (Tier 3).
-    Formally escalates the dispute to a PayPal Claim (/v1/customer/disputes/{dispute_id}/escalate),
-    triggering PayPal's 20-day manual review cycle with human adjudicators.
+    Formally escalates the dispute to a PayPal Claim (/v1/customer/disputes/{dispute_id}/escalate)
+    when a PayPal dispute is linked, or enters ProofLens's 20-day Human Adjudication Hold while
+    compiling the Forensic Dossier Report without blocking on missing sandbox webhooks.
     """
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
@@ -10949,20 +11214,82 @@ async def escalate_dispute_to_human(
     if not dispute:
         raise HTTPException(status_code=404, detail="No active dispute record found for this project.")
 
+    app_env = os.getenv("APP_ENV", "development").lower()
     was_resolved = dispute.status == models.DisputeStatus.RESOLVED
     prior_resolution_type = dispute.resolution_type
-    paypal_dispute_id = require_webhook_paypal_dispute_id(dispute)
+    explicit_id = request.paypal_dispute_id if request else None
 
-    # Call PayPal Disputes Claim Escalation API
-    note = request.note or f"ProofLens dispute for '{project.title}' escalated to Claim for manual human adjudication."
-    paypal_claim_res = await paypal_service.escalate_dispute_to_claim(
-        dispute_id=paypal_dispute_id,
-        note=note
+    paypal_dispute_id, sync_source, sync_note = await _resolve_or_sync_paypal_dispute_id(
+        project,
+        dispute,
+        db,
+        explicit_dispute_id=explicit_id,
+        verify_explicit=True,
     )
 
-    claim_id = paypal_claim_res.get("claim_id")
+    if not dispute.compiled_dossier:
+        _compile_and_store_dispute_dossier(
+            project=project,
+            dispute=dispute,
+            db=db,
+            paypal_dispute_id=paypal_dispute_id,
+            pushed_to_paypal=bool(dispute.pushed_to_paypal),
+        )
+
+    note = (request.note if request else None) or f"ProofLens dispute for '{project.title}' escalated to Claim for manual human adjudication."
+    claim_id: Optional[str] = None
+    escalated_at_paypal = False
+    paypal_claim_res: Dict[str, Any]
+
+    if paypal_dispute_id:
+        if not dispute.pushed_to_paypal and app_env != "test" and dispute.compiled_dossier:
+            try:
+                notes_text = format_paypal_dispute_notes(dispute.compiled_dossier)
+                ev_res = await paypal_service.provide_dispute_evidence(
+                    dispute_id=paypal_dispute_id,
+                    evidence_type="PROOF_OF_FULFILLMENT",
+                    notes=notes_text,
+                )
+                dispute.pushed_to_paypal = True
+                dispute.paypal_submission_response = ev_res
+                if isinstance(dispute.compiled_dossier, dict):
+                    updated_dossier = dict(dispute.compiled_dossier)
+                    updated_dossier["paypal_dispute_id"] = paypal_dispute_id
+                    updated_dossier["paypal_sync_status"] = "SUBMITTED_TO_PAYPAL"
+                    dispute.compiled_dossier = updated_dossier
+                    flag_modified(dispute, "compiled_dossier")
+            except Exception as push_err:
+                print(f"[DISPUTE_TIER3_PUSH_WARN] Best-effort evidence push notice for {paypal_dispute_id}: {push_err}")
+
+        try:
+            paypal_claim_res = await paypal_service.escalate_dispute_to_claim(
+                dispute_id=paypal_dispute_id,
+                note=note
+            )
+            claim_id = paypal_claim_res.get("claim_id") or paypal_dispute_id
+            escalated_at_paypal = True
+            if app_env == "test":
+                dispute.pushed_to_paypal = True
+        except HTTPException as claim_err:
+            if app_env == "test" or explicit_id:
+                raise
+            sync_note = str(claim_err.detail or "PayPal Claim escalation was not accepted in current PayPal stage.")
+            paypal_claim_res = {
+                "status": "PROOFLENS_HUMAN_ADJUDICATION",
+                "dispute_id": paypal_dispute_id,
+                "adjudication_cycle_days": 20,
+                "detail": sync_note,
+            }
+    else:
+        paypal_claim_res = {
+            "status": "PENDING_PAYPAL_CASE",
+            "lifecycle_stage": "PROOFLENS_HUMAN_ADJUDICATION",
+            "adjudication_cycle_days": 20,
+            "detail": sync_note or "No PayPal Resolution Center case ID linked yet.",
+        }
 
     # Update dispute state to Tier 3: ESCALATED_HUMAN
+    dispute.dispute_id = paypal_dispute_id
     dispute.status = models.DisputeStatus.ESCALATED_HUMAN
     if was_resolved:
         dispute.resolution_type = None
@@ -10977,15 +11304,24 @@ async def escalate_dispute_to_human(
         if was_resolved
         else "Case Formally Escalated to Tier 3: PayPal Claim (Manual Human Review). "
     )
+    if escalated_at_paypal:
+        claim_msg = (
+            f"{prefix}"
+            f"PayPal Claim ID: {claim_id or 'not provided'}. PayPal has initiated the official 20-day adjudication window. "
+            f"A PayPal claims specialist will review the cryptographic evidence dossier and render a binding decision."
+        )
+    else:
+        claim_msg = (
+            f"{prefix}"
+            f"ProofLens has activated the 20-day manual adjudication hold and locked all milestone payouts. "
+            f"{sync_note or 'Link a PayPal Dispute ID via Sync with PayPal once filed in PayPal Resolution Center.'}"
+        )
+
     system_log = models.DisputeChatHistory(
         dispute_id=dispute.id,
         sender_role="system",
         sender_name="PayPal Adjudication Gateway",
-        message=(
-            f"{prefix}"
-            f"PayPal Claim ID: {claim_id or 'not provided'}. PayPal has initiated the official 20-day adjudication window. "
-            f"A PayPal claims specialist will review the cryptographic evidence dossier and render a binding decision."
-        ),
+        message=claim_msg,
         proposal_type="escalation_human_claim"
     )
     db.add(system_log)
@@ -10994,10 +11330,18 @@ async def escalate_dispute_to_human(
     db.refresh(dispute)
 
     return {
-        "message": "Dispute formally escalated to PayPal Claim for 20-day manual human review.",
+        "message": (
+            "Dispute formally escalated to PayPal Claim for 20-day manual human review."
+            if escalated_at_paypal
+            else "Dispute escalated to Tier 3: 20-day Human Adjudication Hold (pending PayPal Case sync)."
+        ),
         "dispute_id": dispute.id,
         "paypal_dispute_id": paypal_dispute_id,
         "claim_id": claim_id,
+        "pushed_to_paypal": bool(dispute.pushed_to_paypal),
+        "escalated_at_paypal": escalated_at_paypal,
+        "sync_source": sync_source,
+        "sync_note": sync_note,
         "status": dispute.status.value if hasattr(dispute.status, "value") else str(dispute.status),
         "tier": 3,
         "adjudication_cycle_days": 20,
@@ -11063,6 +11407,178 @@ def get_dispute_dossier(project_id: int, db: Session = Depends(get_db)):
     if not dispute or not dispute.compiled_dossier:
         raise HTTPException(status_code=404, detail="No dispute dossier on file for this project.")
     return dispute.compiled_dossier
+
+
+@app.post("/api/disputes/{project_id}/dossier/generate")
+def generate_dispute_dossier(project_id: int, db: Session = Depends(get_db)):
+    """
+    Compiles (or refreshes) the ProofLens Forensic Evidence Dossier Report on demand
+    for any existing dispute (Tier 1, 2, 3, or 4) without forcing escalation state transitions.
+    """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    dispute = db.query(models.DisputeRecord).filter(
+        models.DisputeRecord.project_id == project_id
+    ).order_by(models.DisputeRecord.id.desc()).first()
+
+    if not dispute:
+        raise HTTPException(status_code=404, detail="No dispute record found for this project.")
+
+    app_env = os.getenv("APP_ENV", "development").lower()
+    visible_dispute_id = dispute.dispute_id
+    if app_env != "test" and _is_synthetic_dispute_id(project_id, visible_dispute_id):
+        visible_dispute_id = None
+
+    _, dossier, _, _ = _compile_and_store_dispute_dossier(
+        project=project,
+        dispute=dispute,
+        db=db,
+        paypal_dispute_id=visible_dispute_id,
+        pushed_to_paypal=bool(dispute.pushed_to_paypal),
+    )
+
+    db.commit()
+    db.refresh(dispute)
+
+    return {
+        "message": "ProofLens Forensic Evidence Dossier compiled successfully.",
+        "dispute_id": dispute.id,
+        "dossier_id": dossier.get("dossier_id"),
+        "dossier": dossier,
+    }
+
+
+@app.post("/api/disputes/{project_id}/sync-paypal")
+async def sync_project_paypal_dispute(
+    project_id: int,
+    request: SyncPayPalDisputeRequest = SyncPayPalDisputeRequest(),
+    db: Session = Depends(get_db)
+):
+    """
+    Auto-discovers or manually links an authentic PayPal Resolution Center Dispute Case ID (PP-D-...)
+    for this project's dispute. If the dispute is already in Tier 2 or Tier 3 and hasn't been pushed
+    to PayPal yet, pushes the compiled dossier / claim escalation immediately.
+    """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    dispute = db.query(models.DisputeRecord).filter(
+        models.DisputeRecord.project_id == project_id
+    ).order_by(models.DisputeRecord.id.desc()).first()
+
+    if not dispute:
+        raise HTTPException(status_code=404, detail="No dispute record found for this project.")
+
+    explicit_id = request.paypal_dispute_id if request else None
+    paypal_dispute_id, sync_source, sync_note = await _resolve_or_sync_paypal_dispute_id(
+        project,
+        dispute,
+        db,
+        explicit_dispute_id=explicit_id,
+        verify_explicit=True,
+    )
+
+    if not paypal_dispute_id:
+        db.commit()
+        return {
+            "synced": False,
+            "sync_source": sync_source,
+            "paypal_dispute_id": None,
+            "pushed_to_paypal": bool(dispute.pushed_to_paypal),
+            "claim_id": dispute.paypal_claim_id,
+            "message": sync_note or "No matching PayPal dispute found yet.",
+        }
+
+    push_warning = None
+    if dispute.status in [
+        models.DisputeStatus.ESCALATED_PROGRAMMATIC,
+        models.DisputeStatus.ESCALATED_HUMAN,
+    ]:
+        if not dispute.compiled_dossier:
+            _compile_and_store_dispute_dossier(
+                project=project,
+                dispute=dispute,
+                db=db,
+                paypal_dispute_id=paypal_dispute_id,
+                pushed_to_paypal=False,
+            )
+
+        if not dispute.pushed_to_paypal and dispute.compiled_dossier:
+            try:
+                notes_text = format_paypal_dispute_notes(dispute.compiled_dossier)
+                paypal_res = await paypal_service.provide_dispute_evidence(
+                    dispute_id=paypal_dispute_id,
+                    evidence_type="PROOF_OF_FULFILLMENT",
+                    notes=notes_text,
+                )
+                dispute.pushed_to_paypal = True
+                dispute.paypal_submission_response = paypal_res
+                if isinstance(dispute.compiled_dossier, dict):
+                    updated_dossier = dict(dispute.compiled_dossier)
+                    updated_dossier["paypal_dispute_id"] = paypal_dispute_id
+                    updated_dossier["paypal_sync_status"] = "SUBMITTED_TO_PAYPAL"
+                    dispute.compiled_dossier = updated_dossier
+                    flag_modified(dispute, "compiled_dossier")
+                latest_dossier = db.query(models.Dossier).filter(
+                    models.Dossier.dispute_id == dispute.id
+                ).order_by(models.Dossier.id.desc()).first()
+                if latest_dossier:
+                    latest_dossier.pushed_to_paypal = True
+                    if isinstance(latest_dossier.dossier_data, dict):
+                        updated_data = dict(latest_dossier.dossier_data)
+                        updated_data["paypal_dispute_id"] = paypal_dispute_id
+                        updated_data["paypal_sync_status"] = "SUBMITTED_TO_PAYPAL"
+                        latest_dossier.dossier_data = updated_data
+                        flag_modified(latest_dossier, "dossier_data")
+            except HTTPException as push_err:
+                push_warning = str(push_err.detail or "PayPal did not accept evidence in current dispute stage.")
+
+        if dispute.status == models.DisputeStatus.ESCALATED_HUMAN and not dispute.paypal_claim_id:
+            try:
+                claim_res = await paypal_service.escalate_dispute_to_claim(
+                    dispute_id=paypal_dispute_id,
+                    note=f"ProofLens dispute for '{project.title}' escalated to Claim.",
+                )
+                dispute.paypal_claim_id = claim_res.get("claim_id") or paypal_dispute_id
+            except HTTPException as claim_err:
+                claim_msg = str(claim_err.detail or "PayPal Claim escalation returned an error.")
+                push_warning = f"{push_warning} | {claim_msg}" if push_warning else claim_msg
+
+    if isinstance(dispute.compiled_dossier, dict) and dispute.compiled_dossier.get("paypal_dispute_id") != paypal_dispute_id:
+        updated_dossier = dict(dispute.compiled_dossier)
+        updated_dossier["paypal_dispute_id"] = paypal_dispute_id
+        if dispute.pushed_to_paypal:
+            updated_dossier["paypal_sync_status"] = "SUBMITTED_TO_PAYPAL"
+        dispute.compiled_dossier = updated_dossier
+        flag_modified(dispute, "compiled_dossier")
+
+    action_msg = (
+        f"Linked PayPal Dispute Case #{paypal_dispute_id}."
+        + (" ProofLens Evidence Dossier synced to PayPal Disputes API." if dispute.pushed_to_paypal else "")
+        + (f" Notice: {push_warning}" if push_warning else "")
+    )
+    db.add(models.DisputeChatHistory(
+        dispute_id=dispute.id,
+        sender_role="system",
+        sender_name="PayPal Disputes Sync",
+        message=action_msg,
+        proposal_type="escalation_programmatic" if dispute.pushed_to_paypal else "system_guidance",
+    ))
+
+    db.commit()
+    db.refresh(dispute)
+
+    return {
+        "synced": True,
+        "sync_source": sync_source,
+        "paypal_dispute_id": paypal_dispute_id,
+        "pushed_to_paypal": bool(dispute.pushed_to_paypal),
+        "claim_id": dispute.paypal_claim_id,
+        "message": action_msg,
+    }
 
 @app.get("/api/disputes/paypal/{dispute_id}")
 async def get_paypal_dispute(dispute_id: str):
@@ -11933,85 +12449,56 @@ async def auto_escalate_matured_tier1_disputes(
             project = db.query(models.Project).filter(models.Project.id == dispute.project_id).first()
             if not project:
                 continue
-            if not dispute.dispute_id or re.fullmatch(
-                rf"PP-D-{dispute.project_id}-[A-F0-9]{{6}}",
-                dispute.dispute_id,
-                flags=re.IGNORECASE
-            ):
-                results.append({
-                    "dispute_id": dispute.id,
-                    "project_id": project.id,
-                    "status": "SKIPPED_NO_PAYPAL_DISPUTE_ID"
-                })
-                continue
 
-            agreement = project.agreement
-            before_items = db.query(models.Evidence).filter(
-                models.Evidence.project_id == project.id,
-                models.Evidence.evidence_type == "before_evidence"
-            ).order_by(models.Evidence.id.asc()).all()
-
-            milestone_items = db.query(models.Evidence).filter(
-                models.Evidence.project_id == project.id,
-                models.Evidence.evidence_type == "milestone_evidence"
-            ).order_by(models.Evidence.id.asc()).all()
-
-            ai_classification = classify_dispute_with_ai(
-                project=project,
-                agreement=agreement,
-                before_items=before_items,
-                milestone_items=milestone_items,
-                dispute_reason=dispute.reason,
-                disputed_by=dispute.disputed_by
+            paypal_dispute_id, _, sync_note = await _resolve_or_sync_paypal_dispute_id(
+                project,
+                dispute,
+                db,
+                verify_explicit=False,
             )
 
-            dossier = compile_evidence_dossier(
+            ai_classification, dossier, _, dossier_record = _compile_and_store_dispute_dossier(
                 project=project,
-                agreement=agreement,
-                before_items=before_items,
-                milestone_items=milestone_items,
-                dispute_reason=dispute.reason,
-                disputed_by=dispute.disputed_by,
-                ai_classification=ai_classification
+                dispute=dispute,
+                db=db,
+                paypal_dispute_id=paypal_dispute_id,
+                pushed_to_paypal=False,
             )
 
-            # Persist dossier record
-            try:
-                dossier_record = models.Dossier(
-                    dispute_id=dispute.id,
-                    project_id=project.id,
-                    dossier_id=dossier["dossier_id"],
-                    summary=dossier.get("executive_summary"),
-                    ai_classification=dossier.get("ai_dispute_classification"),
-                    validity_flag=dossier.get("ai_validity_flag"),
-                    confidence_score=dossier.get("ai_confidence_score"),
-                    dossier_data=dossier,
-                    pushed_to_paypal=True
+            pushed = False
+            paypal_res: Dict[str, Any]
+            if paypal_dispute_id:
+                notes_text = format_paypal_dispute_notes(dossier)
+                paypal_res = await paypal_service.provide_dispute_evidence(
+                    dispute_id=paypal_dispute_id,
+                    evidence_type="PROOF_OF_FULFILLMENT",
+                    notes=notes_text
                 )
-                db.add(dossier_record)
-            except Exception as e:
-                print(f"[WARN] Error persisting dossier record during auto-escalation: {e}")
-
-            paypal_dispute_id = dispute.dispute_id
-            notes_text = format_paypal_dispute_notes(dossier)
-
-            paypal_res = await paypal_service.provide_dispute_evidence(
-                dispute_id=paypal_dispute_id,
-                evidence_type="PROOF_OF_FULFILLMENT",
-                notes=notes_text
-            )
+                pushed = True
+                dossier["paypal_dispute_id"] = paypal_dispute_id
+                dossier["paypal_sync_status"] = "SUBMITTED_TO_PAYPAL"
+                dossier_record.pushed_to_paypal = True
+                dossier_record.dossier_data = dossier
+                flag_modified(dossier_record, "dossier_data")
+                dispute.compiled_dossier = dossier
+                flag_modified(dispute, "compiled_dossier")
+            else:
+                paypal_res = {
+                    "status": "PENDING_PAYPAL_CASE",
+                    "detail": sync_note or "No PayPal Resolution Center case ID linked yet.",
+                }
 
             dispute.dispute_id = paypal_dispute_id
             dispute.status = models.DisputeStatus.ESCALATED_PROGRAMMATIC
-            dispute.dispute_classification = ai_classification.get("dispute_classification")
-            dispute.validity_flag = ai_classification.get("validity_flag")
-            dispute.ai_confidence_score = ai_classification.get("confidence_score")
-            dispute.ai_analysis = ai_classification.get("discrepancy_analysis")
-            dispute.compiled_dossier = dossier
-            dispute.pushed_to_paypal = True
+            dispute.pushed_to_paypal = pushed
             dispute.paypal_submission_response = paypal_res
             project.status = models.ProjectStatus.DISPUTED
 
+            sync_text = (
+                f"submitted to PayPal Disputes API for case {paypal_dispute_id}."
+                if pushed and paypal_dispute_id
+                else "saved internally (pending PayPal Case link)."
+            )
             # Log audit record in dispute chat history
             system_log = models.DisputeChatHistory(
                 dispute_id=dispute.id,
@@ -12020,7 +12507,7 @@ async def auto_escalate_matured_tier1_disputes(
                 message=(
                     f"Tier 1 (20-day internal negotiation window) elapsed without mutual settlement. "
                     f"Automated Tier 2 Programmatic Escalation executed. Cryptographic evidence dossier "
-                    f"({dossier['dossier_id']}) compiled and submitted to PayPal Disputes API for case {paypal_dispute_id}."
+                    f"({dossier['dossier_id']}) compiled and {sync_text}"
                 ),
                 proposal_type="escalation_programmatic"
             )
@@ -12032,7 +12519,7 @@ async def auto_escalate_matured_tier1_disputes(
                     user_id=project.buyer_id,
                     project_id=project.id,
                     title="Dispute Auto-Escalated to PayPal (Tier 2)",
-                    message=f"The 20-day internal negotiation window for '{project.title}' concluded. Evidence dossier {dossier['dossier_id']} has been programmatically submitted to PayPal.",
+                    message=f"The 20-day internal negotiation window for '{project.title}' concluded. Evidence dossier {dossier['dossier_id']} has been compiled for Tier 2 review.",
                     type="DISPUTE_ESCALATED",
                     action_url=f"/project/{project.id}/dispute"
                 )
@@ -12042,7 +12529,7 @@ async def auto_escalate_matured_tier1_disputes(
                     user_id=project.seller_id,
                     project_id=project.id,
                     title="Dispute Auto-Escalated to PayPal (Tier 2)",
-                    message=f"The 20-day internal negotiation window for '{project.title}' concluded. Cryptographic evidence dossier {dossier['dossier_id']} has been submitted to PayPal.",
+                    message=f"The 20-day internal negotiation window for '{project.title}' concluded. Cryptographic evidence dossier {dossier['dossier_id']} has been compiled for Tier 2 review.",
                     type="DISPUTE_ESCALATED",
                     action_url=f"/project/{project.id}/dispute"
                 )
@@ -12052,6 +12539,7 @@ async def auto_escalate_matured_tier1_disputes(
                 "project_id": project.id,
                 "paypal_dispute_id": paypal_dispute_id,
                 "dossier_id": dossier["dossier_id"],
+                "pushed_to_paypal": pushed,
                 "status": "ESCALATED_PROGRAMMATIC",
                 "days_elapsed": (datetime.now(timezone.utc) - ensure_utc(dispute.created_at)).days if dispute.created_at else 20
             })
@@ -12156,11 +12644,39 @@ async def process_paypal_webhook_event(event_payload: Dict[str, Any], db: Sessio
 
             project.status = models.ProjectStatus.DISPUTED
 
+            auto_push_note = ""
+            if (
+                dispute.status in [models.DisputeStatus.ESCALATED_PROGRAMMATIC, models.DisputeStatus.ESCALATED_HUMAN]
+                and dispute.compiled_dossier
+                and not dispute.pushed_to_paypal
+            ):
+                try:
+                    notes_text = format_paypal_dispute_notes(dispute.compiled_dossier)
+                    ev_res = await paypal_service.provide_dispute_evidence(
+                        dispute_id=paypal_dispute_id,
+                        evidence_type="PROOF_OF_FULFILLMENT",
+                        notes=notes_text,
+                    )
+                    dispute.pushed_to_paypal = True
+                    dispute.paypal_submission_response = ev_res
+                    if isinstance(dispute.compiled_dossier, dict):
+                        updated_dossier = dict(dispute.compiled_dossier)
+                        updated_dossier["paypal_dispute_id"] = paypal_dispute_id
+                        updated_dossier["paypal_sync_status"] = "SUBMITTED_TO_PAYPAL"
+                        dispute.compiled_dossier = updated_dossier
+                        flag_modified(dispute, "compiled_dossier")
+                    auto_push_note = " Pre-compiled ProofLens Evidence Dossier was automatically pushed to PayPal."
+                except Exception as push_err:
+                    print(f"[WEBHOOK_DISPUTE_PUSH_WARN] Non-fatal auto-push notice for {paypal_dispute_id}: {push_err}")
+
             system_log = models.DisputeChatHistory(
                 dispute_id=dispute.id,
                 sender_role="system",
                 sender_name="PayPal Webhook Gateway",
-                message=f"Inbound PayPal Dispute Created event received (Case #{paypal_dispute_id}). Project milestone payouts paused. Internal negotiation window active.",
+                message=(
+                    f"Inbound PayPal Dispute Created event received (Case #{paypal_dispute_id}). "
+                    f"Project milestone payouts paused.{auto_push_note or ' Internal negotiation window active.'}"
+                ),
                 proposal_type="inbound_webhook_dispute_created"
             )
             db.add(system_log)

@@ -219,14 +219,14 @@
         <div class="panel-card premium-card">
           <div class="panel-header">
             <h3>ProofLens Case Evidence</h3>
-            <button (click)="openDossier()" class="btn-inspect-dossier">
+            <button (click)="openDossier()" [disabled]="isGeneratingDossier" class="btn-inspect-dossier">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                 <polyline points="14 2 14 8 20 8"/>
                 <line x1="16" y1="13" x2="8" y2="13"/>
                 <line x1="16" y1="17" x2="8" y2="17"/>
               </svg>
-              <span>Inspect Dossier</span>
+              <span>{{ activeDispute.has_dossier ? 'Inspect Dossier' : (isGeneratingDossier ? 'Compiling...' : 'Generate Dossier Report') }}</span>
             </button>
           </div>
 
@@ -247,13 +247,23 @@
               </svg>
               <span>Anti-Spoofing &amp; Moiré Scanned</span>
             </span>
-            <span class="dossier-pill" *ngIf="activeDispute.pushed_to_paypal">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2.5">
-                <circle cx="12" cy="12" r="10"/>
-                <polyline points="12 6 12 12 14 14"/>
-              </svg>
-              <span>Submitted to PayPal API</span>
-            </span>
+            @if (activeDispute.pushed_to_paypal) {
+              <span class="dossier-pill">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2.5">
+                  <circle cx="12" cy="12" r="10"/>
+                  <polyline points="12 6 12 12 14 14"/>
+                </svg>
+                <span>Submitted to PayPal API</span>
+              </span>
+            } @else if (activeDispute.has_dossier) {
+              <span class="dossier-pill">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#0284c7" stroke-width="2.5">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                </svg>
+                <span>Forensic Report Ready (Exportable)</span>
+              </span>
+            }
           </div>
         </div>
 
@@ -300,7 +310,7 @@
 
           @if (currentTier === 1) {
             <p class="panel-subtext">
-              If internal negotiation fails, escalate to Tier 2 to submit the authoritative ProofLens Evidence Dossier to the PayPal Disputes API.
+              If internal negotiation fails, escalate to Tier 2 to compile the authoritative ProofLens Forensic Evidence Dossier (and submit to PayPal Disputes API if linked).
             </p>
             <button
               (click)="escalateToProgrammatic()"
@@ -310,11 +320,15 @@
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
               </svg>
-              <span>{{ isEscalatingProgrammatic ? 'Compiling &amp; Submitting...' : 'Escalate to PayPal (Submit Dossier)' }}</span>
+              <span>{{ isEscalatingProgrammatic ? 'Compiling &amp; Escalating...' : 'Escalate to Tier 2 (Compile &amp; Submit Dossier)' }}</span>
             </button>
           } @else if (currentTier === 2) {
             <p class="panel-subtext">
-              ProofLens Evidence Dossier has been submitted to PayPal. If the programmatic response does not settle the dispute, escalate to an official Claim for manual human adjudicator arbitration.
+              @if (activeDispute.pushed_to_paypal) {
+                ProofLens Evidence Dossier has been submitted to PayPal. If the programmatic response does not settle the dispute, escalate to Tier 3 for manual human adjudicator arbitration.
+              } @else {
+                ProofLens Forensic Dossier is compiled and payouts remain locked. Link a PayPal Case ID below to sync directly to PayPal, or escalate to Tier 3 for 20-day human adjudication hold.
+              }
             </p>
             <button
               (click)="escalateToHuman()"
@@ -326,7 +340,7 @@
                 <line x1="12" y1="8" x2="12" y2="12"/>
                 <line x1="12" y1="16" x2="12.01" y2="16"/>
               </svg>
-              <span>{{ isEscalatingHuman ? 'Escalating to Claim...' : 'Escalate to PayPal Claim (Human Review - 20 Days)' }}</span>
+              <span>{{ isEscalatingHuman ? 'Escalating to Tier 3...' : 'Escalate to Tier 3 (Human Review - 20 Days)' }}</span>
             </button>
           } @else if (currentTier === 3) {
             <div class="claim-active-banner">
@@ -335,10 +349,14 @@
                   <circle cx="12" cy="12" r="10"/>
                   <polyline points="12 6 12 12 14 14"/>
                 </svg>
-                <span>PayPal Manual Claim Active</span>
+                <span>{{ activeDispute.paypal_claim_id ? 'PayPal Manual Claim Active' : 'Tier 3 Human Adjudication Hold Active' }}</span>
               </div>
-              <p>Case is under human investigation by PayPal Adjudication. The 20-day review period is in effect. All escrow payouts remain vaulted until PayPal issues a binding ruling.</p>
-              <span class="claim-case-code">Claim ID: {{ activeDispute.paypal_claim_id || 'CLAIM-ACTIVE' }}</span>
+              <p>Case is under formal 20-day human review. All escrow payouts remain vaulted until final binding adjudication is recorded.</p>
+              @if (activeDispute.paypal_claim_id) {
+                <span class="claim-case-code">Claim ID: {{ activeDispute.paypal_claim_id }}</span>
+              } @else {
+                <span class="claim-case-code claim-pending-code">ProofLens 20-Day Adjudication Hold • Pending PayPal Case Sync</span>
+              }
             </div>
           } @else if (currentTier === 4) {
             <div class="resolved-banner">
@@ -370,7 +388,7 @@
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
                         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
                       </svg>
-                      <span>{{ isEscalatingProgrammatic ? 'Compiling &amp; Submitting...' : 'Escalate to PayPal (Submit Dossier)' }}</span>
+                      <span>{{ isEscalatingProgrammatic ? 'Compiling &amp; Escalating...' : 'Escalate to Tier 2 (Compile &amp; Submit Dossier)' }}</span>
                     </button>
                   } @else if (!activeDispute.paypal_claim_id) {
                     <button
@@ -384,7 +402,7 @@
                         <line x1="12" y1="8" x2="12" y2="12"/>
                         <line x1="12" y1="16" x2="12.01" y2="16"/>
                       </svg>
-                      <span>{{ isEscalatingHuman ? 'Escalating to Claim...' : 'Escalate to PayPal Claim (Human Review - 20 Days)' }}</span>
+                      <span>{{ isEscalatingHuman ? 'Escalating to Tier 3...' : 'Escalate to Tier 3 (Human Review - 20 Days)' }}</span>
                     </button>
                   }
                 }
@@ -404,12 +422,6 @@
                   </button>
                 }
               </div>
-
-              @if (!activeDispute.dispute_id && !isResolvedByPayPal()) {
-                <p class="paypal-sync-hint">
-                  Direct PayPal Tier 2/3 API submission requires a linked PayPal Dispute ID from the <code>CUSTOMER.DISPUTE.CREATED</code> webhook. Use Tier 1 above anytime to escalate internally and lock milestone payouts.
-                </p>
-              }
 
               @if (showFollowUpDisputeForm) {
                 <div class="followup-dispute-form">
@@ -439,6 +451,46 @@
                     </button>
                   </div>
                 </div>
+              }
+            </div>
+          }
+
+          @if (!activeDispute.dispute_id && !isResolvedByPayPal()) {
+            <div class="paypal-sync-box">
+              <div class="paypal-sync-header">
+                <span>PayPal Resolution Center Sync</span>
+                @if (!hasCapturedPayment) {
+                  <span class="sync-status-tag">Pre-Capture Hold</span>
+                }
+              </div>
+              <p class="paypal-sync-hint">
+                @if (!hasCapturedPayment) {
+                  Escrow is currently an uncaptured authorization hold (no milestone capture yet), so PayPal Customer Disputes are not open. Tier 2 Forensic Dossier generation &amp; Tier 3 ProofLens hold still work normally.
+                } @else {
+                  No PayPal dispute webhook linked yet. ProofLens Tier 2/3 escalation works right now; click <strong>Auto-Discover</strong> or paste a PayPal Case ID (<code>PP-D-...</code>) once opened in PayPal.
+                }
+              </p>
+              <div class="paypal-sync-controls">
+                <input
+                  type="text"
+                  [(ngModel)]="syncPayPalCaseId"
+                  placeholder="PayPal Case ID (e.g. PP-D-...)"
+                  class="paypal-case-input"
+                />
+                <button
+                  type="button"
+                  (click)="syncWithPayPal()"
+                  [disabled]="isSyncingPayPal"
+                  class="btn-sync-paypal"
+                >
+                  {{ isSyncingPayPal ? 'Syncing...' : (syncPayPalCaseId.trim() ? 'Link Case' : 'Auto-Discover') }}
+                </button>
+              </div>
+              @if (syncFeedback) {
+                <div class="sync-feedback-msg">{{ syncFeedback }}</div>
+              }
+              @if (syncError) {
+                <div class="sync-error-msg">{{ syncError }}</div>
               }
             </div>
           }
@@ -554,30 +606,92 @@
             </svg>
             <h3>Authoritative ProofLens Evidence Dossier</h3>
           </div>
-          <button (click)="closeDossier()" class="btn-close-modal">&times;</button>
+          <div class="dossier-modal-actions">
+            @if (dossierData && !isLoadingDossier) {
+              <button type="button" (click)="regenerateDossier()" [disabled]="isGeneratingDossier" class="btn-dossier-util">
+                {{ isGeneratingDossier ? 'Refreshing...' : 'Refresh Report' }}
+              </button>
+              <button type="button" (click)="downloadDossierJson()" class="btn-dossier-util">
+                Download JSON
+              </button>
+              <button type="button" (click)="printDossierReport()" class="btn-dossier-util btn-dossier-print">
+                Print / Save PDF
+              </button>
+            }
+            <button (click)="closeDossier()" class="btn-close-modal">&times;</button>
+          </div>
         </div>
 
         @if (isLoadingDossier) {
           <div class="modal-loading">
-            <p>Loading cryptographic evidence ledger...</p>
+            <p>Compiling &amp; loading cryptographic evidence ledger...</p>
           </div>
         } @else if (dossierData) {
           <div class="dossier-viewer-body">
             <div class="dossier-meta-banner">
               <div>Dossier ID: <strong>{{ dossierData.dossier_id }}</strong></div>
               <div>Compiled: <strong>{{ dossierData.compiled_at | date:'medium' }}</strong></div>
+              <div>Classification: <strong>{{ dossierData.ai_dispute_classification }}</strong></div>
               <div>AI Validity: <strong>{{ dossierData.ai_validity_flag }}</strong> (Confidence: {{ dossierData.ai_confidence_score }}%)</div>
+              <div>
+                PayPal Sync:
+                <strong>
+                  {{ dossierData.paypal_dispute_id ? ('Case #' + dossierData.paypal_dispute_id + ' • ' + (dossierData.paypal_sync_status || 'LINKED')) : 'Internal Dossier Ready' }}
+                </strong>
+              </div>
             </div>
+
+            @if (dossierData.executive_summary) {
+              <div class="dossier-section">
+                <h4>Executive Summary</h4>
+                <p class="summary-box">{{ dossierData.executive_summary }}</p>
+              </div>
+            }
 
             <div class="dossier-section">
               <h4>Adjudication Analysis &amp; Findings</h4>
               <p class="analysis-box">{{ dossierData.adjudication_analysis }}</p>
             </div>
 
+            @if (dossierData.recommended_adjudication) {
+              <div class="dossier-section">
+                <h4>Recommended Adjudication</h4>
+                <p class="recommendation-box">{{ dossierData.recommended_adjudication }}</p>
+              </div>
+            }
+
             <div class="dossier-section">
               <h4>Contractual Baseline (Section 1.0)</h4>
               <pre class="code-block">{{ dossierData.contractual_baseline?.legal_terms }}</pre>
             </div>
+
+            @if ((dossierData.authoritative_evidence_chronology?.before_evidence?.length || 0) > 0) {
+              <div class="dossier-section">
+                <h4>Baseline Before-Evidence Ledger (SHA-256)</h4>
+                <div class="table-responsive">
+                  <table class="dossier-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>SHA-256 Hash</th>
+                        <th>Server Timestamp</th>
+                        <th>Capture Method</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      @for (b of dossierData.authoritative_evidence_chronology?.before_evidence; track b.id; let idx = $index) {
+                        <tr>
+                          <td>Baseline {{ idx + 1 }}</td>
+                          <td><code>{{ (b.sha256_hash || '').slice(0, 16) }}...</code></td>
+                          <td>{{ b.server_receipt_timestamp | date:'short' }}</td>
+                          <td><span class="status-chip">{{ b.capture_method || 'verified' }}</span></td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            }
 
             <div class="dossier-section">
               <h4>Milestone Proof Submissions Ledger (SHA-256)</h4>
@@ -595,13 +709,17 @@
                   <tbody>
                     @for (m of dossierData.authoritative_evidence_chronology?.milestone_submissions; track m.id) {
                       <tr>
-                        <td>Milestone {{ m.milestone_index + 1 }}</td>
+                        <td>Milestone {{ (m.milestone_index || 0) + 1 }}</td>
                         <td><code>{{ (m.sha256_hash || '').slice(0, 16) }}...</code></td>
                         <td>{{ m.server_receipt_timestamp | date:'short' }}</td>
-                        <td>{{ m.ai_match_score }}%</td>
+                        <td>{{ m.ai_match_score ?? '-' }}%</td>
                         <td>
                           <span class="status-chip">{{ m.status }}</span>
                         </td>
+                      </tr>
+                    } @empty {
+                      <tr>
+                        <td colspan="5" style="text-align:center; color:#64748b;">No milestone proof submissions recorded yet.</td>
                       </tr>
                     }
                   </tbody>

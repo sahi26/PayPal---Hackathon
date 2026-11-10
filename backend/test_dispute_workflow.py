@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import patch, AsyncMock
 from datetime import datetime
@@ -6,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import auth_service
 import database
 import models
 from main import app, get_db
@@ -116,12 +118,17 @@ class TestDisputeWorkflow(unittest.TestCase):
         self.db.query(models.DisputeChatHistory).delete()
         self.db.query(models.DisputeRecord).delete()
         self.db.query(models.ScopeChangeRequest).delete()
+        self.db.query(models.Payment).delete()
         self.db.query(models.Evidence).delete()
         self.db.query(models.Agreement).delete()
         self.db.query(models.Project).delete()
         self.db.query(models.User).delete()
         self.db.commit()
         self.db.close()
+
+    def _buyer_headers(self):
+        token = auth_service.create_access_token(self.buyer.id, self.buyer.email, self.buyer.role_type)
+        return {"Authorization": f"Bearer {token}"}
 
     def test_01_models_and_enums_exist(self):
         """Phase 1: Test DisputeStatus enum and model table relationships."""
@@ -477,6 +484,192 @@ class TestDisputeWorkflow(unittest.TestCase):
         self.db.expire_all()
         first_record = self.db.query(models.DisputeRecord).filter(models.DisputeRecord.id == first_id).first()
         self.assertEqual(first_record.status, models.DisputeStatus.RESOLVED)
+
+    @patch("main.classify_dispute_with_ai", return_value=MOCK_AI_CLASSIFICATION)
+    def test_10_generate_dossier_in_tier_1_without_escalating(self, mock_classify):
+        """In non-test mode, buyers/sellers can compile the Forensic Evidence Dossier Report on demand in Tier 1."""
+        headers = self._buyer_headers()
+        with patch.dict(os.environ, {"APP_ENV": "development"}):
+            open_resp = self.client.post(
+                f"/api/disputes/{self.project.id}/open",
+                json={"reason": "Corner joinery gap", "disputed_by": "buyer"},
+                headers=headers,
+            )
+            self.assertEqual(open_resp.status_code, 200)
+
+            gen_resp = self.client.post(
+                f"/api/disputes/{self.project.id}/dossier/generate",
+                json={},
+                headers=headers,
+            )
+            self.assertEqual(gen_resp.status_code, 200, gen_resp.text)
+            body = gen_resp.json()
+            self.assertIn("dossier", body)
+            self.assertEqual(body["dossier"]["paypal_sync_status"], "PROOFLENS_INTERNAL_READY")
+
+            active_resp = self.client.get(f"/api/disputes/{self.project.id}/active", headers=headers)
+            self.assertEqual(active_resp.status_code, 200)
+            self.assertEqual(active_resp.json()["tier"], 1)
+            self.assertTrue(active_resp.json()["dispute"]["has_dossier"])
+            self.assertFalse(active_resp.json()["project"]["has_captured_payment"])
+
+    @patch("main.classify_dispute_with_ai", return_value=MOCK_AI_CLASSIFICATION)
+    def test_11_escalate_tier_2_and_tier_3_without_webhook_in_dev_env(self, mock_classify):
+        """Non-test env must not fail with 409 when escalating to Tier 2 or Tier 3 without a PayPal webhook."""
+        headers = self._buyer_headers()
+        with patch.dict(os.environ, {"APP_ENV": "development"}):
+            self.client.post(
+                f"/api/disputes/{self.project.id}/open",
+                json={"reason": "Bevel out of tolerance", "disputed_by": "buyer"},
+                headers=headers,
+            )
+
+            esc2 = self.client.post(
+                f"/api/disputes/{self.project.id}/escalate",
+                json={"notes": "Need forensic dossier report"},
+                headers=headers,
+            )
+            self.assertEqual(esc2.status_code, 200, esc2.text)
+            esc2_data = esc2.json()
+            self.assertEqual(esc2_data["status"], "ESCALATED_PROGRAMMATIC")
+            self.assertEqual(esc2_data["tier"], 2)
+            self.assertFalse(esc2_data["pushed_to_paypal"])
+            self.assertIsNone(esc2_data["paypal_dispute_id"])
+            self.assertIn("evidence_dossier", esc2_data)
+            self.assertEqual(esc2_data["evidence_dossier"]["paypal_sync_status"], "PROOFLENS_INTERNAL_READY")
+
+            esc3 = self.client.post(
+                f"/api/disputes/{self.project.id}/escalate-to-human",
+                json={"note": "Request human review hold"},
+                headers=headers,
+            )
+            self.assertEqual(esc3.status_code, 200, esc3.text)
+            esc3_data = esc3.json()
+            self.assertEqual(esc3_data["status"], "ESCALATED_HUMAN")
+            self.assertEqual(esc3_data["tier"], 3)
+            self.assertFalse(esc3_data["escalated_at_paypal"])
+            self.assertIsNone(esc3_data["claim_id"])
+
+    @patch("main.classify_dispute_with_ai", return_value=MOCK_AI_CLASSIFICATION)
+    @patch("paypal_service.provide_dispute_evidence", new_callable=AsyncMock)
+    @patch("paypal_service.list_disputes", new_callable=AsyncMock)
+    def test_12_auto_discover_paypal_dispute_via_list_disputes(
+        self, mock_list_disputes, mock_provide_evidence, mock_classify
+    ):
+        """Escalating in dev/sandbox discovers matching PayPal disputes from captured transactions automatically."""
+        self.db.add(models.Payment(
+            project_id=self.project.id,
+            amount=200.0,
+            capture_id="CAP-XYZ-999",
+            authorization_id="AUTH-XYZ-111",
+            status=models.PaymentStatus.CAPTURED,
+        ))
+        self.db.commit()
+
+        mock_list_disputes.return_value = [
+            {
+                "dispute_id": "PP-D-REAL-777",
+                "status": "OPEN",
+                "disputed_transactions": [{"seller_transaction_id": "CAP-XYZ-999"}],
+            }
+        ]
+        mock_provide_evidence.return_value = {"dispute_id": "PP-D-REAL-777", "status": "EVIDENCE_SUBMITTED"}
+
+        headers = self._buyer_headers()
+        with patch.dict(os.environ, {"APP_ENV": "development"}), \
+             patch("paypal_service.PAYPAL_CLIENT_ID", "sandbox-client"), \
+             patch("paypal_service.PAYPAL_CLIENT_SECRET", "sandbox-secret"):
+            self.client.post(
+                f"/api/disputes/{self.project.id}/open",
+                json={"reason": "Captured milestone defect", "disputed_by": "buyer"},
+                headers=headers,
+            )
+            esc = self.client.post(
+                f"/api/disputes/{self.project.id}/escalate",
+                json={},
+                headers=headers,
+            )
+            self.assertEqual(esc.status_code, 200, esc.text)
+            data = esc.json()
+            self.assertEqual(data["paypal_dispute_id"], "PP-D-REAL-777")
+            self.assertTrue(data["pushed_to_paypal"])
+            self.assertEqual(data["sync_source"], "auto_discovered")
+            mock_provide_evidence.assert_awaited()
+
+    @patch("main.classify_dispute_with_ai", return_value=MOCK_AI_CLASSIFICATION)
+    @patch("paypal_service.provide_dispute_evidence", new_callable=AsyncMock)
+    @patch("paypal_service.get_dispute_details", new_callable=AsyncMock)
+    def test_13_sync_paypal_explicit_links_and_pushes_existing_tier_2_dossier(
+        self, mock_get_details, mock_provide_evidence, mock_classify
+    ):
+        """Linking a real PayPal Case ID via /sync-paypal pushes an existing Tier 2 dossier to PayPal."""
+        mock_get_details.return_value = {"dispute_id": "PP-D-SYNC-888", "status": "WAITING_FOR_SELLER_RESPONSE"}
+        mock_provide_evidence.return_value = {"dispute_id": "PP-D-SYNC-888", "status": "EVIDENCE_SUBMITTED"}
+
+        headers = self._buyer_headers()
+        with patch.dict(os.environ, {"APP_ENV": "development"}):
+            self.client.post(
+                f"/api/disputes/{self.project.id}/open",
+                json={"reason": "Joinery cracked", "disputed_by": "buyer"},
+                headers=headers,
+            )
+            esc = self.client.post(
+                f"/api/disputes/{self.project.id}/escalate",
+                json={},
+                headers=headers,
+            )
+            self.assertEqual(esc.status_code, 200)
+            self.assertFalse(esc.json()["pushed_to_paypal"])
+
+            sync_resp = self.client.post(
+                f"/api/disputes/{self.project.id}/sync-paypal",
+                json={"paypal_dispute_id": "PP-D-SYNC-888"},
+                headers=headers,
+            )
+            self.assertEqual(sync_resp.status_code, 200, sync_resp.text)
+            sync_data = sync_resp.json()
+            self.assertTrue(sync_data["synced"])
+            self.assertEqual(sync_data["paypal_dispute_id"], "PP-D-SYNC-888")
+            self.assertTrue(sync_data["pushed_to_paypal"])
+            mock_provide_evidence.assert_awaited()
+
+    @patch("main.classify_dispute_with_ai", return_value=MOCK_AI_CLASSIFICATION)
+    @patch("paypal_service.provide_dispute_evidence", new_callable=AsyncMock)
+    def test_14_synthetic_placeholder_id_stripped_in_non_test_mode(self, mock_provide_evidence, mock_classify):
+        """Legacy synthetic PP-D-{id}-XXXXXX IDs are never sent to PayPal API or returned in non-test env."""
+        synth_id = f"PP-D-{self.project.id}-A1B2C3"
+        disp = models.DisputeRecord(
+            project_id=self.project.id,
+            dispute_id=synth_id,
+            reason="Legacy placeholder record",
+            disputed_by="buyer",
+            status=models.DisputeStatus.INTERNAL_NEGOTIATION,
+        )
+        self.db.add(disp)
+        self.db.commit()
+
+        headers = self._buyer_headers()
+        with patch.dict(os.environ, {"APP_ENV": "development"}):
+            active = self.client.get(f"/api/disputes/{self.project.id}/active", headers=headers)
+            self.assertEqual(active.status_code, 200)
+            self.assertIsNone(active.json()["dispute"]["dispute_id"])
+
+            bad_sync = self.client.post(
+                f"/api/disputes/{self.project.id}/sync-paypal",
+                json={"paypal_dispute_id": synth_id},
+                headers=headers,
+            )
+            self.assertEqual(bad_sync.status_code, 400)
+
+            esc = self.client.post(
+                f"/api/disputes/{self.project.id}/escalate",
+                json={},
+                headers=headers,
+            )
+            self.assertEqual(esc.status_code, 200)
+            self.assertIsNone(esc.json()["paypal_dispute_id"])
+            self.assertFalse(esc.json()["pushed_to_paypal"])
+            mock_provide_evidence.assert_not_awaited()
 
 if __name__ == "__main__":
     unittest.main()

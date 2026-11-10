@@ -73,11 +73,18 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
   isEscalatingHuman: boolean = false;
   isResolvingMutually: boolean = false;
 
+  // PayPal dispute sync controls
+  syncPayPalCaseId: string = '';
+  isSyncingPayPal: boolean = false;
+  syncFeedback: string = '';
+  syncError: string = '';
+
   // Modal controls
   showScopeChangeModal: boolean = false;
   showDossierModal: boolean = false;
   dossierData: any = null;
   isLoadingDossier: boolean = false;
+  isGeneratingDossier: boolean = false;
 
   // Initial dispute creation form if no dispute is open yet
   showOpenDisputeForm: boolean = false;
@@ -160,7 +167,16 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
   }
 
   pollChatUpdates(): void {
-    if (!this.projectId || this.isSendingMessage || this.isOpeningDispute) return;
+    if (
+      !this.projectId ||
+      this.isSendingMessage ||
+      this.isOpeningDispute ||
+      this.isSyncingPayPal ||
+      this.isEscalatingProgrammatic ||
+      this.isEscalatingHuman
+    ) {
+      return;
+    }
     this.http.get<any>(`${API_BASE_URL}/api/disputes/${this.projectId}/active`).subscribe({
       next: (res) => {
         if (res && res.dispute) {
@@ -183,6 +199,38 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
         }
       },
       error: () => {}
+    });
+  }
+
+  get hasCapturedPayment(): boolean {
+    return Boolean(this.projectInfo?.has_captured_payment);
+  }
+
+  syncWithPayPal(manualCaseId?: string): void {
+    if (!this.projectId || this.isSyncingPayPal) return;
+    const caseIdToLink = (manualCaseId !== undefined ? manualCaseId : this.syncPayPalCaseId).trim();
+    this.isSyncingPayPal = true;
+    this.syncFeedback = '';
+    this.syncError = '';
+
+    this.http.post<any>(`${API_BASE_URL}/api/disputes/${this.projectId}/sync-paypal`, {
+      paypal_dispute_id: caseIdToLink || null
+    }).subscribe({
+      next: (res) => {
+        this.isSyncingPayPal = false;
+        if (res?.synced) {
+          this.syncFeedback = res.message || `Linked PayPal Case #${res.paypal_dispute_id}.`;
+          this.syncPayPalCaseId = '';
+          this.loadActiveDispute();
+          this.disputeEscalated.emit(res);
+        } else {
+          this.syncFeedback = res?.message || 'No matching PayPal dispute found yet.';
+        }
+      },
+      error: (err) => {
+        this.isSyncingPayPal = false;
+        this.syncError = err.error?.detail || err.message || 'Failed to sync PayPal dispute case.';
+      }
     });
   }
 
@@ -316,20 +364,35 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
   // Phase 3: Programmatic Dossier Escalation
   escalateToProgrammatic(): void {
     const confirmMsg = this.currentTier === 4
-      ? 'Escalate this previously resolved dispute to Tier 2: Programmatic PayPal Evidence Submission?\n\nProofLens will reopen the dispute, pause milestone payouts, compile all SHA-256 evidence hashes and AI forensic audits, and submit them to the PayPal Disputes API.'
-      : 'Escalate dispute to Tier 2: Programmatic PayPal Evidence Submission?\n\nProofLens will compile the legal agreement, all cryptographic SHA-256 evidence hashes, and AI forensic audits, and submit them directly to the PayPal Disputes API.';
+      ? 'Escalate this previously resolved dispute to Tier 2: Programmatic Dossier Escalation?\n\nProofLens will reopen the dispute, pause milestone payouts, compile the SHA-256 Forensic Evidence Dossier Report and AI audit, and push it to PayPal Disputes API if a PayPal Case ID is linked.'
+      : 'Escalate dispute to Tier 2: Programmatic Dossier Escalation?\n\nProofLens will compile the legal agreement, all cryptographic SHA-256 evidence hashes, and AI forensic audits into an Authoritative Evidence Dossier Report (and push to PayPal if a PayPal dispute is linked).';
     if (!confirm(confirmMsg)) {
       return;
     }
 
     this.isEscalatingProgrammatic = true;
+    this.syncError = '';
+    const manualCaseId = this.syncPayPalCaseId.trim() || null;
+
     this.http.post<any>(`${API_BASE_URL}/api/disputes/${this.projectId}/escalate`, {
-      notes: this.activeDispute?.reason || 'Programmatic evidence dossier escalation'
+      notes: this.activeDispute?.reason || 'Programmatic evidence dossier escalation',
+      paypal_dispute_id: manualCaseId
     }).subscribe({
       next: (res) => {
         this.isEscalatingProgrammatic = false;
         this.showFollowUpDisputeForm = false;
-        alert('Case successfully escalated to Tier 2!\n\nProofLens Authoritative Dossier submitted to PayPal Disputes API.');
+        if (manualCaseId) {
+          this.syncPayPalCaseId = '';
+        }
+        if (res?.pushed_to_paypal) {
+          alert(`Case successfully escalated to Tier 2!\n\nDossier ${res.evidence_dossier?.dossier_id || ''} submitted to PayPal Case ${res.paypal_dispute_id}.`);
+        } else {
+          alert(
+            `Case escalated to Tier 2!\n\n` +
+            `Forensic Dossier Report (${res?.evidence_dossier?.dossier_id || 'ready'}) is compiled — click "Inspect Dossier" to view, download, or print.\n\n` +
+            `${res?.sync_note || 'No PayPal Case ID linked yet; you can still link one later via Sync PayPal Case.'}`
+          );
+        }
         this.loadActiveDispute();
         this.disputeEscalated.emit(res);
       },
@@ -343,26 +406,40 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
   // Phase 4: Human Review Escalation (Claim)
   escalateToHuman(): void {
     const confirmMsg = this.currentTier === 4
-      ? 'Escalate this previously resolved dispute to Tier 3: Official PayPal Claim (Manual Human Review)?\n\nThis will reopen the case, pause milestone payouts, and trigger PayPal\'s 20-day formal adjudication cycle with a human PayPal disputes specialist.'
-      : 'Escalate dispute to Tier 3: Official PayPal Claim (Manual Human Review)?\n\nThis will trigger PayPal\'s 20-day formal adjudication cycle with a human PayPal disputes specialist.';
+      ? 'Escalate this previously resolved dispute to Tier 3: Human Adjudication Review?\n\nThis will reopen the case, pause milestone payouts, compile the Forensic Dossier Report, and initiate the 20-day human review window (escalating at PayPal too if a PayPal dispute is linked).'
+      : 'Escalate dispute to Tier 3: Human Adjudication Review?\n\nThis will initiate the 20-day formal adjudication review and escalate to a PayPal Claim if a PayPal dispute is linked.';
     if (!confirm(confirmMsg)) {
       return;
     }
 
     this.isEscalatingHuman = true;
+    this.syncError = '';
+    const manualCaseId = this.syncPayPalCaseId.trim() || null;
+
     this.http.post<any>(`${API_BASE_URL}/api/disputes/${this.projectId}/escalate-to-human`, {
-      note: 'ProofLens dispute escalated to Claim for 20-day manual human adjudicator arbitration.'
+      note: 'ProofLens dispute escalated to Claim for 20-day manual human adjudicator arbitration.',
+      paypal_dispute_id: manualCaseId
     }).subscribe({
       next: (res) => {
         this.isEscalatingHuman = false;
         this.showFollowUpDisputeForm = false;
-        alert(`Case escalated to PayPal Claim!\n\nPayPal Claim ID: ${res.claim_id}\nPayPal 20-day manual investigation window is now active.`);
+        if (manualCaseId) {
+          this.syncPayPalCaseId = '';
+        }
+        if (res?.escalated_at_paypal && res?.claim_id) {
+          alert(`Case escalated to PayPal Claim!\n\nPayPal Claim ID: ${res.claim_id}\nPayPal 20-day manual investigation window is now active.`);
+        } else {
+          alert(
+            `Case escalated to Tier 3: 20-Day Human Adjudication Hold!\n\n` +
+            `${res?.sync_note || 'Milestone payouts remain paused under ProofLens 20-day adjudication hold pending PayPal Case sync.'}`
+          );
+        }
         this.loadActiveDispute();
         this.disputeEscalated.emit(res);
       },
       error: (err) => {
         this.isEscalatingHuman = false;
-        alert(err.error?.detail || err.message || 'Failed to escalate dispute to PayPal claim.');
+        alert(err.error?.detail || err.message || 'Failed to escalate dispute to Tier 3.');
       }
     });
   }
@@ -428,17 +505,163 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
   openDossier(): void {
     this.isLoadingDossier = true;
     this.showDossierModal = true;
+    if (!this.activeDispute?.has_dossier) {
+      this.compileDossierReport();
+      return;
+    }
+
     this.http.get<any>(`${API_BASE_URL}/api/disputes/${this.projectId}/dossier`).subscribe({
       next: (data) => {
         this.isLoadingDossier = false;
         this.dossierData = data;
       },
       error: (err) => {
+        if (err.status === 404) {
+          this.compileDossierReport();
+          return;
+        }
         this.isLoadingDossier = false;
-        alert(err.error?.detail || err.message || 'No dossier on file yet. Escalate to Tier 2 to compile one.');
+        alert(err.error?.detail || err.message || 'Failed to load forensic dossier report.');
         this.showDossierModal = false;
       }
     });
+  }
+
+  regenerateDossier(): void {
+    if (!this.projectId || this.isGeneratingDossier) return;
+    this.compileDossierReport();
+  }
+
+  private compileDossierReport(): void {
+    this.isGeneratingDossier = true;
+    this.isLoadingDossier = true;
+    this.http.post<any>(`${API_BASE_URL}/api/disputes/${this.projectId}/dossier/generate`, {}).subscribe({
+      next: (res) => {
+        this.isGeneratingDossier = false;
+        this.isLoadingDossier = false;
+        const compiled = res?.dossier || res;
+        this.dossierData = compiled;
+        if (this.activeDispute && compiled) {
+          this.activeDispute = {
+            ...this.activeDispute,
+            has_dossier: true,
+            dispute_classification: compiled.ai_dispute_classification || this.activeDispute.dispute_classification,
+            validity_flag: compiled.ai_validity_flag || this.activeDispute.validity_flag,
+            ai_confidence_score: compiled.ai_confidence_score ?? this.activeDispute.ai_confidence_score,
+            ai_analysis: compiled.adjudication_analysis || this.activeDispute.ai_analysis
+          };
+        }
+      },
+      error: (err) => {
+        this.isGeneratingDossier = false;
+        this.isLoadingDossier = false;
+        alert(err.error?.detail || err.message || 'Failed to compile ProofLens Evidence Dossier.');
+        if (!this.dossierData) {
+          this.showDossierModal = false;
+        }
+      }
+    });
+  }
+
+  downloadDossierJson(): void {
+    if (!this.dossierData) return;
+    const jsonText = JSON.stringify(this.dossierData, null, 2);
+    const blob = new Blob([jsonText], { type: 'application/json' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ProofLens-Dossier-${this.dossierData.dossier_id || this.projectId}.json`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+  }
+
+  private escapeHtml(val: any): string {
+    return String(val ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  printDossierReport(): void {
+    if (!this.dossierData) return;
+    const d = this.dossierData;
+    const win = window.open('', '_blank', 'width=960,height=780');
+    if (!win) {
+      alert('Pop-up blocked. Please allow pop-ups or use Download JSON.');
+      return;
+    }
+
+    const beforeRows = (d.authoritative_evidence_chronology?.before_evidence || [])
+      .map((b: any, i: number) => `
+        <tr>
+          <td>Baseline #${i + 1}</td>
+          <td><code>${this.escapeHtml(b.sha256_hash || '')}</code></td>
+          <td>${this.escapeHtml(b.server_receipt_timestamp || '')}</td>
+          <td>${this.escapeHtml(b.capture_method || 'verified_capture')}</td>
+        </tr>
+      `)
+      .join('');
+
+    const msRows = (d.authoritative_evidence_chronology?.milestone_submissions || [])
+      .map((m: any) => `
+        <tr>
+          <td>Milestone ${(Number(m.milestone_index) || 0) + 1}</td>
+          <td><code>${this.escapeHtml(m.sha256_hash || '')}</code></td>
+          <td>${this.escapeHtml(m.server_receipt_timestamp || '')}</td>
+          <td>${this.escapeHtml(m.ai_match_score ?? '-')}%</td>
+          <td>${this.escapeHtml(m.status || '')}</td>
+        </tr>
+      `)
+      .join('');
+
+    win.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <title>ProofLens Evidence Dossier - ${this.escapeHtml(d.dossier_id)}</title>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #0f172a; margin: 2rem; line-height: 1.5; }
+            h1 { margin: 0 0 0.25rem; color: #001435; font-size: 1.35rem; }
+            h2 { margin: 1.5rem 0 0.5rem; font-size: 1rem; color: #003087; border-bottom: 1px solid #cbd5e1; padding-bottom: 0.25rem; }
+            .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 1.5rem; background: #f8fafc; border: 1px solid #cbd5e1; padding: 1rem; border-radius: 8px; margin-top: 1rem; font-size: 0.85rem; }
+            .box { background: #f8fafc; border: 1px solid #e2e8f0; padding: 0.85rem; border-radius: 6px; white-space: pre-wrap; font-size: 0.85rem; }
+            table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.8rem; }
+            th, td { border: 1px solid #cbd5e1; padding: 0.45rem 0.6rem; text-align: left; word-break: break-all; }
+            th { background: #f1f5f9; }
+            code { font-family: monospace; font-size: 0.75rem; }
+          </style>
+        </head>
+        <body>
+          <h1>ProofLens Authoritative Forensic Evidence Dossier</h1>
+          <div>Project: <strong>${this.escapeHtml(d.project_title)}</strong> (#${this.escapeHtml(d.project_id)}) • Escrow: $${this.escapeHtml(d.total_escrow_amount)} ${this.escapeHtml(d.currency || 'USD')}</div>
+          <div class="meta">
+            <div><strong>Dossier ID:</strong> ${this.escapeHtml(d.dossier_id)}</div>
+            <div><strong>Compiled At:</strong> ${this.escapeHtml(d.compiled_at)}</div>
+            <div><strong>AI Classification:</strong> ${this.escapeHtml(d.ai_dispute_classification)}</div>
+            <div><strong>AI Validity Flag:</strong> ${this.escapeHtml(d.ai_validity_flag)} (${this.escapeHtml(d.ai_confidence_score)}%)</div>
+            <div><strong>Claimant:</strong> ${this.escapeHtml(d.claimant)}</div>
+            <div><strong>PayPal Sync:</strong> ${this.escapeHtml(d.paypal_dispute_id || d.paypal_sync_status || 'Internal Dossier Ready')}</div>
+          </div>
+          <h2>Dispute Claim</h2>
+          <div class="box">${this.escapeHtml(d.dispute_claim)}</div>
+          <h2>Executive Summary</h2>
+          <div class="box">${this.escapeHtml(d.executive_summary || '')}</div>
+          <h2>Adjudication Analysis & Findings</h2>
+          <div class="box">${this.escapeHtml(d.adjudication_analysis || '')}</div>
+          <h2>Recommended Adjudication</h2>
+          <div class="box">${this.escapeHtml(d.recommended_adjudication || '')}</div>
+          <h2>Contractual Baseline (Agreement v${this.escapeHtml(d.contractual_baseline?.agreement_version || 1)})</h2>
+          <div class="box">${this.escapeHtml(d.contractual_baseline?.legal_terms || '')}</div>
+          ${beforeRows ? `<h2>Baseline Before-Evidence (SHA-256)</h2><table><thead><tr><th>Item</th><th>SHA-256 Hash</th><th>Server Receipt</th><th>Method</th></tr></thead><tbody>${beforeRows}</tbody></table>` : ''}
+          <h2>Milestone Proof Submissions (SHA-256)</h2>
+          <table><thead><tr><th>Milestone</th><th>SHA-256 Hash</th><th>Server Receipt</th><th>AI Match</th><th>Status</th></tr></thead><tbody>${msRows || '<tr><td colspan="5">No milestone proof submissions recorded yet.</td></tr>'}</tbody></table>
+          <script>window.onload = function() { window.print(); };</script>
+        </body>
+      </html>
+    `);
+    win.document.close();
   }
 
   closeDossier(): void {
