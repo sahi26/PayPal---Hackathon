@@ -561,7 +561,7 @@
                         </div>
 
                         <!-- Buyer Resubmission Requested Banner -->
-                        @if ((ms.status || '').toLowerCase() === 'resubmission_requested') {
+                        @if ((ms.status || '').toLowerCase() === 'resubmission_requested' && !hasNewerSubmissionSinceRejection($index)) {
                           <div class="amber-fraud-banner" style="background:#fef2f2; border-color:#fca5a5;">
                             <div class="banner-title" style="color:#b91c1c;">
                               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5">
