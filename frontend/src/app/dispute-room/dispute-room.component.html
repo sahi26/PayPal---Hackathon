@@ -11,10 +11,16 @@
         </button>
         <div class="title-with-badge">
           <h1 class="header-project-title">{{ projectTitle || 'Project Dispute Room' }}</h1>
-          <span class="badge-dispute-live">
-            <span class="pulsing-dot"></span>
-            DISPUTE WORKSPACE
-          </span>
+          @if (activeDispute?.status !== 'RESOLVED') {
+            <span class="badge-dispute-live">
+              <span class="pulsing-dot"></span>
+              DISPUTE WORKSPACE
+            </span>
+          } @else {
+            <span class="badge-dispute-closed">
+              RESOLVED CASE
+            </span>
+          }
         </div>
       </div>
 
@@ -74,13 +80,23 @@
         }
       </div>
 
-      <div class="timeline-lock-indicator">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-        </svg>
-        <span>Standard Milestone Payouts Paused</span>
-      </div>
+      @if (activeDispute?.status === 'RESOLVED') {
+        <div class="timeline-lock-indicator timeline-unlocked">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+            <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+          </svg>
+          <span>Milestone Payouts Unlocked</span>
+        </div>
+      } @else {
+        <div class="timeline-lock-indicator">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          <span>Standard Milestone Payouts Paused</span>
+        </div>
+      }
     </div>
   </header>
 
@@ -194,7 +210,7 @@
             </div>
             <div class="stat-cell">
               <span class="stat-lbl">Dispute Tier</span>
-              <span class="stat-val">Tier {{ currentTier }}</span>
+              <span class="stat-val">{{ currentTier === 4 ? 'Resolved' : 'Tier ' + currentTier }}</span>
             </div>
           </div>
         </div>
@@ -242,25 +258,25 @@
         </div>
 
         <!-- Resolution Actions Panel -->
-        <div class="panel-card resolution-card premium-card">
-          <div class="panel-header">
-            <h3>Dispute Resolution Actions</h3>
-          </div>
+        @if (activeDispute.status !== 'RESOLVED') {
+          <div class="panel-card resolution-card premium-card">
+            <div class="panel-header">
+              <h3>Dispute Resolution Actions</h3>
+            </div>
 
-          <p class="panel-subtext">
-            Disputes can be settled internally without negative impact on dispute ratings by executing a formal scope amendment or accepting a mutual resolution.
-          </p>
+            <p class="panel-subtext">
+              Disputes can be settled internally without negative impact on dispute ratings by executing a formal scope amendment or accepting a mutual resolution.
+            </p>
 
-          <div class="action-buttons-stack">
-            <button (click)="openScopeChange()" class="btn-action-primary" title="Trigger Scope Change flow to amend contract">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-              </svg>
-              <span>Resolve via Scope Change (Contract Addendum)</span>
-            </button>
+            <div class="action-buttons-stack">
+              <button (click)="openScopeChange()" class="btn-action-primary" title="Trigger Scope Change flow to amend contract">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+                <span>Resolve via Scope Change (Contract Addendum)</span>
+              </button>
 
-            @if (activeDispute.status !== 'RESOLVED') {
               <button
                 (click)="resolveMutually()"
                 [disabled]="isResolvingMutually"
@@ -272,9 +288,9 @@
                 </svg>
                 <span>{{ isResolvingMutually ? 'Closing Dispute...' : 'Accept Mutual Resolution &amp; Unlock Milestone' }}</span>
               </button>
-            }
+            </div>
           </div>
-        </div>
+        }
 
         <!-- Escalation Actions Panel -->
         <div class="panel-card escalation-card premium-card">
@@ -329,7 +345,101 @@
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#059669" stroke-width="2.5">
                 <polyline points="20 6 9 17 4 12"/>
               </svg>
-              <span>Case Closed: {{ activeDispute.resolution_type || 'RESOLVED' }}</span>
+              <div class="resolved-banner-text">
+                <span>Case Closed: {{ activeDispute.resolution_type || 'RESOLVED' }}</span>
+                @if (activeDispute.resolution_notes) {
+                  <small>{{ activeDispute.resolution_notes }}</small>
+                }
+              </div>
+            </div>
+
+            <div class="post-resolved-escalation">
+              <p class="panel-subtext post-resolved-note">
+                Resolution did not hold or a new deliverable defect emerged? You can still escalate this dispute:
+              </p>
+
+              <div class="post-resolved-actions">
+                @if (!isResolvedByPayPal()) {
+                  @if (!activeDispute.pushed_to_paypal && !activeDispute.paypal_claim_id) {
+                    <button
+                      type="button"
+                      (click)="escalateToProgrammatic()"
+                      [disabled]="isEscalatingProgrammatic"
+                      class="btn-escalate-tier2"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                      </svg>
+                      <span>{{ isEscalatingProgrammatic ? 'Compiling &amp; Submitting...' : 'Escalate to PayPal (Submit Dossier)' }}</span>
+                    </button>
+                  } @else if (!activeDispute.paypal_claim_id) {
+                    <button
+                      type="button"
+                      (click)="escalateToHuman()"
+                      [disabled]="isEscalatingHuman"
+                      class="btn-escalate-tier3"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="12" y1="8" x2="12" y2="12"/>
+                        <line x1="12" y1="16" x2="12.01" y2="16"/>
+                      </svg>
+                      <span>{{ isEscalatingHuman ? 'Escalating to Claim...' : 'Escalate to PayPal Claim (Human Review - 20 Days)' }}</span>
+                    </button>
+                  }
+                }
+
+                @if (!showFollowUpDisputeForm) {
+                  <button
+                    type="button"
+                    (click)="toggleFollowUpDisputeForm()"
+                    class="btn-reopen-dispute"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                      <line x1="12" y1="9" x2="12" y2="13"/>
+                      <line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                    <span>Escalate New / Reopen Dispute (Tier 1)</span>
+                  </button>
+                }
+              </div>
+
+              @if (!activeDispute.dispute_id && !isResolvedByPayPal()) {
+                <p class="paypal-sync-hint">
+                  Direct PayPal Tier 2/3 API submission requires a linked PayPal Dispute ID from the <code>CUSTOMER.DISPUTE.CREATED</code> webhook. Use Tier 1 above anytime to escalate internally and lock milestone payouts.
+                </p>
+              }
+
+              @if (showFollowUpDisputeForm) {
+                <div class="followup-dispute-form">
+                  <label for="followup-reason-input">Escalation Reason (Re-locks Milestone Payouts at Tier 1):</label>
+                  <textarea
+                    id="followup-reason-input"
+                    [(ngModel)]="followUpDisputeReason"
+                    rows="3"
+                    placeholder="Describe why the prior resolution failed or specify the deliverable defect..."
+                  ></textarea>
+                  <div class="followup-form-actions">
+                    <button
+                      type="button"
+                      (click)="cancelFollowUpDisputeForm()"
+                      [disabled]="isOpeningDispute"
+                      class="btn-followup-cancel"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      (click)="submitFollowUpDispute()"
+                      [disabled]="isOpeningDispute || !followUpDisputeReason.trim()"
+                      class="btn-escalate-followup"
+                    >
+                      {{ isOpeningDispute ? 'Escalating Dispute...' : 'Escalate &amp; Lock Project' }}
+                    </button>
+                  </div>
+                </div>
+              }
             </div>
           }
         </div>

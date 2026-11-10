@@ -355,5 +355,128 @@ class TestDisputeWorkflow(unittest.TestCase):
         proj = self.db.query(models.Project).filter(models.Project.id == self.project.id).first()
         self.assertEqual(proj.status, models.ProjectStatus.ACTIVE)
 
+    @patch("main.classify_dispute_with_ai", return_value=MOCK_AI_CLASSIFICATION)
+    @patch("paypal_service.provide_dispute_evidence", new_callable=AsyncMock)
+    @patch("paypal_service.escalate_dispute_to_claim", new_callable=AsyncMock)
+    def test_08_escalate_after_resolved_dispute_to_tier_2_and_tier_3(self, mock_escalate_claim, mock_provide_evidence, mock_classify):
+        """Resolved dispute can still be escalated directly to Tier 2 (Dossier) and Tier 3 (Human Claim), re-locking payouts."""
+        mock_provide_evidence.return_value = {
+            "dispute_id": f"PP-D-{self.project.id}-TEST",
+            "status": "EVIDENCE_SUBMITTED",
+            "paypal_response": {"status": "SUCCESS"}
+        }
+        mock_escalate_claim.return_value = {
+            "dispute_id": f"PP-D-{self.project.id}-TEST",
+            "claim_id": "CLAIM-POST-RESOLVED-555",
+            "status": "ESCALATED_HUMAN",
+            "adjudication_cycle_days": 20
+        }
+
+        open_resp = self.client.post(
+            f"/api/disputes/{self.project.id}/open",
+            json={"reason": "Initial bevel finish mismatch", "disputed_by": "buyer"}
+        )
+        self.assertEqual(open_resp.status_code, 200)
+
+        resolve_resp = self.client.post(
+            f"/api/disputes/{self.project.id}/resolve",
+            json={"resolution_type": "MUTUAL_SETTLEMENT", "notes": "Contractor promised touch-up."}
+        )
+        self.assertEqual(resolve_resp.status_code, 200)
+        self.assertEqual(resolve_resp.json()["status"], "RESOLVED")
+
+        active_after_resolve = self.client.get(f"/api/disputes/{self.project.id}/active")
+        self.assertEqual(active_after_resolve.status_code, 200)
+        self.assertFalse(active_after_resolve.json()["active"])
+        self.assertEqual(active_after_resolve.json()["tier"], 4)
+
+        # Escalate resolved dispute directly to Tier 2 (Programmatic Dossier)
+        esc_t2 = self.client.post(
+            f"/api/disputes/{self.project.id}/escalate",
+            json={"notes": "Agreed touch-up was never delivered."}
+        )
+        self.assertEqual(esc_t2.status_code, 200)
+        esc_t2_data = esc_t2.json()
+        self.assertEqual(esc_t2_data["status"], "ESCALATED_PROGRAMMATIC")
+        self.assertEqual(esc_t2_data["tier"], 2)
+
+        self.db.expire_all()
+        proj = self.db.query(models.Project).filter(models.Project.id == self.project.id).first()
+        self.assertEqual(proj.status, models.ProjectStatus.DISPUTED)
+        disp = self.db.query(models.DisputeRecord).filter(models.DisputeRecord.project_id == self.project.id).first()
+        self.assertEqual(disp.status, models.DisputeStatus.ESCALATED_PROGRAMMATIC)
+        self.assertIsNone(disp.resolution_type)
+        self.assertIsNone(disp.resolution_notes)
+
+        # Resolve again after Tier 2, then escalate directly from RESOLVED to Tier 3 (Human Claim)
+        resolve_again = self.client.post(
+            f"/api/disputes/{self.project.id}/resolve",
+            json={"resolution_type": "MUTUAL_SETTLEMENT", "notes": "Second settlement attempt"}
+        )
+        self.assertEqual(resolve_again.status_code, 200)
+
+        esc_t3 = self.client.post(
+            f"/api/disputes/{self.project.id}/escalate-to-human",
+            json={"note": "Escalating resolved case to PayPal human adjudication."}
+        )
+        self.assertEqual(esc_t3.status_code, 200)
+        esc_t3_data = esc_t3.json()
+        self.assertEqual(esc_t3_data["status"], "ESCALATED_HUMAN")
+        self.assertEqual(esc_t3_data["tier"], 3)
+        self.assertEqual(esc_t3_data["claim_id"], "CLAIM-POST-RESOLVED-555")
+
+        self.db.expire_all()
+        proj_t3 = self.db.query(models.Project).filter(models.Project.id == self.project.id).first()
+        self.assertEqual(proj_t3.status, models.ProjectStatus.DISPUTED)
+        disp_t3 = self.db.query(models.DisputeRecord).filter(models.DisputeRecord.project_id == self.project.id).first()
+        self.assertEqual(disp_t3.status, models.DisputeStatus.ESCALATED_HUMAN)
+        self.assertIsNone(disp_t3.resolution_type)
+        self.assertIsNone(disp_t3.resolution_notes)
+
+        active_after_t3 = self.client.get(f"/api/disputes/{self.project.id}/active")
+        self.assertTrue(active_after_t3.json()["active"])
+        self.assertEqual(active_after_t3.json()["tier"], 3)
+        self.assertTrue(
+            any("Previously resolved dispute" in m["message"] for m in active_after_t3.json()["chat_history"])
+        )
+
+    def test_09_open_new_tier_1_dispute_after_resolved_dispute(self):
+        """After resolving a dispute, opening a follow-up Tier 1 dispute creates a fresh active dispute and re-locks payouts."""
+        first_open = self.client.post(
+            f"/api/disputes/{self.project.id}/open",
+            json={"reason": "Initial finish issue", "disputed_by": "buyer"}
+        )
+        self.assertEqual(first_open.status_code, 200)
+        first_id = first_open.json()["dispute_id"]
+
+        resolve_resp = self.client.post(
+            f"/api/disputes/{self.project.id}/resolve",
+            json={"resolution_type": "MUTUAL_SETTLEMENT", "notes": "Resolved first issue."}
+        )
+        self.assertEqual(resolve_resp.status_code, 200)
+
+        second_open = self.client.post(
+            f"/api/disputes/{self.project.id}/open",
+            json={"reason": "Follow-up escalation: joinery cracked after resolution", "disputed_by": "buyer"}
+        )
+        self.assertEqual(second_open.status_code, 200)
+        second_data = second_open.json()
+        self.assertNotEqual(second_data["dispute_id"], first_id)
+        self.assertEqual(second_data["status"], "INTERNAL_NEGOTIATION")
+        self.assertEqual(second_data["tier"], 1)
+        self.assertEqual(second_data["project_status"], "disputed")
+
+        active_resp = self.client.get(f"/api/disputes/{self.project.id}/active")
+        self.assertEqual(active_resp.status_code, 200)
+        active_data = active_resp.json()
+        self.assertTrue(active_data["active"])
+        self.assertEqual(active_data["tier"], 1)
+        self.assertEqual(active_data["dispute"]["id"], second_data["dispute_id"])
+        self.assertEqual(active_data["dispute"]["reason"], "Follow-up escalation: joinery cracked after resolution")
+
+        self.db.expire_all()
+        first_record = self.db.query(models.DisputeRecord).filter(models.DisputeRecord.id == first_id).first()
+        self.assertEqual(first_record.status, models.DisputeStatus.RESOLVED)
+
 if __name__ == "__main__":
     unittest.main()

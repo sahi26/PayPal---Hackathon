@@ -10807,6 +10807,8 @@ async def escalate_dispute_programmatic(
     if not dispute:
         raise HTTPException(status_code=404, detail="No active dispute record found for this project.")
 
+    was_resolved = dispute.status == models.DisputeStatus.RESOLVED
+    prior_resolution_type = dispute.resolution_type
     paypal_dispute_id = require_webhook_paypal_dispute_id(dispute)
 
     agreement = project.agreement
@@ -10872,6 +10874,9 @@ async def escalate_dispute_programmatic(
     # 6. Update dispute state to Tier 2: ESCALATED_PROGRAMMATIC
     dispute.dispute_id = paypal_dispute_id
     dispute.status = models.DisputeStatus.ESCALATED_PROGRAMMATIC
+    if was_resolved:
+        dispute.resolution_type = None
+        dispute.resolution_notes = None
     dispute.dispute_classification = ai_classification.get("dispute_classification")
     dispute.validity_flag = ai_classification.get("validity_flag")
     dispute.ai_confidence_score = ai_classification.get("confidence_score")
@@ -10882,14 +10887,24 @@ async def escalate_dispute_programmatic(
     project.status = models.ProjectStatus.DISPUTED
 
     # Log audit entry to chat history
+    extra_note = (
+        f" Escalation notes: {request.notes.strip()}."
+        if request and request.notes and request.notes.strip() and request.notes.strip() != dispute.reason
+        else ""
+    )
+    prefix = (
+        f"Previously resolved dispute ({prior_resolution_type or 'RESOLVED'}) reopened and escalated to Tier 2 (Programmatic Escalation). "
+        if was_resolved
+        else "Case Escalated to Tier 2 (Programmatic Escalation). "
+    )
     system_log = models.DisputeChatHistory(
         dispute_id=dispute.id,
         sender_role="system",
         sender_name="PayPal Disputes Sync",
         message=(
-            f"Case Escalated to Tier 2 (Programmatic Escalation). "
+            f"{prefix}"
             f"Authoritative Evidence Dossier ({dossier['dossier_id']}) compiled with {len(milestone_items)} verified milestone proof(s) "
-            f"and cryptographic SHA-256 hashes, submitted to PayPal Disputes API for case {paypal_dispute_id}."
+            f"and cryptographic SHA-256 hashes, submitted to PayPal Disputes API for case {paypal_dispute_id}.{extra_note}"
         ),
         proposal_type="escalation_programmatic"
     )
@@ -10934,6 +10949,8 @@ async def escalate_dispute_to_human(
     if not dispute:
         raise HTTPException(status_code=404, detail="No active dispute record found for this project.")
 
+    was_resolved = dispute.status == models.DisputeStatus.RESOLVED
+    prior_resolution_type = dispute.resolution_type
     paypal_dispute_id = require_webhook_paypal_dispute_id(dispute)
 
     # Call PayPal Disputes Claim Escalation API
@@ -10947,17 +10964,25 @@ async def escalate_dispute_to_human(
 
     # Update dispute state to Tier 3: ESCALATED_HUMAN
     dispute.status = models.DisputeStatus.ESCALATED_HUMAN
+    if was_resolved:
+        dispute.resolution_type = None
+        dispute.resolution_notes = None
     dispute.paypal_claim_id = claim_id
     dispute.escalated_to_human_at = datetime.utcnow()
     project.status = models.ProjectStatus.DISPUTED
 
     # Log audit entry to chat history
+    prefix = (
+        f"Previously resolved dispute ({prior_resolution_type or 'RESOLVED'}) reopened and formally escalated to Tier 3: PayPal Claim (Manual Human Review). "
+        if was_resolved
+        else "Case Formally Escalated to Tier 3: PayPal Claim (Manual Human Review). "
+    )
     system_log = models.DisputeChatHistory(
         dispute_id=dispute.id,
         sender_role="system",
         sender_name="PayPal Adjudication Gateway",
         message=(
-            f"Case Formally Escalated to Tier 3: PayPal Claim (Manual Human Review). "
+            f"{prefix}"
             f"PayPal Claim ID: {claim_id or 'not provided'}. PayPal has initiated the official 20-day adjudication window. "
             f"A PayPal claims specialist will review the cryptographic evidence dossier and render a binding decision."
         ),

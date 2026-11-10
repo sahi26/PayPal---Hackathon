@@ -491,6 +491,13 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
     this.fetchProject();
   }
 
+  onDisputeEscalated(event: any) {
+    if (this.projectData?.project) {
+      this.projectData.project.status = 'DISPUTED';
+    }
+    this.fetchProject();
+  }
+
   loadProjectEvidence() {
     if (!this.projectId) return;
     this.evidenceFiles.retryFailed();

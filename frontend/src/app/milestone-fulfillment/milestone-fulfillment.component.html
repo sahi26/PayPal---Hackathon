@@ -1773,6 +1773,7 @@
               [totalEscrowAmount]="projectData?.project?.total_price || 0"
               (closed)="closeDisputeRoom()"
               (disputeResolved)="onDisputeResolved($event)"
+              (disputeEscalated)="onDisputeEscalated($event)"
             ></app-dispute-room>
           </div>
         </div>

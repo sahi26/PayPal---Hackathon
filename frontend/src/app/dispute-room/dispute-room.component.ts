@@ -52,6 +52,7 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
 
   @Output() closed = new EventEmitter<void>();
   @Output() disputeResolved = new EventEmitter<any>();
+  @Output() disputeEscalated = new EventEmitter<any>();
 
   Number = Number;
   isLoading = true;
@@ -82,6 +83,10 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
   showOpenDisputeForm: boolean = false;
   openDisputeReason: string = '';
   isOpeningDispute: boolean = false;
+
+  // Post-resolution escalation form
+  showFollowUpDisputeForm: boolean = false;
+  followUpDisputeReason: string = '';
 
   constructor(
     private http: HttpClient,
@@ -135,6 +140,13 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
           this.currentTier = 4;
           this.projectInfo = res.project;
           this.chatHistory = res.chat_history || [];
+          if (!this.projectTitle && res.project?.title) {
+            this.projectTitle = res.project.title;
+          }
+          if (!this.totalEscrowAmount && res.project?.total_price) {
+            this.totalEscrowAmount = res.project.total_price;
+          }
+          this.showOpenDisputeForm = false;
         } else {
           this.activeDispute = null;
           this.showOpenDisputeForm = true;
@@ -148,18 +160,72 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
   }
 
   pollChatUpdates(): void {
-    if (!this.projectId || this.isSendingMessage) return;
+    if (!this.projectId || this.isSendingMessage || this.isOpeningDispute) return;
     this.http.get<any>(`${API_BASE_URL}/api/disputes/${this.projectId}/active`).subscribe({
       next: (res) => {
         if (res && res.dispute) {
           this.activeDispute = res.dispute;
           this.currentTier = res.tier || 1;
-          if (res.chat_history && res.chat_history.length !== this.chatHistory.length) {
-            this.chatHistory = res.chat_history;
+          this.projectInfo = res.project;
+          if (!this.projectTitle && res.project?.title) {
+            this.projectTitle = res.project.title;
+          }
+          if (!this.totalEscrowAmount && res.project?.total_price) {
+            this.totalEscrowAmount = res.project.total_price;
+          }
+          if (res.chat_history) {
+            const incomingLastId = res.chat_history[res.chat_history.length - 1]?.id;
+            const currentLastId = this.chatHistory[this.chatHistory.length - 1]?.id;
+            if (res.chat_history.length !== this.chatHistory.length || incomingLastId !== currentLastId) {
+              this.chatHistory = res.chat_history;
+            }
           }
         }
       },
       error: () => {}
+    });
+  }
+
+  isResolvedByPayPal(): boolean {
+    const resType = (this.activeDispute?.resolution_type || '').toUpperCase();
+    if (!resType) return false;
+    return resType !== 'MUTUAL_SETTLEMENT' && resType !== 'SCOPE_CHANGE';
+  }
+
+  toggleFollowUpDisputeForm(): void {
+    this.showFollowUpDisputeForm = true;
+    if (!this.followUpDisputeReason.trim() && this.activeDispute?.reason) {
+      this.followUpDisputeReason = `Follow-up escalation on prior resolved dispute: ${this.activeDispute.reason}`;
+    }
+  }
+
+  cancelFollowUpDisputeForm(): void {
+    this.showFollowUpDisputeForm = false;
+  }
+
+  submitFollowUpDispute(): void {
+    const reason = this.followUpDisputeReason.trim();
+    if (!reason || this.isOpeningDispute) {
+      alert('Please enter a specific reason to escalate this dispute.');
+      return;
+    }
+
+    this.isOpeningDispute = true;
+    this.http.post<any>(`${API_BASE_URL}/api/disputes/${this.projectId}/open`, {
+      reason,
+      disputed_by: this.currentRole
+    }).subscribe({
+      next: (res) => {
+        this.isOpeningDispute = false;
+        this.showFollowUpDisputeForm = false;
+        this.followUpDisputeReason = '';
+        this.loadActiveDispute();
+        this.disputeEscalated.emit(res);
+      },
+      error: (err) => {
+        this.isOpeningDispute = false;
+        alert(err.error?.detail || err.message || 'Failed to escalate dispute.');
+      }
     });
   }
 
@@ -177,6 +243,7 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
         this.isOpeningDispute = false;
         this.showOpenDisputeForm = false;
         this.loadActiveDispute();
+        this.disputeEscalated.emit(res);
       },
       error: (err) => {
         this.isOpeningDispute = false;
@@ -248,7 +315,10 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
 
   // Phase 3: Programmatic Dossier Escalation
   escalateToProgrammatic(): void {
-    if (!confirm('Escalate dispute to Tier 2: Programmatic PayPal Evidence Submission?\n\nProofLens will compile the legal agreement, all cryptographic SHA-256 evidence hashes, and AI forensic audits, and submit them directly to the PayPal Disputes API.')) {
+    const confirmMsg = this.currentTier === 4
+      ? 'Escalate this previously resolved dispute to Tier 2: Programmatic PayPal Evidence Submission?\n\nProofLens will reopen the dispute, pause milestone payouts, compile all SHA-256 evidence hashes and AI forensic audits, and submit them to the PayPal Disputes API.'
+      : 'Escalate dispute to Tier 2: Programmatic PayPal Evidence Submission?\n\nProofLens will compile the legal agreement, all cryptographic SHA-256 evidence hashes, and AI forensic audits, and submit them directly to the PayPal Disputes API.';
+    if (!confirm(confirmMsg)) {
       return;
     }
 
@@ -258,8 +328,10 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
     }).subscribe({
       next: (res) => {
         this.isEscalatingProgrammatic = false;
+        this.showFollowUpDisputeForm = false;
         alert('Case successfully escalated to Tier 2!\n\nProofLens Authoritative Dossier submitted to PayPal Disputes API.');
         this.loadActiveDispute();
+        this.disputeEscalated.emit(res);
       },
       error: (err) => {
         this.isEscalatingProgrammatic = false;
@@ -270,7 +342,10 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
 
   // Phase 4: Human Review Escalation (Claim)
   escalateToHuman(): void {
-    if (!confirm('Escalate dispute to Tier 3: Official PayPal Claim (Manual Human Review)?\n\nThis will trigger PayPal\'s 20-day formal adjudication cycle with a human PayPal disputes specialist.')) {
+    const confirmMsg = this.currentTier === 4
+      ? 'Escalate this previously resolved dispute to Tier 3: Official PayPal Claim (Manual Human Review)?\n\nThis will reopen the case, pause milestone payouts, and trigger PayPal\'s 20-day formal adjudication cycle with a human PayPal disputes specialist.'
+      : 'Escalate dispute to Tier 3: Official PayPal Claim (Manual Human Review)?\n\nThis will trigger PayPal\'s 20-day formal adjudication cycle with a human PayPal disputes specialist.';
+    if (!confirm(confirmMsg)) {
       return;
     }
 
@@ -280,8 +355,10 @@ export class DisputeRoomComponent implements OnInit, OnDestroy {
     }).subscribe({
       next: (res) => {
         this.isEscalatingHuman = false;
+        this.showFollowUpDisputeForm = false;
         alert(`Case escalated to PayPal Claim!\n\nPayPal Claim ID: ${res.claim_id}\nPayPal 20-day manual investigation window is now active.`);
         this.loadActiveDispute();
+        this.disputeEscalated.emit(res);
       },
       error: (err) => {
         this.isEscalatingHuman = false;
