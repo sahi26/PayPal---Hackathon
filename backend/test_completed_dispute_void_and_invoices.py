@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 import database
 import models
+import paypal_service
 from main import app, get_db, process_matured_warranty_payouts
 
 
@@ -610,6 +611,82 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
         self.assertEqual(single_res.status_code, 200, single_res.text)
         self.assertEqual(single_res.json()["invoice_number"], "INV-SINGLE-01")
         self.assertEqual(single_res.json()["milestone_index"], 0)
+
+    @patch("paypal_service.generate_invoice_qr_code", new_callable=AsyncMock)
+    @patch("paypal_service.record_invoice_payment", new_callable=AsyncMock)
+    @patch("paypal_service.send_invoice", new_callable=AsyncMock)
+    @patch("paypal_service.create_draft_invoice", new_callable=AsyncMock)
+    @patch("paypal_service.get_invoicing_merchant_email", new_callable=AsyncMock)
+    @patch("paypal_service.generate_invoice_number", new_callable=AsyncMock)
+    @patch("paypal_service.has_network_connection", return_value=True)
+    def test_sync_invoice_recovers_when_sequence_number_or_invoicer_email_fails(
+        self,
+        _mock_net,
+        mock_gen_num,
+        mock_merchant_email,
+        mock_create_draft,
+        mock_send,
+        mock_record_pay,
+        mock_qr,
+    ):
+        proj, _ = self._create_project(
+            status=models.ProjectStatus.COMPLETED,
+            agreement_status="COMPLETED",
+            total_price=4000.0,
+            captured_amount=4000.0,
+            milestones=[
+                {
+                    "title": "Milestone 1",
+                    "description": "Core Execution",
+                    "price_allocation": 2000.0,
+                    "status": "approved",
+                    "is_paid": True,
+                    "paypal_capture_id": "CAP-M1-OK",
+                },
+                {
+                    "title": "Milestone 2",
+                    "description": "Final Quality Review",
+                    "price_allocation": 2000.0,
+                    "status": "approved",
+                    "is_paid": True,
+                    "paid_at": "2026-11-10T12:54:41Z",
+                    "paypal_capture_id": "6L962102LU319562T",
+                },
+            ],
+        )
+
+        # Simulate PayPal sequence-number endpoint failing + first draft rejecting DUPLICATE/invoicer email
+        mock_gen_num.side_effect = HTTPException(status_code=502, detail="PayPal could not generate an invoice number.")
+        mock_merchant_email.return_value = None
+
+        seen_payloads = []
+
+        async def _create_draft_side_effect(payload):
+            import copy
+
+            seen_payloads.append(copy.deepcopy(payload))
+            if len(seen_payloads) == 1:
+                raise HTTPException(
+                    status_code=502,
+                    detail="PayPal invoice creation failed (422): UNPROCESSABLE_ENTITY: DUPLICATE_INVOICE_NUMBER: Invalid invoicer email"
+                )
+            return {"id": "INV2-LIVE-RECOVERED"}
+
+        mock_create_draft.side_effect = _create_draft_side_effect
+        mock_send.return_value = {"href": "https://www.sandbox.paypal.com/invoice/p/#INV2-LIVE-RECOVERED"}
+        mock_record_pay.return_value = {"payment_id": "PAY-LIVE-REC", "confirmed": True}
+        mock_qr.return_value = None
+
+        sync_res = self.client.post(f"/api/projects/{proj.id}/milestones/1/generate-invoice")
+        self.assertEqual(sync_res.status_code, 200, sync_res.text)
+        inv = sync_res.json()["invoice"]
+        self.assertEqual(inv["paypal_invoice_id"], "INV2-LIVE-RECOVERED")
+        self.assertEqual(inv["invoice_url"], "https://www.sandbox.paypal.com/invoice/p/#INV2-LIVE-RECOVERED")
+        self.assertTrue(inv["invoice_number"].startswith(f"PL-{proj.id}-M2-"))
+        self.assertFalse(inv["needs_paypal_sync"])
+        self.assertIn("2026-11-10T12:54:41", inv["paid_at"])
+        self.assertEqual(len(seen_payloads), 2)
+        self.assertNotIn("email_address", seen_payloads[1].get("invoicer", {}))
 
 
 if __name__ == "__main__":

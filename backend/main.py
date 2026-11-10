@@ -7698,6 +7698,17 @@ def _resolve_milestone_capture_id(
     return None
 
 
+def _parse_iso_datetime(val: Any) -> Optional[datetime]:
+    if not val:
+        return None
+    if isinstance(val, datetime):
+        return val
+    try:
+        return datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
 def _upsert_invoice_db_record(
     db: Session,
     project: models.Project,
@@ -7711,6 +7722,7 @@ def _upsert_invoice_db_record(
     seller_email: str,
     ev_hash: Optional[str] = None,
     milestone_title: Optional[str] = None,
+    paid_at_override: Optional[Any] = None,
 ) -> Optional[models.Invoice]:
     try:
         inv_record = (
@@ -7722,6 +7734,7 @@ def _upsert_invoice_db_record(
             .order_by(models.Invoice.id.desc())
             .first()
         )
+        resolved_paid_at = _parse_iso_datetime(paid_at_override) or datetime.utcnow()
         meta = {
             "qr_code_base64": invoice_data.get("qr_code_base64"),
             "deliverable_title": milestone_title,
@@ -7743,7 +7756,7 @@ def _upsert_invoice_db_record(
                 seller_email=invoice_data.get("seller_email") or seller_email,
                 items=invoice_data.get("items"),
                 metadata_json=meta,
-                paid_at=datetime.utcnow(),
+                paid_at=resolved_paid_at,
             )
             db.add(inv_record)
         else:
@@ -7759,7 +7772,7 @@ def _upsert_invoice_db_record(
             inv_record.items = invoice_data.get("items")
             inv_record.metadata_json = meta
             if not inv_record.paid_at:
-                inv_record.paid_at = datetime.utcnow()
+                inv_record.paid_at = resolved_paid_at
 
         db.commit()
         db.refresh(inv_record)
@@ -7867,6 +7880,7 @@ async def _ensure_milestone_invoice(
         seller_email=seller_email,
         ev_hash=ev_hash,
         milestone_title=ms.get("title"),
+        paid_at_override=ms.get("paid_at"),
     )
     return invoice_data, None
 
@@ -8343,6 +8357,7 @@ async def list_project_invoices(
                     buyer_email=buyer_email,
                     seller_email=seller_email,
                     milestone_title=ms.get("title"),
+                    paid_at_override=ms.get("paid_at") or inv_json.get("issued_at"),
                 )
                 if inv_record:
                     by_idx[idx] = _serialize_invoice_record(inv_record, milestone_title=ms.get("title"))
@@ -8676,6 +8691,7 @@ async def generate_milestone_invoice_on_demand(
         buyer_email=buyer_email,
         seller_email=seller_email,
         milestone_title=ms.get("title"),
+        paid_at_override=ms.get("paid_at"),
     )
     if inv_record:
         invoice_data = _serialize_invoice_record(inv_record, milestone_title=ms.get("title"))

@@ -1556,8 +1556,19 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
       .subscribe({
         next: (res) => {
           this.syncingInvoiceIndex = null;
-          if (res?.invoice && this.milestones[milestoneIndex]) {
-            this.milestones[milestoneIndex].invoice = res.invoice;
+          if (res?.invoice) {
+            if (this.milestones[milestoneIndex]) {
+              this.milestones[milestoneIndex].invoice = res.invoice;
+              this.milestones[milestoneIndex].is_paid = true;
+            }
+            const nextList = [...(this.projectInvoices || [])];
+            const existingIdx = nextList.findIndex((i: any) => Number(i?.milestone_index) === milestoneIndex);
+            if (existingIdx >= 0) {
+              nextList[existingIdx] = res.invoice;
+            } else {
+              nextList.push(res.invoice);
+            }
+            this.projectInvoices = nextList;
           }
           this.loadProjectInvoices();
         },

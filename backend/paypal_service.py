@@ -569,6 +569,42 @@ async def list_disputes() -> List[Dict[str, Any]]:
 # Phase 3: Invoicing API v2 (Milestone Invoices & Receipts)
 # ==============================================================================
 
+def _extract_paypal_error_message(resp: httpx.Response) -> str:
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            parts = []
+            name = body.get("name")
+            if name:
+                parts.append(str(name))
+            details = body.get("details")
+            if isinstance(details, list) and details:
+                first = details[0] if isinstance(details[0], dict) else {}
+                issue = first.get("issue")
+                desc = first.get("description")
+                if issue:
+                    parts.append(str(issue))
+                if desc:
+                    parts.append(str(desc))
+            msg = body.get("message")
+            if msg and str(msg) not in parts:
+                parts.append(str(msg))
+            if parts:
+                return ": ".join(parts)[:300]
+    except Exception:
+        pass
+    return (resp.text or f"HTTP {resp.status_code}")[:300]
+
+
+def _build_fallback_invoice_number(project_id: int, milestone_index: int) -> str:
+    suffix = uuid.uuid4().hex[:6].upper()
+    candidate = f"PL-{project_id}-M{milestone_index + 1}-{suffix}"
+    if len(candidate) <= 25:
+        return candidate
+    compact_prefix = f"PL{project_id}M{milestone_index + 1}"[: 25 - len(suffix) - 1]
+    return f"{compact_prefix}-{suffix}"
+
+
 async def get_invoicing_merchant_email() -> Optional[str]:
     """
     Retrieves the primary merchant email for the invoicing party.
@@ -583,6 +619,9 @@ async def get_invoicing_merchant_email() -> Optional[str]:
     try:
         async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.get(url, headers=headers)
+            if resp.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                resp = await client.get(url, headers=fresh_headers)
             if resp.status_code == 200:
                 data = resp.json()
                 emails = data.get("emails", [])
@@ -607,17 +646,25 @@ async def generate_invoice_number() -> str:
 
     try:
         async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
-            resp = await client.post(url, headers=headers)
+            resp = await client.post(url, headers=headers, json={})
+            if resp.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                resp = await client.post(url, headers=fresh_headers, json={})
             if resp.status_code in (200, 201):
                 invoice_number = resp.json().get("invoice_number")
                 if invoice_number:
                     return invoice_number
                 raise HTTPException(status_code=502, detail="PayPal did not return an invoice number.")
-            raise HTTPException(status_code=502, detail="PayPal could not generate an invoice number.")
+            err_msg = _extract_paypal_error_message(resp)
+            print(f"[PAYPAL_INVOICING] generate-next-invoice-number failed ({resp.status_code}): {err_msg}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"PayPal could not generate an invoice number ({resp.status_code}): {err_msg}"
+            )
     except HTTPException:
         raise
     except Exception as ex:
-        raise HTTPException(status_code=502, detail="PayPal invoice number service is unavailable.") from ex
+        raise HTTPException(status_code=502, detail=f"PayPal invoice number service is unavailable: {ex}") from ex
 
 
 async def create_draft_invoice(invoice_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -632,6 +679,10 @@ async def create_draft_invoice(invoice_payload: Dict[str, Any]) -> Dict[str, Any
     try:
         async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=invoice_payload)
+            if resp.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                fresh_headers["PayPal-Request-Id"] = str(uuid.uuid4())
+                resp = await client.post(url, headers=fresh_headers, json=invoice_payload)
             if resp.status_code in (200, 201):
                 data = resp.json()
                 inv_id = data.get("id")
@@ -641,11 +692,16 @@ async def create_draft_invoice(invoice_payload: Dict[str, Any]) -> Dict[str, Any
                     raise HTTPException(status_code=502, detail="PayPal did not return an invoice identifier.")
                 data["id"] = inv_id
                 return data
-            raise HTTPException(status_code=502, detail="PayPal invoice creation failed.")
+            err_msg = _extract_paypal_error_message(resp)
+            print(f"[PAYPAL_INVOICING] create draft invoice failed ({resp.status_code}): {err_msg}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"PayPal invoice creation failed ({resp.status_code}): {err_msg}"
+            )
     except HTTPException:
         raise
     except Exception as ex:
-        raise HTTPException(status_code=502, detail="PayPal invoice service is unavailable.") from ex
+        raise HTTPException(status_code=502, detail=f"PayPal invoice service is unavailable: {ex}") from ex
 
 
 async def send_invoice(invoice_id: str, send_to_recipient: bool = False) -> Dict[str, Any]:
@@ -659,6 +715,9 @@ async def send_invoice(invoice_id: str, send_to_recipient: bool = False) -> Dict
     try:
         async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json={"send_to_recipient": send_to_recipient})
+            if resp.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                resp = await client.post(url, headers=fresh_headers, json={"send_to_recipient": send_to_recipient})
             if resp.status_code in (200, 202):
                 data = resp.json() if resp.content else {}
                 payer_link = data.get("href")
@@ -669,19 +728,27 @@ async def send_invoice(invoice_id: str, send_to_recipient: bool = False) -> Dict
                     )
                 if not payer_link:
                     invoice_details = await get_invoice_details(invoice_id)
-                    payer_link = next(
-                        (link.get("href") for link in invoice_details.get("links", []) if link.get("rel") == "payer-view"),
-                        None
+                    payer_link = (
+                        ((invoice_details.get("detail") or {}).get("metadata") or {}).get("recipient_view_url")
+                        or next(
+                            (link.get("href") for link in invoice_details.get("links", []) if link.get("rel") == "payer-view"),
+                            None
+                        )
                     )
                 if not payer_link:
                     raise HTTPException(status_code=502, detail="PayPal did not return a payer invoice URL.")
                 data["href"] = payer_link
                 return data
-            raise HTTPException(status_code=502, detail="PayPal could not publish the invoice.")
+            err_msg = _extract_paypal_error_message(resp)
+            print(f"[PAYPAL_INVOICING] send invoice failed ({resp.status_code}): {err_msg}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"PayPal could not publish the invoice ({resp.status_code}): {err_msg}"
+            )
     except HTTPException:
         raise
     except Exception as ex:
-        raise HTTPException(status_code=502, detail="PayPal invoice service is unavailable.") from ex
+        raise HTTPException(status_code=502, detail=f"PayPal invoice service is unavailable: {ex}") from ex
 
 
 async def record_invoice_payment(
@@ -701,7 +768,7 @@ async def record_invoice_payment(
 
     payload = {
         "method": "PAYPAL",
-        "payment_date": datetime.datetime.utcnow().strftime("%Y-%m-%d"),
+        "payment_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
         "note": note or f"ProofLens Escrow Capture (Capture ID: {capture_id})",
         "amount": {
             "currency_code": currency,
@@ -712,13 +779,26 @@ async def record_invoice_payment(
     try:
         async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code in (200, 201):
-                return resp.json() if resp.content else {"confirmed": True}
-            raise HTTPException(status_code=502, detail="PayPal could not record the captured payment against the invoice.")
+            if resp.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                fresh_headers["PayPal-Request-Id"] = str(uuid.uuid4())
+                resp = await client.post(url, headers=fresh_headers, json=payload)
+            if resp.status_code in (200, 201, 204):
+                res_data = resp.json() if resp.content else {}
+                if isinstance(res_data, dict):
+                    res_data.setdefault("confirmed", True)
+                    return res_data
+                return {"confirmed": True}
+            err_msg = _extract_paypal_error_message(resp)
+            print(f"[PAYPAL_INVOICING] record invoice payment failed ({resp.status_code}): {err_msg}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"PayPal could not record the captured payment against the invoice ({resp.status_code}): {err_msg}"
+            )
     except HTTPException:
         raise
     except Exception as ex:
-        raise HTTPException(status_code=502, detail="PayPal invoice service is unavailable.") from ex
+        raise HTTPException(status_code=502, detail=f"PayPal invoice service is unavailable: {ex}") from ex
 
 
 async def get_invoice_details(invoice_id: str) -> Dict[str, Any]:
@@ -732,13 +812,17 @@ async def get_invoice_details(invoice_id: str) -> Dict[str, Any]:
     try:
         async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.get(url, headers=headers)
+            if resp.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                resp = await client.get(url, headers=fresh_headers)
             if resp.status_code == 200:
                 return resp.json()
-            raise HTTPException(status_code=502, detail="PayPal invoice lookup failed.")
+            err_msg = _extract_paypal_error_message(resp)
+            raise HTTPException(status_code=502, detail=f"PayPal invoice lookup failed ({resp.status_code}): {err_msg}")
     except HTTPException:
         raise
     except Exception as ex:
-        raise HTTPException(status_code=502, detail="PayPal invoice service is unavailable.") from ex
+        raise HTTPException(status_code=502, detail=f"PayPal invoice service is unavailable: {ex}") from ex
 
 
 async def generate_invoice_qr_code(invoice_id: str) -> Optional[str]:
@@ -755,6 +839,9 @@ async def generate_invoice_qr_code(invoice_id: str) -> Optional[str]:
     try:
         async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json={"width": 300, "height": 300})
+            if resp.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                resp = await client.post(url, headers=fresh_headers, json={"width": 300, "height": 300})
             if resp.status_code == 200:
                 content = resp.content
                 match = re.search(rb'\r\n\r\n([A-Za-z0-9+/=\r\n]+)\r\n--', content)
@@ -784,8 +871,8 @@ async def create_and_finalize_milestone_invoice(
 ) -> Dict[str, Any]:
     """
     End-to-end milestone invoice generation orchestrator:
-    1. Generates invoice sequence number
-    2. Builds PayPal Invoicing v2 draft invoice
+    1. Generates invoice sequence number (or deterministic fallback if PayPal's sequence generator is unavailable)
+    2. Builds PayPal Invoicing v2 draft invoice (retrying without duplicate number or non-merchant email if rejected)
     3. Sends/publishes the invoice to obtain public payer link
     4. Records external escrow capture payment against the invoice
     5. Obtains QR code and returns complete invoice record
@@ -796,7 +883,6 @@ async def create_and_finalize_milestone_invoice(
     if APP_ENV != "production" and (APP_ENV == "test" and not has_network_connection()):
         inv_id = f"INV2-TEST-{uuid.uuid4().hex[:8].upper()}"
         inv_num = f"INV-TEST-{project_id}-{milestone_index + 1}"
-        today_str = datetime.datetime.utcnow().strftime("%Y-%m-%d")
         return {
             "paypal_invoice_id": inv_id,
             "invoice_number": inv_num,
@@ -823,39 +909,50 @@ async def create_and_finalize_milestone_invoice(
             ]
         }
 
-    inv_num = await generate_invoice_number()
+    try:
+        inv_num = str(await generate_invoice_number())[:25]
+    except Exception as seq_err:
+        print(f"[PAYPAL_INVOICING] Sequence number generator unavailable, using fallback invoice number: {seq_err}")
+        inv_num = _build_fallback_invoice_number(project_id, milestone_index)
+
     merchant_email = await get_invoicing_merchant_email()
-    seller_party_email = merchant_email or seller_email or "escrow@proofflow.io"
+    seller_party_email = merchant_email or seller_email
 
     formatted_amount = f"{amount:.2f}"
-    today_str = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+    today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
     item_desc = f"{milestone_description or 'Milestone deliverable verification'}"
     if evidence_hash:
         item_desc += f" [Verified Hash: {evidence_hash[:16]}...]"
 
-    draft_payload = {
+    seller_parts = (seller_name or "").strip().split()
+    buyer_parts = (buyer_name or "").strip().split()
+
+    invoicer_info: Dict[str, Any] = {
+        "name": {
+            "given_name": seller_parts[0] if seller_parts else "ProofLens",
+            "surname": " ".join(seller_parts[1:]) if len(seller_parts) > 1 else "Contractor"
+        }
+    }
+    if seller_party_email:
+        invoicer_info["email_address"] = seller_party_email
+
+    draft_payload: Dict[str, Any] = {
         "detail": {
             "invoice_number": inv_num,
             "invoice_date": today_str,
             "currency_code": currency,
-            "note": f"ProofLens Escrow Settlement for Project #{project_id}, Milestone #{milestone_index + 1}",
+            "note": f"ProofLens Escrow Settlement for Project #{project_id}, Milestone #{milestone_index + 1}"[:4000],
             "term": "Due upon receipt",
-            "memo": f"Milestone Escrow Authorized & Captured. PayPal Capture Reference: {capture_id or 'N/A'}"
+            "memo": f"Milestone Escrow Authorized & Captured. PayPal Capture Reference: {capture_id or 'N/A'}"[:500]
         },
-        "invoicer": {
-            "name": {
-                "given_name": seller_name.split()[0] if seller_name else "ProofLens",
-                "surname": " ".join(seller_name.split()[1:]) if seller_name and len(seller_name.split()) > 1 else "Contractor"
-            },
-            "email_address": seller_party_email
-        },
+        "invoicer": invoicer_info,
         "primary_recipients": [
             {
                 "billing_info": {
                     "name": {
-                        "given_name": buyer_name.split()[0] if buyer_name else "Client",
-                        "surname": " ".join(buyer_name.split()[1:]) if buyer_name and len(buyer_name.split()) > 1 else "Buyer"
+                        "given_name": buyer_parts[0] if buyer_parts else "Client",
+                        "surname": " ".join(buyer_parts[1:]) if len(buyer_parts) > 1 else "Buyer"
                     },
                     "email_address": buyer_email or "buyer@proofflow.io"
                 }
@@ -863,8 +960,8 @@ async def create_and_finalize_milestone_invoice(
         ],
         "items": [
             {
-                "name": f"Milestone {milestone_index + 1}: {milestone_title or 'Deliverable'}",
-                "description": item_desc,
+                "name": f"Milestone {milestone_index + 1}: {milestone_title or 'Deliverable'}"[:200],
+                "description": item_desc[:1000],
                 "quantity": "1",
                 "unit_amount": {
                     "currency_code": currency,
@@ -874,7 +971,30 @@ async def create_and_finalize_milestone_invoice(
         ]
     }
 
-    create_res = await create_draft_invoice(draft_payload)
+    create_res = None
+    for attempt in range(3):
+        try:
+            create_res = await create_draft_invoice(draft_payload)
+            break
+        except HTTPException as draft_err:
+            err_lower = str(draft_err.detail).lower()
+            retried = False
+            if ("duplicate" in err_lower and "invoice" in err_lower) or "duplicate_invoice_number" in err_lower:
+                inv_num = _build_fallback_invoice_number(project_id, milestone_index)
+                draft_payload["detail"]["invoice_number"] = inv_num
+                retried = True
+            if (
+                any(tok in err_lower for tok in ["invoicer", "merchant", "email", "not_authorized", "user_not_found"])
+                and "invoicer" in draft_payload
+            ):
+                if draft_payload["invoicer"].get("email_address"):
+                    draft_payload["invoicer"].pop("email_address", None)
+                else:
+                    draft_payload.pop("invoicer", None)
+                retried = True
+            if not retried or attempt == 2:
+                raise
+    assert create_res is not None
     invoice_id = create_res["id"]
 
     send_res = await send_invoice(invoice_id, send_to_recipient=False)
@@ -902,9 +1022,9 @@ async def create_and_finalize_milestone_invoice(
         "paypal_capture_id": capture_id,
         "payment_record_id": rec_res.get("payment_id"),
         "qr_code_base64": qr_b64,
-        "issued_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "issued_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
         "buyer_email": buyer_email or "buyer@proofflow.io",
-        "seller_email": seller_party_email,
+        "seller_email": seller_party_email or seller_email or "escrow@proofflow.io",
         "items": draft_payload["items"]
     }
 
