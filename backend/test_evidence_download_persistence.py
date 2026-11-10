@@ -6,7 +6,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from fastapi.testclient import TestClient
 from PIL import Image
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import main
@@ -246,6 +246,114 @@ class TestEvidenceDownloadPersistence(unittest.TestCase):
         run_migrations(temp_engine)
         cols = [c["name"] for c in inspect(temp_engine).get_columns("evidence")]
         self.assertIn("file_data", cols)
+
+    def test_run_migrations_postgres_file_data_isolated_from_optional_update_errors(self):
+        temp_engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        with temp_engine.connect() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE evidence ("
+                    "id INTEGER PRIMARY KEY, "
+                    "file_path VARCHAR, "
+                    "file_hash VARCHAR, "
+                    "status VARCHAR, "
+                    "ai_confidence_score INTEGER, "
+                    "fraud_flags TEXT, "
+                    "ai_analysis_notes TEXT);"
+                )
+            )
+            conn.execute(
+                text("CREATE TABLE payments (id INTEGER PRIMARY KEY, authorization_id VARCHAR);")
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO evidence (id, file_path, file_hash, status) "
+                    "VALUES (1, '/uploads/test.jpg', 'cff83da41234', 'VERIFIED');"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE TRIGGER abort_enum_update BEFORE UPDATE ON evidence "
+                    "BEGIN SELECT RAISE(ABORT, 'simulated invalid enum update'); END;"
+                )
+            )
+            conn.commit()
+
+        events_log = []
+        observed_pg_ddl = []
+
+        @event.listens_for(temp_engine, "before_cursor_execute", retval=True)
+        def _intercept_sql(conn, cursor, statement, parameters, context, executemany):
+            events_log.append(("sql", statement.strip()))
+            if "ADD COLUMN IF NOT EXISTS file_data BYTEA" in statement:
+                observed_pg_ddl.append(statement.strip())
+                return statement.replace("IF NOT EXISTS ", "").replace("BYTEA", "BLOB"), parameters
+            return statement, parameters
+
+        @event.listens_for(temp_engine, "commit")
+        def _on_commit(conn):
+            events_log.append(("commit", ""))
+
+        @event.listens_for(temp_engine, "rollback")
+        def _on_rollback(conn):
+            events_log.append(("rollback", ""))
+
+        orig_dialect_name = temp_engine.dialect.name
+        temp_engine.dialect.name = "postgresql"
+        try:
+            run_migrations(temp_engine)
+        finally:
+            temp_engine.dialect.name = orig_dialect_name
+
+        self.assertEqual(
+            observed_pg_ddl,
+            ["ALTER TABLE evidence ADD COLUMN IF NOT EXISTS file_data BYTEA;"],
+        )
+
+        # Verify file_data DDL was committed BEFORE the failing UPDATE evidence ran,
+        # and rollback cleared the failed optional UPDATE without starving later tables.
+        ddl_idx = next(i for i, (kind, msg) in enumerate(events_log) if kind == "sql" and "file_data" in msg)
+        update_idx = next(i for i, (kind, msg) in enumerate(events_log) if kind == "sql" and "UPDATE evidence" in msg)
+        commit_between = any(kind == "commit" for kind, _ in events_log[ddl_idx + 1 : update_idx])
+        rollback_after_update = any(kind == "rollback" for kind, _ in events_log[update_idx + 1 :])
+        self.assertTrue(commit_between, f"Expected commit before UPDATE evidence: {events_log}")
+        self.assertTrue(rollback_after_update, f"Expected rollback after failed UPDATE: {events_log}")
+
+        evidence_cols = [c["name"] for c in inspect(temp_engine).get_columns("evidence")]
+        payment_cols = [c["name"] for c in inspect(temp_engine).get_columns("payments")]
+        self.assertIn("file_data", evidence_cols)
+        self.assertIn("paypal_authorization_id", payment_cols)
+
+    def test_run_migrations_fails_fast_if_file_data_still_missing(self):
+        from unittest.mock import patch
+
+        temp_engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+        with temp_engine.connect() as conn:
+            conn.execute(text("CREATE TABLE evidence (id INTEGER PRIMARY KEY, file_path VARCHAR);"))
+            conn.commit()
+
+        class _FakeInspector:
+            def __init__(self, real_insp):
+                self._real = real_insp
+
+            def get_table_names(self):
+                return self._real.get_table_names()
+
+            def get_columns(self, table_name):
+                cols = self._real.get_columns(table_name)
+                if table_name == "evidence":
+                    return [c for c in cols if c["name"] != "file_data"]
+                return cols
+
+        real_inspect = inspect
+
+        def _fake_inspect(subject):
+            return _FakeInspector(real_inspect(subject))
+
+        with patch("sqlalchemy.inspect", side_effect=_fake_inspect):
+            with self.assertRaises(RuntimeError) as ctx:
+                run_migrations(temp_engine)
+        self.assertIn("file_data", str(ctx.exception))
 
 
 if __name__ == "__main__":
