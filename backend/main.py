@@ -4,6 +4,8 @@ import json
 import secrets
 import uuid
 import re
+import asyncio
+import weakref
 import mimetypes
 import subprocess
 import struct
@@ -7785,6 +7787,25 @@ def _upsert_invoice_db_record(
         return None
 
 
+_invoice_sync_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Dict[Tuple[int, int], asyncio.Lock]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _get_invoice_sync_lock(project_id: int, milestone_index: int) -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    bucket = _invoice_sync_locks.get(loop)
+    if bucket is None:
+        bucket = {}
+        _invoice_sync_locks[loop] = bucket
+    key = (int(project_id), int(milestone_index))
+    lock = bucket.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        bucket[key] = lock
+    return lock
+
+
 async def _ensure_milestone_invoice(
     db: Session,
     project: models.Project,
@@ -7794,6 +7815,7 @@ async def _ensure_milestone_invoice(
     amount: Optional[float] = None,
     currency: str = "USD",
     ev_hash: Optional[str] = None,
+    timeout_seconds: float = 18.0,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     milestones = [dict(m) for m in (agreement.milestones or [])]
     if milestone_index < 0 or milestone_index >= len(milestones):
@@ -7829,60 +7851,112 @@ async def _ensure_milestone_invoice(
         )
         ev_hash = getattr(recent_ev, "file_hash", getattr(recent_ev, "cryptographic_hash", None)) if recent_ev else None
 
+    lock = _get_invoice_sync_lock(project.id, milestone_index)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(1.0, float(timeout_seconds))
     try:
-        invoice_data = await paypal_service.create_and_finalize_milestone_invoice(
-            project_id=project.id,
+        await asyncio.wait_for(lock.acquire(), timeout=max(0.5, deadline - loop.time()))
+    except asyncio.TimeoutError:
+        return None, "PayPal invoicing timed out while another sync was in progress. Please retry Sync PayPal Invoice."
+
+    try:
+        existing_synced = (
+            db.query(models.Invoice)
+            .filter(
+                models.Invoice.project_id == project.id,
+                models.Invoice.milestone_index == milestone_index,
+                models.Invoice.paypal_invoice_id.isnot(None),
+                models.Invoice.invoice_url.isnot(None),
+            )
+            .order_by(models.Invoice.id.desc())
+            .first()
+        )
+        if existing_synced:
+            try:
+                db.refresh(existing_synced)
+            except Exception:
+                pass
+        if existing_synced and existing_synced.paypal_invoice_id and existing_synced.invoice_url:
+            serialized = _serialize_invoice_record(existing_synced, milestone_title=ms.get("title"))
+            cur_inv = milestones[milestone_index].get("invoice")
+            if not isinstance(cur_inv, dict) or not cur_inv.get("invoice_url"):
+                milestones[milestone_index]["invoice"] = serialized
+                milestones[milestone_index]["is_paid"] = True
+                if resolved_capture_id and not milestones[milestone_index].get("paypal_capture_id"):
+                    milestones[milestone_index]["paypal_capture_id"] = resolved_capture_id
+                agreement.milestones = milestones
+                flag_modified(agreement, "milestones")
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+            return serialized, None
+
+        remaining = deadline - loop.time()
+        if remaining <= 0.5:
+            return None, "PayPal invoicing timed out. Please retry Sync PayPal Invoice."
+
+        try:
+            invoice_data = await asyncio.wait_for(
+                paypal_service.create_and_finalize_milestone_invoice(
+                    project_id=project.id,
+                    milestone_index=milestone_index,
+                    milestone_title=ms.get("title", f"Milestone #{milestone_index + 1}"),
+                    milestone_description=ms.get("description", "Deliverable verified"),
+                    amount=resolved_amount,
+                    currency=currency or "USD",
+                    buyer_email=buyer_email,
+                    buyer_name=buyer_name,
+                    seller_email=seller_email,
+                    seller_name=seller_name,
+                    capture_id=resolved_capture_id,
+                    evidence_hash=ev_hash,
+                ),
+                timeout=remaining,
+            )
+        except asyncio.TimeoutError:
+            return None, "PayPal invoicing timed out. Please retry Sync PayPal Invoice."
+        except Exception as inv_err:
+            err_msg = (
+                str(inv_err.detail)
+                if isinstance(inv_err, HTTPException)
+                else "Invoice generation failed after capture; retry from the invoice action."
+            )
+            return None, err_msg
+
+        if not invoice_data:
+            return None, "Invoice service returned an empty payload."
+
+        invoice_data = dict(invoice_data)
+        invoice_data.setdefault("project_id", project.id)
+        invoice_data["milestone_index"] = milestone_index
+        invoice_data.setdefault("milestone_title", ms.get("title", f"Milestone #{milestone_index + 1}"))
+
+        milestones[milestone_index]["invoice"] = invoice_data
+        milestones[milestone_index]["is_paid"] = True
+        if resolved_capture_id and not milestones[milestone_index].get("paypal_capture_id"):
+            milestones[milestone_index]["paypal_capture_id"] = resolved_capture_id
+        agreement.milestones = milestones
+        flag_modified(agreement, "milestones")
+
+        _upsert_invoice_db_record(
+            db=db,
+            project=project,
+            agreement=agreement,
             milestone_index=milestone_index,
-            milestone_title=ms.get("title", f"Milestone #{milestone_index + 1}"),
-            milestone_description=ms.get("description", "Deliverable verified"),
+            invoice_data=invoice_data,
             amount=resolved_amount,
             currency=currency or "USD",
-            buyer_email=buyer_email,
-            buyer_name=buyer_name,
-            seller_email=seller_email,
-            seller_name=seller_name,
             capture_id=resolved_capture_id,
-            evidence_hash=ev_hash,
+            buyer_email=buyer_email,
+            seller_email=seller_email,
+            ev_hash=ev_hash,
+            milestone_title=ms.get("title"),
+            paid_at_override=ms.get("paid_at"),
         )
-    except Exception as inv_err:
-        err_msg = (
-            str(inv_err.detail)
-            if isinstance(inv_err, HTTPException)
-            else "Invoice generation failed after capture; retry from the invoice action."
-        )
-        return None, err_msg
-
-    if not invoice_data:
-        return None, "Invoice service returned an empty payload."
-
-    invoice_data = dict(invoice_data)
-    invoice_data.setdefault("project_id", project.id)
-    invoice_data["milestone_index"] = milestone_index
-    invoice_data.setdefault("milestone_title", ms.get("title", f"Milestone #{milestone_index + 1}"))
-
-    milestones[milestone_index]["invoice"] = invoice_data
-    milestones[milestone_index]["is_paid"] = True
-    if resolved_capture_id and not milestones[milestone_index].get("paypal_capture_id"):
-        milestones[milestone_index]["paypal_capture_id"] = resolved_capture_id
-    agreement.milestones = milestones
-    flag_modified(agreement, "milestones")
-
-    _upsert_invoice_db_record(
-        db=db,
-        project=project,
-        agreement=agreement,
-        milestone_index=milestone_index,
-        invoice_data=invoice_data,
-        amount=resolved_amount,
-        currency=currency or "USD",
-        capture_id=resolved_capture_id,
-        buyer_email=buyer_email,
-        seller_email=seller_email,
-        ev_hash=ev_hash,
-        milestone_title=ms.get("title"),
-        paid_at_override=ms.get("paid_at"),
-    )
-    return invoice_data, None
+        return invoice_data, None
+    finally:
+        lock.release()
 
 
 @app.post("/api/milestones/{milestone_id}/approve")
@@ -8293,6 +8367,7 @@ async def get_milestone_invoice(
                 agreement=project.agreement,
                 milestone_index=milestone_index,
                 capture_id=capture_id,
+                timeout_seconds=12.0,
             )
             saved_inv = db.query(models.Invoice).filter(
                 models.Invoice.project_id == project_id,
@@ -8331,6 +8406,7 @@ async def list_project_invoices(
 
     if project and project.agreement and milestones:
         agreement = project.agreement
+        backfill_deadline = asyncio.get_running_loop().time() + 10.0
         for idx, ms in enumerate(milestones):
             if idx in by_idx:
                 continue
@@ -8381,13 +8457,15 @@ async def list_project_invoices(
                 continue
 
             cap_id = _resolve_milestone_capture_id(db, project, agreement, idx, ms)
-            if cap_id:
+            rem_budget = backfill_deadline - asyncio.get_running_loop().time()
+            if cap_id and rem_budget >= 1.5:
                 generated_inv, _ = await _ensure_milestone_invoice(
                     db=db,
                     project=project,
                     agreement=agreement,
                     milestone_index=idx,
                     capture_id=cap_id,
+                    timeout_seconds=min(8.0, rem_budget),
                 )
                 saved_inv = db.query(models.Invoice).filter(
                     models.Invoice.project_id == project_id,
@@ -8630,6 +8708,8 @@ async def generate_milestone_invoice_on_demand(
 ):
     """
     Explicitly triggers generation of a PayPal Invoicing v2 invoice for an approved milestone.
+    Uses single-flight locking per milestone and a strict server-side timeout bound so CORS
+    headers and actionable error responses are preserved under slow upstream responses.
     """
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
@@ -8649,52 +8729,32 @@ async def generate_milestone_invoice_on_demand(
         alloc = float(project.total_price) / max(1, len(agreement.milestones))
     amount = round(alloc, 2)
 
-    buyer_email = project.client_email or (project.buyer.email if project.buyer else "buyer@prooflens.com")
-    buyer_name = project.buyer.full_name if project.buyer else "ProofLens Client"
-    seller_email = project.seller.email if project.seller else "seller@prooflens.com"
-    seller_name = project.seller.full_name if project.seller else "Service Contractor"
-    invoice_data = await paypal_service.create_and_finalize_milestone_invoice(
-        project_id=project_id,
-        milestone_index=milestone_index,
-        milestone_title=ms.get("title", f"Milestone #{milestone_index+1}"),
-        milestone_description=ms.get("description", "Deliverable verified"),
-        amount=amount,
-        currency="USD",
-        buyer_email=buyer_email,
-        buyer_name=buyer_name,
-        seller_email=seller_email,
-        seller_name=seller_name,
-        capture_id=capture_id
-    )
-    invoice_data = dict(invoice_data)
-    invoice_data.setdefault("project_id", project_id)
-    invoice_data["milestone_index"] = milestone_index
-    invoice_data.setdefault("milestone_title", ms.get("title", f"Milestone #{milestone_index+1}"))
-
-    milestones = [dict(m) for m in agreement.milestones]
-    milestones[milestone_index]["invoice"] = invoice_data
-    milestones[milestone_index]["is_paid"] = True
-    if capture_id and not milestones[milestone_index].get("paypal_capture_id"):
-        milestones[milestone_index]["paypal_capture_id"] = capture_id
-    agreement.milestones = milestones
-    flag_modified(agreement, "milestones")
-
-    inv_record = _upsert_invoice_db_record(
+    invoice_data, invoice_error = await _ensure_milestone_invoice(
         db=db,
         project=project,
         agreement=agreement,
         milestone_index=milestone_index,
-        invoice_data=invoice_data,
+        capture_id=capture_id,
         amount=amount,
         currency="USD",
-        capture_id=capture_id,
-        buyer_email=buyer_email,
-        seller_email=seller_email,
-        milestone_title=ms.get("title"),
-        paid_at_override=ms.get("paid_at"),
+        timeout_seconds=20.0,
     )
-    if inv_record:
-        invoice_data = _serialize_invoice_record(inv_record, milestone_title=ms.get("title"))
+    if not invoice_data:
+        detail_msg = invoice_error or "Could not sync invoice with PayPal."
+        status_code = 504 if "timed out" in detail_msg.lower() else 502
+        raise HTTPException(status_code=status_code, detail=detail_msg)
+
+    saved_inv = (
+        db.query(models.Invoice)
+        .filter(
+            models.Invoice.project_id == project_id,
+            models.Invoice.milestone_index == milestone_index,
+        )
+        .order_by(models.Invoice.id.desc())
+        .first()
+    )
+    if saved_inv:
+        invoice_data = _serialize_invoice_record(saved_inv, milestone_title=ms.get("title"))
 
     return {"message": "Invoice generated successfully.", "invoice": invoice_data}
 

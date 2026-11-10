@@ -688,6 +688,250 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
         self.assertEqual(len(seen_payloads), 2)
         self.assertNotIn("email_address", seen_payloads[1].get("invoicer", {}))
 
+    def test_generate_invoice_timeout_returns_504_with_cors_headers(self):
+        import os
+        import auth_service
+        from main import _ensure_milestone_invoice
+
+        proj, agreement = self._create_project(
+            status=models.ProjectStatus.COMPLETED,
+            agreement_status="COMPLETED",
+            total_price=4000.0,
+            captured_amount=4000.0,
+            milestones=[
+                {
+                    "title": "Milestone 1",
+                    "description": "Core Execution",
+                    "price_allocation": 2000.0,
+                    "status": "approved",
+                    "is_paid": True,
+                    "paypal_capture_id": "CAP-T1",
+                },
+                {
+                    "title": "Milestone 2",
+                    "description": "Final Quality",
+                    "price_allocation": 2000.0,
+                    "status": "approved",
+                    "is_paid": True,
+                    "paypal_capture_id": "6L962102LU319562T",
+                },
+            ],
+        )
+
+        # 1) Direct async timeout enforcement inside _ensure_milestone_invoice
+        async def _stalled_paypal(*args, **kwargs):
+            await asyncio.sleep(1.5)
+            return {}
+
+        with patch("paypal_service.create_and_finalize_milestone_invoice", side_effect=_stalled_paypal):
+            inv_data, err_msg = asyncio.run(
+                _ensure_milestone_invoice(
+                    db=self.db,
+                    project=proj,
+                    agreement=agreement,
+                    milestone_index=1,
+                    capture_id="6L962102LU319562T",
+                    timeout_seconds=0.05,
+                )
+            )
+        self.assertIsNone(inv_data)
+        self.assertIsNotNone(err_msg)
+        self.assertIn("timed out", err_msg.lower())
+
+        # 2) Endpoint POST .../generate-invoice returns 504 + CORS headers (not unheaded proxy timeout)
+        buyer_token = auth_service.create_access_token(self.buyer.id, self.buyer.email, "buyer")
+        vercel_origin = "https://pay-pal-hackathon-phi.vercel.app"
+        with patch.dict(os.environ, {"ALLOW_INSECURE_TEST_AUTH": "0"}), patch(
+            "paypal_service.create_and_finalize_milestone_invoice",
+            new=AsyncMock(side_effect=asyncio.TimeoutError()),
+        ):
+            resp = self.client.post(
+                f"/api/projects/{proj.id}/milestones/1/generate-invoice",
+                headers={"Authorization": f"Bearer {buyer_token}", "Origin": vercel_origin},
+            )
+        self.assertEqual(resp.status_code, 504, resp.text)
+        self.assertIn("timed out", resp.json()["detail"].lower())
+        self.assertEqual(resp.headers.get("access-control-allow-origin"), vercel_origin)
+
+    def test_concurrent_invoice_sync_is_single_flight_and_deduplicates_paypal_calls(self):
+        import httpx
+
+        proj, _ = self._create_project(
+            status=models.ProjectStatus.COMPLETED,
+            agreement_status="COMPLETED",
+            total_price=4000.0,
+            captured_amount=4000.0,
+            milestones=[
+                {
+                    "title": "Milestone 1",
+                    "description": "Core Execution",
+                    "price_allocation": 2000.0,
+                    "status": "approved",
+                    "is_paid": True,
+                    "paypal_capture_id": "CAP-M1-DONE",
+                },
+                {
+                    "title": "Milestone 2",
+                    "description": "Final Quality",
+                    "price_allocation": 2000.0,
+                    "status": "approved",
+                    "is_paid": True,
+                    "paypal_capture_id": "6L962102LU319562T",
+                },
+            ],
+        )
+        m0_inv = models.Invoice(
+            project_id=proj.id,
+            milestone_index=0,
+            paypal_invoice_id="INV2-M0-LOCKED",
+            invoice_number="0036",
+            invoice_url="https://www.sandbox.paypal.com/invoice/p/#INV2-M0-LOCKED",
+            amount=2000.0,
+            currency="USD",
+            status="PAID",
+            paypal_capture_id="CAP-M1-DONE",
+        )
+        self.db.add(m0_inv)
+        self.db.commit()
+
+        call_count = 0
+
+        async def _slow_once(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0.15)
+            return {
+                "paypal_invoice_id": "INV2-SINGLE-FLIGHT-M1",
+                "invoice_number": "PL-SF-001",
+                "invoice_url": "https://www.sandbox.paypal.com/invoice/p/#INV2-SINGLE-FLIGHT-M1",
+                "status": "PAID",
+                "amount": 2000.0,
+                "currency": "USD",
+                "paypal_capture_id": "6L962102LU319562T",
+                "payment_record_id": "PAY-SF-001",
+                "qr_code_base64": None,
+                "issued_at": "2026-11-10T13:30:00Z",
+            }
+
+        async def _run_concurrent():
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+                return await asyncio.gather(
+                    ac.get(f"/api/projects/{proj.id}/invoices"),
+                    ac.post(f"/api/projects/{proj.id}/milestones/1/generate-invoice", json={}),
+                )
+
+        with patch("paypal_service.create_and_finalize_milestone_invoice", side_effect=_slow_once):
+            get_resp, post_resp = asyncio.run(_run_concurrent())
+
+        self.assertEqual(get_resp.status_code, 200, get_resp.text)
+        self.assertEqual(post_resp.status_code, 200, post_resp.text)
+        self.assertEqual(call_count, 1, "Single-flight lock must deduplicate concurrent GET + POST invoice syncs")
+
+        post_inv = post_resp.json()["invoice"]
+        self.assertEqual(post_inv["paypal_invoice_id"], "INV2-SINGLE-FLIGHT-M1")
+        self.assertEqual(post_inv["invoice_url"], "https://www.sandbox.paypal.com/invoice/p/#INV2-SINGLE-FLIGHT-M1")
+
+        m1_rows = (
+            self.db.query(models.Invoice)
+            .filter(models.Invoice.project_id == proj.id, models.Invoice.milestone_index == 1)
+            .all()
+        )
+        self.assertEqual(len(m1_rows), 1)
+
+    def test_merchant_email_cache_and_sequence_cooldown_skip_redundant_roundtrips(self):
+        import os
+        import httpx
+
+        recorded_requests = []
+        RealAsyncClient = httpx.AsyncClient
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            recorded_requests.append(path)
+            if path.endswith("/v2/invoicing/generate-next-invoice-number"):
+                return httpx.Response(500, json={"name": "INTERNAL_SERVER_ERROR", "message": "Sequence unavailable"})
+            if path.endswith("/v1/identity/oauth2/userinfo"):
+                return httpx.Response(200, json={"emails": [{"primary": True, "value": "merchant-cached@example.com"}]})
+            if path.endswith("/v2/invoicing/invoices"):
+                return httpx.Response(201, json={"id": "INV2-POOLED-001"})
+            if path.endswith("/send"):
+                return httpx.Response(202, json={"href": "https://www.sandbox.paypal.com/invoice/p/#INV2-POOLED-001"})
+            if path.endswith("/payments"):
+                return httpx.Response(200, json={"payment_id": "PAY-POOLED-001"})
+            if path.endswith("/generate-qr-code"):
+                return httpx.Response(404, json={"message": "skip"})
+            return httpx.Response(404, json={"path": path})
+
+        transport = httpx.MockTransport(_handler)
+
+        def _mock_client_factory(*args, **kwargs):
+            kwargs["transport"] = transport
+            return RealAsyncClient(*args, **kwargs)
+
+        prev_email_cache = (
+            paypal_service._cached_merchant_email,
+            paypal_service._merchant_email_cache_set,
+            paypal_service._merchant_email_expires_at,
+            paypal_service._seq_num_cooldown_until,
+        )
+        try:
+            paypal_service._cached_merchant_email = None
+            paypal_service._merchant_email_cache_set = False
+            paypal_service._merchant_email_expires_at = None
+            paypal_service._seq_num_cooldown_until = None
+
+            with patch("paypal_service.APP_ENV", "development"), patch.dict(
+                os.environ, {"PAYPAL_MERCHANT_EMAIL": ""}, clear=False
+            ), patch(
+                "paypal_service.get_paypal_headers",
+                new=AsyncMock(return_value={"Authorization": "Bearer TEST", "Content-Type": "application/json"}),
+            ), patch("paypal_service.httpx.AsyncClient", side_effect=_mock_client_factory):
+                res1 = asyncio.run(
+                    paypal_service.create_and_finalize_milestone_invoice(
+                        project_id=93,
+                        milestone_index=1,
+                        milestone_title="Final Delivery",
+                        milestone_description="Delivery",
+                        amount=2000.0,
+                        capture_id="6L962102LU319562T",
+                        buyer_email="buyer@example.com",
+                        seller_email="seller@example.com",
+                    )
+                )
+                first_call_paths = list(recorded_requests)
+                recorded_requests.clear()
+
+                res2 = asyncio.run(
+                    paypal_service.create_and_finalize_milestone_invoice(
+                        project_id=93,
+                        milestone_index=1,
+                        milestone_title="Final Delivery",
+                        milestone_description="Delivery",
+                        amount=2000.0,
+                        capture_id="6L962102LU319562T",
+                        buyer_email="buyer@example.com",
+                        seller_email="seller@example.com",
+                    )
+                )
+                second_call_paths = list(recorded_requests)
+
+            self.assertEqual(res1["seller_email"], "merchant-cached@example.com")
+            self.assertEqual(res2["seller_email"], "merchant-cached@example.com")
+            self.assertIn("/v2/invoicing/generate-next-invoice-number", first_call_paths)
+            self.assertIn("/v1/identity/oauth2/userinfo", first_call_paths)
+            # Second call skips both failing sequence generator and cached userinfo lookup
+            self.assertNotIn("/v2/invoicing/generate-next-invoice-number", second_call_paths)
+            self.assertNotIn("/v1/identity/oauth2/userinfo", second_call_paths)
+            self.assertTrue(res2["invoice_number"].startswith("PL-93-M2-"))
+        finally:
+            (
+                paypal_service._cached_merchant_email,
+                paypal_service._merchant_email_cache_set,
+                paypal_service._merchant_email_expires_at,
+                paypal_service._seq_num_cooldown_until,
+            ) = prev_email_cache
+
 
 if __name__ == "__main__":
     unittest.main()

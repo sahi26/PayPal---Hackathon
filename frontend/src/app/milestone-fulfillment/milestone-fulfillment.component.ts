@@ -1574,7 +1574,13 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
         },
         error: (err) => {
           this.syncingInvoiceIndex = null;
-          this.invoiceSyncError = err.error?.detail || err.message || 'Could not sync invoice with PayPal.';
+          if (err?.status === 0) {
+            this.invoiceSyncError = 'Could not reach the payment server in time (PayPal sync timed out or the backend was restarting). Please wait a few seconds and click Sync PayPal Invoice again.';
+          } else if (err?.status === 504) {
+            this.invoiceSyncError = err.error?.detail || 'PayPal invoicing timed out. Please click Sync PayPal Invoice again.';
+          } else {
+            this.invoiceSyncError = err.error?.detail || err.message || 'Could not sync invoice with PayPal.';
+          }
         }
       });
   }
