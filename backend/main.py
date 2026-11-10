@@ -10626,59 +10626,7 @@ def get_active_dispute(project_id: int, db: Session = Depends(get_db)):
             "has_dossier": bool(dispute.compiled_dossier),
             "pushed_to_paypal": dispute.pushed_to_paypal,
             "paypal_claim_id": dispute.paypal_claim_id,
-            "escalated_to_human_at": dispute.escalated_to_human_at.isoformat() if dispute.escalated_to_human_at else None,
-            "created_at": dispute.created_at.isoformat() if dispute.created_at else None
-        },
-        "project": {
-            "id": project.id,
-            "title": project.title,
-            "status": project.status.value if hasattr(project.status, "value") else str(project.status),
-            "total_price": project.total_price
-        },
-        "chat_history": chat_payload
-    }
-
-@app.post("/api/disputes/{project_id}/messages")
-def send_dispute_message(
-    project_id: int,
-    request: DisputeMessageRequest,
-    http_request: Request,
-    db: Session = Depends(get_db)
-):
-    """
-    POST /api/disputes/{project_id}/messages
-    Submits a new chat message, remedy proposal, or proof request in the internal dispute room.
-    """
-    dispute = db.query(models.DisputeRecord).filter(
-        models.DisputeRecord.project_id == project_id
-    ).order_by(models.DisputeRecord.id.desc()).first()
-
-    if not dispute:
-        raise HTTPException(status_code=404, detail="No active dispute found for this project.")
-
-    role_clean = http_request.state.user.role_type
-    sender_name = http_request.state.user.full_name or http_request.state.user.email
-
-    chat_msg = models.DisputeChatHistory(
-        dispute_id=dispute.id,
-        sender_role=role_clean,
-        sender_name=sender_name,
-        message=request.message,
-        proposal_type=request.proposal_type or "message",
-        meta_payload=request.meta_payload
-    )
-    db.add(chat_msg)
-    db.commit()
-    db.refresh(chat_msg)
-
-    return {
-        "message": "Message sent.",
-        "chat_item": {
-            "id": chat_msg.id,
-            "sender_role": chat_msg.sender_role,
-            "sender_name": chat_msg.sender_name,
-            "message": chat_msg.message,
-            "proposal_type": chat_msg.proposal_type,
+            "escalate
             "created_at": chat_msg.created_at.isoformat() if chat_msg.created_at else None
         }
     }
