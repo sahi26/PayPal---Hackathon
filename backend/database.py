@@ -422,6 +422,10 @@ def run_migrations(target_engine):
                     models.Base.metadata.create_all(bind=target_engine, tables=[models.ScopeChangeRequest.__table__])
                 except Exception as e:
                     print(f"ScopeChangeRequest table migration notice: {e}")
+            else:
+                sc_cols = [c["name"] for c in inspector.get_columns("scope_change_requests")]
+                if "rejection_reason" not in sc_cols:
+                    _exec_ddl_candidates(conn, "ALTER TABLE scope_change_requests ADD COLUMN rejection_reason TEXT;")
 
             if "notifications" not in tables:
                 try:

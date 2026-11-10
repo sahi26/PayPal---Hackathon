@@ -23,6 +23,7 @@ export interface ScopeChangeItem {
   proposed_extra_cost: number;
   proposed_extra_days: number;
   status: 'DRAFT' | 'NEGOTIATING' | 'PENDING_FUNDS' | 'ACCEPTED' | 'REJECTED';
+  rejection_reason?: string;
   addendum_contract?: string;
   proposed_milestones?: ScopeMilestone[];
   chat_history?: Array<{
@@ -54,6 +55,7 @@ export class RevisionRoomComponent implements OnInit {
 
   @Output() closed = new EventEmitter<void>();
   @Output() scopeAccepted = new EventEmitter<any>();
+  @Output() scopeRejected = new EventEmitter<any>();
 
   Number = Number;
   isLoading = false;
@@ -61,6 +63,9 @@ export class RevisionRoomComponent implements OnInit {
   isSubmittingCounter = false;
   isAccepting = false;
   isAuthorizing = false;
+  isSubmittingRejection = false;
+  isRejectModalOpen = false;
+  rejectionReasonText = '';
 
   activeScopeChange: ScopeChangeItem | null = null;
   newDescription: string = '';
@@ -224,6 +229,65 @@ export class RevisionRoomComponent implements OnInit {
         alert('Failed to confirm PayPal authorization: ' + (err.error?.detail || err.message));
       }
     });
+  }
+
+  openRejectModal(): void {
+    this.rejectionReasonText = '';
+    this.isRejectModalOpen = true;
+  }
+
+  closeRejectModal(): void {
+    this.isRejectModalOpen = false;
+    this.rejectionReasonText = '';
+  }
+
+  addQuickReason(reason: string): void {
+    if (!this.rejectionReasonText) {
+      this.rejectionReasonText = reason;
+    } else if (!this.rejectionReasonText.includes(reason)) {
+      this.rejectionReasonText = this.rejectionReasonText.trim() + ' ' + reason;
+    }
+  }
+
+  submitScopeRejection(): void {
+    const trimmed = this.rejectionReasonText.trim();
+    if (!trimmed || !this.activeScopeChange || !this.projectId) return;
+
+    this.isSubmittingRejection = true;
+    const payload = {
+      scope_change_id: this.activeScopeChange.id,
+      reason: trimmed,
+      user_email: this.getCurrentUserEmail()
+    };
+
+    this.http.post<any>(
+      `${API_BASE_URL}/api/projects/${this.projectId}/scope-change/reject`,
+      payload
+    ).subscribe({
+      next: (res) => {
+        this.isSubmittingRejection = false;
+        this.isRejectModalOpen = false;
+        if (res.scope_change) {
+          this.activeScopeChange = res.scope_change;
+        } else if (this.activeScopeChange) {
+          this.activeScopeChange.status = 'REJECTED';
+          this.activeScopeChange.rejection_reason = trimmed;
+        }
+        this.scopeRejected.emit(res);
+        alert('Scope revision terms rejected. Your detailed feedback was sent to the buyer.');
+      },
+      error: (err) => {
+        this.isSubmittingRejection = false;
+        alert('Failed to reject scope revision: ' + (err.error?.detail || err.message));
+      }
+    });
+  }
+
+  resetForNewRequest(): void {
+    this.activeScopeChange = null;
+    this.newDescription = '';
+    this.initExtraCost = 0;
+    this.initExtraDays = 0;
   }
 
   toggleAddendumView(): void {

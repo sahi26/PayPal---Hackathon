@@ -1871,3 +1871,129 @@ button svg,
     max-width: 100%;
   }
 }
+
+/* ==========================================================================
+   EXECUTIVE CONTRACT ACTION BUTTONS: REJECT & ACCEPT (SHARED ACROSS ROOMS)
+   ========================================================================== */
+.btn-corporate-reject {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  min-height: 44px;
+  background: #FFFFFF;
+  color: #DC2626;
+  border: 1.5px solid #FCA5A5;
+  padding: 0.65rem 1.35rem;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(220, 38, 38, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+}
+
+.btn-corporate-reject svg {
+  flex-shrink: 0;
+  stroke: currentColor;
+  transition: transform 0.2s ease;
+}
+
+.btn-corporate-reject:hover:not(:disabled) {
+  background: linear-gradient(180deg, #FEF2F2 0%, #FEE2E2 100%);
+  border-color: #EF4444;
+  color: #B91C1C;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(220, 38, 38, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.btn-corporate-reject:hover:not(:disabled) svg {
+  transform: scale(1.1);
+}
+
+.btn-corporate-reject:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+  background: #FECACA;
+  border-color: #DC2626;
+  box-shadow: 0 1px 2px rgba(220, 38, 38, 0.15);
+}
+
+.btn-corporate-reject:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+  border-color: #E2E8F0;
+  color: #94A3B8;
+  background: #F8FAFC;
+}
+
+.btn-corporate-accept {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  min-height: 44px;
+  background: linear-gradient(180deg, #10B981 0%, #059669 100%);
+  color: #ffffff;
+  border: 1px solid rgba(4, 120, 87, 0.4);
+  padding: 0.65rem 1.45rem;
+  border-radius: 10px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 3px 10px rgba(16, 185, 129, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+}
+
+.btn-corporate-accept svg {
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+
+.btn-corporate-accept:hover:not(:disabled) {
+  background: linear-gradient(180deg, #059669 0%, #047857 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 5px 16px rgba(16, 185, 129, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.btn-corporate-accept:hover:not(:disabled) svg {
+  transform: scale(1.1);
+}
+
+.btn-corporate-accept:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+  background: #047857;
+  box-shadow: 0 1px 3px rgba(16, 185, 129, 0.3);
+}
+
+.btn-corporate-accept:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+  background: #94A3B8;
+  border-color: #CBD5E1;
+}
+
+.btn-spinner {
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: corporateSpin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes corporateSpin {
+  to { transform: rotate(360deg); }
+}

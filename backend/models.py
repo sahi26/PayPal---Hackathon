@@ -232,6 +232,7 @@ class ScopeChangeRequest(Base):
     proposed_extra_cost = Column(Float, default=0.0)
     proposed_extra_days = Column(Integer, default=0)
     status = Column(String(50), default=ScopeChangeStatus.NEGOTIATING.value) # DRAFT, NEGOTIATING, PENDING_FUNDS, ACCEPTED, REJECTED
+    rejection_reason = Column(Text, nullable=True)
     
     addendum_contract = Column(Text, nullable=True)
     proposed_milestones = Column(JSON, default=list, nullable=True)

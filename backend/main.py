@@ -134,7 +134,7 @@ SELLER_ONLY_ROUTES = (
     re.compile(r"^/api/milestones/[^/]+/submit-evidence$"),
     re.compile(r"^/api/projects/\d+/track$"),
     re.compile(r"^/api/projects/\d+/(?:accept|reject)$"),
-    re.compile(r"^/api/projects/\d+/scope-change/accept$"),
+    re.compile(r"^/api/projects/\d+/scope-change/(?:accept|reject)$"),
     re.compile(r"^/api/contractor/active-alerts$"),
 )
 
@@ -665,6 +665,11 @@ class ScopeChangeNegotiateRequest(BaseModel):
     message: Optional[str] = None
     proposed_extra_cost: Optional[float] = None
     proposed_extra_days: Optional[int] = None
+
+class ScopeChangeRejectRequest(BaseModel):
+    scope_change_id: Optional[int] = None
+    reason: str
+    user_email: Optional[str] = None
 
 class ScopeChangeAcceptRequest(BaseModel):
     scope_change_id: Optional[int] = None
@@ -3334,6 +3339,7 @@ def format_scope_change(sc: Optional[models.ScopeChangeRequest]) -> Optional[Dic
         "proposed_extra_cost": float(sc.proposed_extra_cost or 0.0),
         "proposed_extra_days": int(sc.proposed_extra_days or 0),
         "status": sc.status,
+        "rejection_reason": getattr(sc, "rejection_reason", None),
         "addendum_contract": sc.addendum_contract,
         "proposed_milestones": sc.proposed_milestones or [],
         "chat_history": sc.chat_history or [],
@@ -5108,6 +5114,102 @@ async def accept_scope_change(
             },
             "milestones": combined_milestones
         }
+
+@app.post("/api/projects/{project_id}/scope-change/reject")
+async def reject_scope_change(
+    project_id: int,
+    request: ScopeChangeRejectRequest,
+    http_request: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    POST /api/projects/{project_id}/scope-change/reject
+    Contractor rejects the proposed scope revision and provides detailed feedback.
+    Transitions scope change request status to REJECTED, records rejection feedback in chat_history,
+    and alerts the buyer so they can adjust the agreement or withdraw the request.
+    """
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    reason_text = (request.reason or "").strip()
+    if not reason_text:
+        raise HTTPException(status_code=400, detail="Rejection reason cannot be empty.")
+
+    if request.scope_change_id:
+        scope_change = db.query(models.ScopeChangeRequest).filter(
+            models.ScopeChangeRequest.id == request.scope_change_id,
+            models.ScopeChangeRequest.project_id == project.id
+        ).first()
+    else:
+        scope_change = db.query(models.ScopeChangeRequest).filter(
+            models.ScopeChangeRequest.project_id == project.id,
+            models.ScopeChangeRequest.status.in_(["NEGOTIATING", "PENDING_FUNDS", "DRAFT"])
+        ).order_by(models.ScopeChangeRequest.id.desc()).first()
+
+    if not scope_change:
+        raise HTTPException(status_code=404, detail="Active scope change request not found")
+
+    buyer_emails = {
+        (project.buyer.email if project.buyer else "").lower(),
+        (project.client_email or "").lower()
+    }
+    seller_emails = {
+        (project.seller.email if project.seller else "").lower()
+    }
+    valid_participants = (buyer_emails | seller_emails) - {""}
+
+    caller_user = getattr(http_request.state, "user", None)
+    caller_email = (caller_user.email.lower() if caller_user and hasattr(caller_user, "email") else "")
+    if request.user_email and (not caller_email or request.user_email.lower() != caller_email):
+        if os.getenv("ALLOW_INSECURE_TEST_AUTH") == "1" or not caller_email:
+            user = db.query(models.User).filter(func.lower(models.User.email) == request.user_email.lower()).first()
+            if user:
+                caller_user = user
+                caller_email = user.email.lower()
+
+    if caller_email and valid_participants and caller_email not in valid_participants:
+        raise HTTPException(status_code=403, detail="Only assigned project participants can reject this scope revision.")
+
+    if scope_change.status not in [models.ScopeChangeStatus.NEGOTIATING.value, models.ScopeChangeStatus.PENDING_FUNDS.value, models.ScopeChangeStatus.DRAFT.value]:
+        raise HTTPException(status_code=409, detail=f"This scope revision cannot be rejected (current status: {scope_change.status}).")
+
+    scope_change.status = models.ScopeChangeStatus.REJECTED.value
+    scope_change.rejection_reason = reason_text
+
+    chat = list(scope_change.chat_history or [])
+    sender_name = (caller_user.full_name or caller_user.email) if caller_user else "Contractor"
+    chat.append({
+        "sender": "seller",
+        "sender_name": sender_name,
+        "message": f"SCOPE REVISION REJECTED: {reason_text}",
+        "proposed_extra_cost": float(scope_change.proposed_extra_cost or 0.0),
+        "proposed_extra_days": int(scope_change.proposed_extra_days or 0),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    scope_change.chat_history = chat
+    flag_modified(scope_change, "chat_history")
+
+    db.commit()
+    db.refresh(scope_change)
+
+    create_system_notification(
+        db=db,
+        user_id=project.buyer_id,
+        title="Seller Declined Scope Revision",
+        message=f"The contractor declined the proposed scope revision for '{project.title}': {reason_text}",
+        type="SCOPE_CHANGE_REJECTED",
+        project_id=project.id,
+        action_url=f"/project/{project.id}/fulfillment?role=buyer&scope_change=1",
+        action_data={"project_id": project.id, "scope_change_id": scope_change.id, "status": "REJECTED", "reason": reason_text},
+        fallback_role="buyer"
+    )
+
+    return {
+        "status": "REJECTED",
+        "message": "Scope revision declined and feedback sent to buyer.",
+        "scope_change": format_scope_change(scope_change)
+    }
 
 @app.post("/api/projects/{project_id}/scope-change/authorize-funds")
 async def authorize_scope_funds(

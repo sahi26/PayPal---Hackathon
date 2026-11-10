@@ -664,6 +664,12 @@ export class NegotiationRoomComponent implements OnInit {
     this.fetchProject();
   }
 
+  onScopeChangeRejected(event: any) {
+    this.showRevisionRoom = false;
+    this.fetchActiveScopeChange();
+    this.fetchProject();
+  }
+
   getEffectiveProjectDeadline(): string {
     const msList = this.projectData?.agreement?.milestones;
     if (msList && Array.isArray(msList) && msList.length > 0) {

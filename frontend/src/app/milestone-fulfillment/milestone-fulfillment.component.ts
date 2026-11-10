@@ -905,6 +905,11 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
     this.fetchProject();
   }
 
+  onScopeChangeRejected(event: any) {
+    this.closeRevisionRoom();
+    this.fetchProject();
+  }
+
   getEffectiveProjectDeadline(): string {
     const msList = this.milestones?.length ? this.milestones : this.projectData?.agreement?.milestones;
     if (msList && Array.isArray(msList) && msList.length > 0) {
