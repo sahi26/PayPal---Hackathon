@@ -45,6 +45,7 @@ if APP_ENV == "production":
 _cached_token: Optional[str] = None
 _token_expires_at: Optional[datetime.datetime] = None
 _cached_token_type = "Bearer"
+PAYPAL_HTTP_TIMEOUT = httpx.Timeout(25.0, connect=10.0)
 
 def has_network_connection() -> bool:
     """Fast check whether outbound network is reachable, avoiding long HTTP timeouts when sandboxed/offline."""
@@ -82,7 +83,7 @@ async def get_paypal_access_token(force_refresh: bool = False) -> str:
     token_url = f"{PAYPAL_API_BASE}/v1/oauth2/token"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.post(
                 token_url,
                 auth=(PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET),
@@ -157,19 +158,21 @@ async def create_order_for_authorize(
     headers["PayPal-Request-Id"] = str(uuid.uuid4())
 
     formatted_amount = f"{amount:.2f}"
+    raw_description = description or (f"ProofLens Escrow Authorization for Project #{project_id}" if project_id else "ProofLens Escrow Authorization")
+    unit: Dict[str, Any] = {
+        "reference_id": f"project_{project_id}" if project_id else "default_unit",
+        "description": str(raw_description)[:127],
+        "amount": {
+            "currency_code": currency,
+            "value": formatted_amount,
+        },
+    }
+    if project_id is not None:
+        unit["custom_id"] = str(project_id)
+
     payload: Dict[str, Any] = {
         "intent": "AUTHORIZE",
-        "purchase_units": [
-            {
-                "reference_id": f"project_{project_id}" if project_id else "default_unit",
-                "description": description or f"ProofLens Escrow Authorization for Project #{project_id}",
-                "custom_id": str(project_id) if project_id else None,
-                "amount": {
-                    "currency_code": currency,
-                    "value": formatted_amount,
-                },
-            }
-        ],
+        "purchase_units": [unit],
     }
 
     if return_url or cancel_url:
@@ -183,7 +186,7 @@ async def create_order_for_authorize(
     url = f"{PAYPAL_API_BASE}/v2/checkout/orders"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.post(url, json=payload, headers=headers)
             if response.status_code == 401:
                 fresh_headers = await get_paypal_headers(force_refresh=True)
@@ -207,8 +210,11 @@ async def get_order_details(order_id: str) -> Dict[str, Any]:
     url = f"{PAYPAL_API_BASE}/v2/checkout/orders/{order_id}"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.get(url, headers=headers)
+            if response.status_code == 401:
+                fresh_headers = await get_paypal_headers(force_refresh=True)
+                response = await client.get(url, headers=fresh_headers)
             if response.status_code == 200:
                 return response.json()
             raise HTTPException(
@@ -247,7 +253,7 @@ async def authorize_order(order_id: str) -> Dict[str, Any]:
     url = f"{PAYPAL_API_BASE}/v2/checkout/orders/{order_id}/authorize"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.post(url, headers=headers, json={})
             if response.status_code == 401:
                 fresh_headers = await get_paypal_headers(force_refresh=True)
@@ -312,7 +318,7 @@ async def capture_payment(
         }
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.post(url, json=payload, headers=headers)
             if response.status_code == 401:
                 fresh_headers = await get_paypal_headers(force_refresh=True)
@@ -388,7 +394,7 @@ async def reauthorize_payment(
     url = f"{PAYPAL_API_BASE}/v2/payments/authorizations/{authorization_id}/reauthorize"
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.post(url, json=payload, headers=headers)
             if response.status_code == 401:
                 fresh_headers = await get_paypal_headers(force_refresh=True)
@@ -430,7 +436,7 @@ async def get_authorization_details(authorization_id: str) -> Dict[str, Any]:
     url = f"{PAYPAL_API_BASE}/v2/payments/authorizations/{authorization_id}"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.get(url, headers=headers)
             if response.status_code == 200:
                 return response.json()
@@ -463,7 +469,7 @@ async def provide_dispute_evidence(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.post(url, json=payload, headers=headers)
             if response.status_code in (200, 201, 204):
                 return {
@@ -490,7 +496,7 @@ async def get_dispute_details(dispute_id: str) -> Dict[str, Any]:
     url = f"{PAYPAL_API_BASE}/v1/customer/disputes/{dispute_id}"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.get(url, headers=headers)
             if response.status_code == 200:
                 return response.json()
@@ -515,7 +521,7 @@ async def escalate_dispute_to_claim(dispute_id: str, note: str = "") -> Dict[str
     }
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.post(url, json=payload, headers=headers)
             if response.status_code in (200, 201, 204):
                 res_data = response.json() if response.text else {}
@@ -547,7 +553,7 @@ async def list_disputes() -> List[Dict[str, Any]]:
     url = f"{PAYPAL_API_BASE}/v1/customer/disputes"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             response = await client.get(url, headers=headers)
             if response.status_code == 200:
                 data = response.json()
@@ -575,7 +581,7 @@ async def get_invoicing_merchant_email() -> Optional[str]:
     headers = await get_paypal_headers()
     url = f"{PAYPAL_API_BASE}/v1/identity/oauth2/userinfo?schema=paypalv1.1"
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
@@ -600,7 +606,7 @@ async def generate_invoice_number() -> str:
     url = f"{PAYPAL_API_BASE}/v2/invoicing/generate-next-invoice-number"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers)
             if resp.status_code in (200, 201):
                 invoice_number = resp.json().get("invoice_number")
@@ -624,7 +630,7 @@ async def create_draft_invoice(invoice_payload: Dict[str, Any]) -> Dict[str, Any
     url = f"{PAYPAL_API_BASE}/v2/invoicing/invoices"
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=invoice_payload)
             if resp.status_code in (200, 201):
                 data = resp.json()
@@ -651,7 +657,7 @@ async def send_invoice(invoice_id: str, send_to_recipient: bool = False) -> Dict
     url = f"{PAYPAL_API_BASE}/v2/invoicing/invoices/{invoice_id}/send"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json={"send_to_recipient": send_to_recipient})
             if resp.status_code in (200, 202):
                 data = resp.json() if resp.content else {}
@@ -704,7 +710,7 @@ async def record_invoice_payment(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code in (200, 201):
                 return resp.json() if resp.content else {"confirmed": True}
@@ -724,7 +730,7 @@ async def get_invoice_details(invoice_id: str) -> Dict[str, Any]:
     url = f"{PAYPAL_API_BASE}/v2/invoicing/invoices/{invoice_id}"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
                 return resp.json()
@@ -747,7 +753,7 @@ async def generate_invoice_qr_code(invoice_id: str) -> Optional[str]:
     url = f"{PAYPAL_API_BASE}/v2/invoicing/invoices/{invoice_id}/generate-qr-code"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json={"width": 300, "height": 300})
             if resp.status_code == 200:
                 content = resp.content
@@ -939,7 +945,7 @@ async def get_paypal_balances() -> Dict[str, Any]:
     headers = await get_paypal_headers()
     url = f"{PAYPAL_API_BASE}/v1/reporting/balances"
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.get(url, headers=headers)
             if resp.status_code != 200:
                 raise HTTPException(status_code=502, detail="PayPal balance lookup failed.")
@@ -976,7 +982,7 @@ async def get_paypal_transactions(
 
     url = f"{PAYPAL_API_BASE}/v1/reporting/transactions?start_date={start_date}&end_date={end_date}&fields={fields}&page_size={page_size}"
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
                 return resp.json()
@@ -1003,7 +1009,7 @@ async def void_authorization(authorization_id: str, note: Optional[str] = None) 
     url = f"{PAYPAL_API_BASE}/v2/payments/authorizations/{authorization_id}/void"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers)
             if resp.status_code in (200, 204):
                 return {"status": "VOIDED", "authorization_id": authorization_id}
@@ -1052,7 +1058,7 @@ async def refund_capture(
         payload["note_to_payer"] = note_to_payer
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=payload if payload else None)
             if resp.status_code in (200, 201):
                 data = resp.json()
@@ -1102,7 +1108,7 @@ async def add_order_tracking(
         payload["capture_id"] = capture_id
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code in (200, 201):
                 return resp.json() if resp.content else {"status": "TRACKING_ADDED"}
@@ -1149,7 +1155,7 @@ async def create_payout(
     if APP_ENV == "production":
         headers["PayPal-Request-Id"] = sender_batch_id
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
                 resp = await client.post(url, headers=headers, json=payload)
                 if resp.status_code not in (200, 201):
                     raise HTTPException(status_code=502, detail="PayPal payout request failed.")
@@ -1164,7 +1170,7 @@ async def create_payout(
 
     try:
         if has_network_connection() and PAYPAL_CLIENT_ID and not headers.get("Authorization", "").startswith("Bearer MOCK_"):
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
                 resp = await client.post(url, headers=headers, json=payload)
                 if resp.status_code in (200, 201):
                     return resp.json()
@@ -1239,7 +1245,7 @@ async def verify_webhook_signature(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=PAYPAL_HTTP_TIMEOUT) as client:
             resp = await client.post(
                 verify_url,
                 json=payload,

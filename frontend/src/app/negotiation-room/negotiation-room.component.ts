@@ -442,17 +442,14 @@ export class NegotiationRoomComponent implements OnInit {
   }
 
   authorizeEscrowDeposit() {
-    const approvalUrl = this.getPayPalApprovalUrl();
-    if (approvalUrl) {
-      window.location.href = approvalUrl;
-      return;
-    }
+    if (this.isAccepting || !this.projectId) return;
 
     this.isAccepting = true;
     this.http.post<any>(`${API_BASE_URL}/api/payments/authorize`, {
       project_id: this.projectId,
       milestone_index: 0,
       currency: 'USD',
+      force_new: true,
       return_url: `${window.location.origin}/project/${this.projectId}/fulfillment?role=buyer`,
       cancel_url: `${window.location.origin}/project/${this.projectId}/fulfillment?role=buyer&paypal_cancelled=1`
     }).subscribe({
@@ -466,7 +463,10 @@ export class NegotiationRoomComponent implements OnInit {
       },
       error: (err) => {
         this.isAccepting = false;
-        alert('Failed to launch PayPal escrow authorization: ' + (err.error?.detail || err.message));
+        const msg = err.status === 0
+          ? 'Could not reach the payment server cleanly (the server may be waking up or PayPal timed out). Please wait a few seconds and try again.'
+          : (err.error?.detail || err.message || 'Unknown error');
+        alert('Failed to launch PayPal escrow authorization: ' + msg);
       }
     });
   }
@@ -475,7 +475,7 @@ export class NegotiationRoomComponent implements OnInit {
     const projectStatus = (this.projectData?.project?.status || '').toLowerCase();
     if (['active', 'warranty_period', 'completed'].includes(projectStatus)) return true;
     const p = this.projectData?.payment;
-    if (!p || Number(p.milestone_index) !== 0) return false;
+    if (!p || p.milestone_index == null || Number(p.milestone_index) !== 0) return false;
     const s = (p.status || '').toLowerCase();
     return s === 'authorized' || s === 'reauthorized';
   }

@@ -115,7 +115,7 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
         }
       }
       const token = q['token'];
-      if (token && !this.isConfirmingAuth) {
+      if (token && q['paypal_cancelled'] !== '1' && !this.isConfirmingAuth) {
         this.confirmPayPalEscrowHold(token);
       }
       if (q['paypal_cancelled'] === '1') {
@@ -166,7 +166,7 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
 
   isEscrowAuthorized(): boolean {
     const p = this.projectData?.payment;
-    if (!p || Number(p.milestone_index) !== this.selectedMilestoneIndex) return false;
+    if (!p || p.milestone_index == null || Number(p.milestone_index) !== this.selectedMilestoneIndex) return false;
     const s = (p.status || '').toLowerCase();
     return s === 'authorized' || s === 'reauthorized';
   }
@@ -238,6 +238,7 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
       project_id: this.projectId,
       milestone_index: milestoneIndex,
       currency: 'USD',
+      force_new: true,
       return_url: returnUrl,
       cancel_url: cancelUrl
     }).subscribe({
@@ -251,7 +252,10 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
       },
       error: (err) => {
         this.isAuthorizingMilestone = false;
-        alert(err.error?.detail || err.message || 'Could not start milestone escrow authorization.');
+        const msg = err.status === 0
+          ? 'Could not reach the payment server cleanly (the server may be waking up or PayPal timed out). Please wait a few seconds and try again.'
+          : (err.error?.detail || err.message || 'Could not start milestone escrow authorization.');
+        alert(msg);
       }
     });
   }

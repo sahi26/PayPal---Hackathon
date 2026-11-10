@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import json
 import secrets
@@ -85,14 +86,6 @@ if APP_ENV == "production":
         raise RuntimeError("ADMIN_API_TOKEN must contain at least 32 characters in production.")
     if not PAYPAL_REDIRECT_URI.startswith("https://"):
         raise RuntimeError("PAYPAL_REDIRECT_URI must use HTTPS in production.")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=FRONTEND_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 PUBLIC_API_PATHS = {
     "/api/auth/paypal-config",
@@ -234,20 +227,22 @@ async def require_authenticated_project_access(request: Request, call_next):
     scheme, _, token = authorization.partition(" ")
     user = None
     db_gen = None
-    override = app.dependency_overrides.get(get_db) or app.dependency_overrides.get(database.get_db)
-    if override:
-        try:
-            db_res = override()
-            if hasattr(db_res, "__next__"):
-                db_gen = db_res
-                db = next(db_gen)
-            else:
-                db = db_res
-        except Exception:
-            db = SessionLocal()
-    else:
-        db = SessionLocal()
+    db = None
     try:
+        override = app.dependency_overrides.get(get_db) or app.dependency_overrides.get(database.get_db)
+        if override:
+            try:
+                db_res = override()
+                if hasattr(db_res, "__next__"):
+                    db_gen = db_res
+                    db = next(db_gen)
+                else:
+                    db = db_res
+            except Exception:
+                db = SessionLocal()
+        else:
+            db = SessionLocal()
+
         if scheme.lower() == "bearer" and token:
             try:
                 claims = auth_service.decode_access_token(token)
@@ -347,21 +342,44 @@ async def require_authenticated_project_access(request: Request, call_next):
             db.expunge(user)
         except Exception:
             pass
+    except Exception as exc:
+        import logging
+        logging.getLogger("uvicorn.error").error(f"Auth middleware error on {request.method} {request.url.path}: {exc}", exc_info=True)
+        return _cors_json_response(500, {"detail": f"Internal server error: {str(exc)}"}, request)
     finally:
         if db_gen:
             try:
                 next(db_gen)
             except StopIteration:
                 pass
-        else:
+        elif db is not None:
             try:
                 db.rollback()
             except Exception:
                 pass
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                pass
 
     request.state.user = user
-    return await call_next(request)
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        import logging
+        logging.getLogger("uvicorn.error").error(f"Unhandled middleware error on {request.method} {request.url.path}: {exc}", exc_info=True)
+        return _cors_json_response(500, {"detail": f"Internal server error: {str(exc)}"}, request)
+
+
+# Register CORSMiddleware AFTER http middleware so Starlette runs CORS outermost on all responses.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=FRONTEND_ORIGINS,
+    allow_origin_regex=r"^https://pay-pal-hackathon[a-z0-9-]*\.vercel\.app$",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(Exception)
@@ -670,6 +688,7 @@ class AuthorizePaymentRequest(BaseModel):
     currency: str = "USD"
     return_url: Optional[str] = None
     cancel_url: Optional[str] = None
+    force_new: bool = False
 
 class CapturePaymentRequest(BaseModel):
     project_id: Optional[int] = None
@@ -3488,6 +3507,7 @@ def get_project_by_id(project_id: int, request: Request, db: Session = Depends(g
 
     payment_info = None
     paypal_approval_url = None
+    allow_legacy_full_order = os.getenv("ALLOW_INSECURE_TEST_AUTH") == "1"
     if payment:
         payment_status_str = payment.status.value if hasattr(payment.status, "value") else str(payment.status)
         approval_url_val = next(
@@ -3508,8 +3528,9 @@ def get_project_by_id(project_id: int, request: Request, db: Session = Depends(g
             "approval_url": approval_url_val
         }
         if payment.paypal_order_id and payment_status_str.lower() in ["created"]:
-            paypal_approval_url = approval_url_val
-    if not paypal_approval_url:
+            if payment.milestone_index is not None or allow_legacy_full_order:
+                paypal_approval_url = approval_url_val
+    if not paypal_approval_url and allow_legacy_full_order:
         paypal_approval_url = getattr(project, "paypal_approval_url", None)
 
     # Self-healing guard: If project is marked WARRANTY_PERIOD or COMPLETED, but has uncompleted milestones,
@@ -3772,6 +3793,10 @@ def join_project(invite_token: str, request: SellerJoinRequest, http_request: Re
         "seller_id": seller.id,
         "status": project.status
     }
+
+class RejectAgreementRequest(BaseModel):
+    reason: Optional[str] = "Contractor declined project invitation terms."
+    role: Optional[str] = "seller"
 
 @app.post("/api/projects/invite/{invite_token}/reject")
 async def reject_project_by_invite(
@@ -4291,7 +4316,7 @@ async def accept_project(project_id: int, db: Session = Depends(get_db)):
     approval_url = getattr(project, "paypal_approval_url", None)
     order_id = payment.paypal_order_id if payment else getattr(project, "paypal_order_id", None)
 
-    if not payment and project.total_price and float(project.total_price) > 0:
+    if os.getenv("ALLOW_INSECURE_TEST_AUTH") == "1" and not payment and project.total_price and float(project.total_price) > 0:
         try:
             return_url = f"{FRONTEND_URL}/project/{project.id}/fulfillment"
             cancel_url = f"{FRONTEND_URL}/project/{project.id}/negotiate"
@@ -4325,7 +4350,8 @@ async def accept_project(project_id: int, db: Session = Depends(get_db)):
         except Exception as ex:
             print(f"[WARN] Automatic escrow order creation notice: {ex}")
     elif payment and payment.paypal_order_id and not approval_url:
-        approval_url = f"https://www.sandbox.paypal.com/checkoutnow?token={payment.paypal_order_id}"
+        if payment.milestone_index is not None or os.getenv("ALLOW_INSECURE_TEST_AUTH") == "1":
+            approval_url = f"https://www.sandbox.paypal.com/checkoutnow?token={payment.paypal_order_id}"
 
     return {
         "project_id": project.id,
@@ -4334,12 +4360,6 @@ async def accept_project(project_id: int, db: Session = Depends(get_db)):
         "approval_url": approval_url,
         "paypal_order_id": order_id
     }
-
-
-
-class RejectAgreementRequest(BaseModel):
-    reason: str
-    role: Optional[str] = "seller"
 
 @app.post("/api/projects/{project_id}/reject")
 async def reject_project_agreement(
@@ -8557,6 +8577,7 @@ async def authorize_payment(
     if request.amount is not None and round(float(request.amount), 2) != milestone_amount:
         raise HTTPException(status_code=400, detail="Authorization amount must exactly match the milestone allocation.")
 
+    req_currency = (request.currency or "USD").upper()
     existing_payment = db.query(models.Payment).filter(
         models.Payment.project_id == project.id,
         models.Payment.milestone_index == milestone_index
@@ -8568,42 +8589,60 @@ async def authorize_payment(
     ]:
         raise HTTPException(status_code=409, detail="This milestone is already authorized.")
     if existing_payment and existing_payment.status == models.PaymentStatus.CREATED:
-        if round(float(existing_payment.amount or 0.0), 2) != milestone_amount:
-            raise HTTPException(status_code=409, detail="The pending PayPal order does not match the milestone allocation.")
-        if not existing_payment.paypal_order_id:
-            raise HTTPException(status_code=502, detail="PayPal API Error: Pending milestone order is missing its order ID.")
-        order_data = existing_payment.paypal_payload if isinstance(existing_payment.paypal_payload, dict) else {}
-        approval_url = next(
-            (link.get("href") for link in order_data.get("links", [])
-             if isinstance(link, dict) and link.get("rel") in ["approve", "payer-action"] and link.get("href")),
-            None
+        can_reuse = (
+            not request.force_new
+            and bool(existing_payment.paypal_order_id)
+            and round(float(existing_payment.amount or 0.0), 2) == milestone_amount
+            and (existing_payment.currency or "USD").upper() == req_currency
         )
-        if not approval_url:
-            order_data = await paypal_service.get_order_details(existing_payment.paypal_order_id)
-            approval_url = next(
-                (link.get("href") for link in order_data.get("links", [])
-                 if isinstance(link, dict) and link.get("rel") in ["approve", "payer-action"] and link.get("href")),
-                None
-            )
-            if not approval_url:
-                raise HTTPException(status_code=502, detail="PayPal API Error: Retrieved order response is missing its approval URL.")
-            existing_payment.paypal_payload = order_data
-            db.commit()
-        return {
-            "project_id": project.id,
-            "milestone_index": milestone_index,
-            "amount": existing_payment.amount,
-            "paypal_order_id": existing_payment.paypal_order_id,
-            "status": existing_payment.status.value,
-            "approval_url": approval_url
-        }
+        approval_url = None
+        if can_reuse:
+            order_id_str = existing_payment.paypal_order_id or ""
+            is_mock_order = order_id_str.startswith(("ORDER-TEST", "ORDER_TEST", "MOCK-"))
+            order_data = existing_payment.paypal_payload if isinstance(existing_payment.paypal_payload, dict) else {}
+            if not is_mock_order:
+                try:
+                    order_data = await paypal_service.get_order_details(order_id_str)
+                    if (order_data.get("status") or "").upper() not in ("CREATED", "PAYER_ACTION_REQUIRED"):
+                        can_reuse = False
+                except HTTPException:
+                    can_reuse = False
+            if can_reuse:
+                approval_url = next(
+                    (link.get("href") for link in order_data.get("links", [])
+                     if isinstance(link, dict) and link.get("rel") in ["approve", "payer-action"] and link.get("href")),
+                    None
+                )
+                if approval_url:
+                    existing_payment.paypal_payload = order_data
+                    db.commit()
+                    return {
+                        "project_id": project.id,
+                        "milestone_index": milestone_index,
+                        "amount": existing_payment.amount,
+                        "currency": req_currency,
+                        "paypal_order_id": existing_payment.paypal_order_id,
+                        "status": existing_payment.status.value,
+                        "approval_url": approval_url
+                    }
+
+        # Expire stale/declined/expired/superseded unpaid CREATED order rows before creating a fresh PayPal order
+        stale_created_payments = db.query(models.Payment).filter(
+            models.Payment.project_id == project.id,
+            models.Payment.milestone_index == milestone_index,
+            models.Payment.status == models.PaymentStatus.CREATED
+        ).all()
+        for sp in stale_created_payments:
+            sp.status = models.PaymentStatus.EXPIRED
+        db.commit()
 
     auth_amount = milestone_amount
+    milestone_title = (milestones[milestone_index].get("title") or project.title or "Milestone")
     order_data = await paypal_service.create_order_for_authorize(
         amount=auth_amount,
-        currency=request.currency,
+        currency=req_currency,
         project_id=project.id,
-        description=f"ProofLens Milestone {milestone_index + 1} Escrow: {milestones[milestone_index].get('title', project.title)}",
+        description=f"ProofLens Milestone {milestone_index + 1} Escrow: {milestone_title}"[:127],
         return_url=request.return_url,
         cancel_url=request.cancel_url
     )
@@ -8622,7 +8661,7 @@ async def authorize_payment(
         milestone_index=milestone_index,
         paypal_order_id=order_id,
         amount=auth_amount,
-        currency=request.currency,
+        currency=req_currency,
         status=models.PaymentStatus.CREATED,
         paypal_payload=order_data
     )
@@ -8631,14 +8670,14 @@ async def authorize_payment(
     db.refresh(payment)
 
     return {
-        "message": f"PayPal approval is required to authorize milestone {milestone_index + 1} for ${auth_amount:,.2f} {request.currency}.",
+        "message": f"PayPal approval is required to authorize milestone {milestone_index + 1} for ${auth_amount:,.2f} {req_currency}.",
         "payment_id": payment.id,
         "project_id": project.id,
         "milestone_index": milestone_index,
         "paypal_order_id": order_id,
         "authorization_id": None,
         "amount": auth_amount,
-        "currency": request.currency,
+        "currency": req_currency,
         "status": payment.status.value,
         "approval_url": approval_url,
         "before_evidence_verified": True

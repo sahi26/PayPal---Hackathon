@@ -80,11 +80,11 @@
                     <span>Go to Fulfillment Desk &rarr;</span>
                   </button>
                 } @else if (currentRole === 'buyer') {
-                  <button (click)="authorizeEscrowDeposit()" class="btn-corporate-accept" style="background: #0070ba; color: #ffffff;">
+                  <button type="button" (click)="authorizeEscrowDeposit()" [disabled]="isAccepting" class="btn-corporate-accept" style="background: #0070ba; color: #ffffff;">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 3.72a.641.641 0 0 1 .632-.544h7.521c3.155 0 5.487 1.096 5.807 4.168.32 3.072-1.745 5.568-4.664 6.27-.408.098-.795.158-1.168.188l-1.072 6.804a.641.641 0 0 1-.632.544l-3.292.187z"/>
                     </svg>
-                    <span>Authorize Milestone 1 via PayPal (${{ getFirstMilestoneAmount().toFixed(2) }}) &rarr;&rarr;</span>
+                    <span>@if (isAccepting) { Connecting to PayPal... } @else { Authorize Milestone 1 via PayPal (${{ getFirstMilestoneAmount().toFixed(2) }}) &rarr;&rarr; }</span>
                   </button>
                 } @else {
                   <div class="buyer-awaiting-badge">
