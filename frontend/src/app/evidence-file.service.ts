@@ -1,26 +1,49 @@
 import { Injectable, OnDestroy } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, catchError, map, of, shareReplay, throwError } from 'rxjs';
+import { Observable, catchError, map, of, shareReplay } from 'rxjs';
 import { API_BASE_URL } from './api.config';
 
 @Injectable({ providedIn: 'root' })
 export class EvidenceFileService implements OnDestroy {
   private readonly fileUrls = new Map<string, Observable<string>>();
   private readonly objectUrls = new Set<string>();
+  private readonly failedPaths = new Set<string>();
 
   constructor(private http: HttpClient) {}
+
+  private inferRasterImageMime(filename: string): string | null {
+    const clean = filename.split('?')[0].split('#')[0].toLowerCase();
+    if (clean.endsWith('.jpg') || clean.endsWith('.jpeg')) return 'image/jpeg';
+    if (clean.endsWith('.png')) return 'image/png';
+    if (clean.endsWith('.webp')) return 'image/webp';
+    if (clean.endsWith('.gif')) return 'image/gif';
+    if (clean.endsWith('.bmp')) return 'image/bmp';
+    return null;
+  }
+
+  retryFailed(): void {
+    if (this.failedPaths.size === 0) return;
+    this.failedPaths.forEach(p => this.fileUrls.delete(p));
+    this.failedPaths.clear();
+  }
 
   getFileUrl(filePath: string): Observable<string> {
     if (!filePath) {
       return of('');
     }
 
-    if (/^https?:\/\//i.test(filePath)) {
-      return of(filePath);
+    const trimmed = filePath.trim();
+    if (/^(?:https?:|data:|blob:)/i.test(trimmed)) {
+      return of(trimmed);
     }
 
-    const clean = filePath.replace(/^\/+/, '');
-    const filename = clean.startsWith('uploads/') ? clean.slice(8) : clean;
+    const clean = trimmed.replace(/^\/+/, '');
+    let filename = clean;
+    if (filename.startsWith('backend/uploads/')) {
+      filename = filename.slice('backend/uploads/'.length);
+    } else if (filename.startsWith('uploads/')) {
+      filename = filename.slice('uploads/'.length);
+    }
     if (!filename || filename.includes('\\') || filename.includes('/')) {
       return of('');
     }
@@ -46,14 +69,27 @@ export class EvidenceFileService implements OnDestroy {
       })
       .pipe(
         map(file => {
-          const objectUrl = URL.createObjectURL(file);
+          if (!file || file.size === 0) {
+            this.failedPaths.add(filePath);
+            return svgFallback;
+          }
+          let normalizedBlob = file;
+          if (!file.type || file.type === 'application/octet-stream') {
+            const inferred = this.inferRasterImageMime(filename);
+            if (inferred) {
+              normalizedBlob = new Blob([file], { type: inferred });
+            }
+          }
+          const objectUrl = URL.createObjectURL(normalizedBlob);
           this.objectUrls.add(objectUrl);
+          this.failedPaths.delete(filePath);
           return objectUrl;
         }),
-        shareReplay({ bufferSize: 1, refCount: false }),
         catchError(() => {
+          this.failedPaths.add(filePath);
           return of(svgFallback);
-        })
+        }),
+        shareReplay({ bufferSize: 1, refCount: false })
       );
 
     this.fileUrls.set(filePath, fileUrl);
@@ -64,5 +100,6 @@ export class EvidenceFileService implements OnDestroy {
     this.objectUrls.forEach(url => URL.revokeObjectURL(url));
     this.objectUrls.clear();
     this.fileUrls.clear();
+    this.failedPaths.clear();
   }
 }

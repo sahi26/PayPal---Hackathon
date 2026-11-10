@@ -965,6 +965,7 @@ export class NegotiationRoomComponent implements OnInit {
   // --- Cryptographic Evidence Desk Methods ---
   loadProjectEvidence() {
     if (!this.projectId) return;
+    this.evidenceFiles.retryFailed();
     this.http.get<any[]>(`${API_BASE_URL}/api/projects/${this.projectId}/evidence`)
       .subscribe({
         next: (data) => {

@@ -490,6 +490,7 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
 
   loadProjectEvidence() {
     if (!this.projectId) return;
+    this.evidenceFiles.retryFailed();
     this.http.get<any[]>(`${API_BASE_URL}/api/projects/${this.projectId}/evidence`)
       .subscribe({
         next: (data) => {
@@ -728,10 +729,13 @@ export class MilestoneFulfillmentComponent implements OnInit, OnDestroy {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
 
-  isPreviewableImage(path: string): boolean {
+  isPreviewableImage(path: string, mimeType?: string): boolean {
+    if (mimeType && /^image\/(?:jpeg|jpg|png|webp|gif|bmp|avif)$/i.test(mimeType.split(';')[0].trim())) {
+      return true;
+    }
     if (!path) return false;
-    const p = path.toLowerCase();
-    return p.endsWith('.png') || p.endsWith('.jpg') || p.endsWith('.jpeg') || p.endsWith('.webp') || p.endsWith('.svg');
+    const p = path.split('?')[0].split('#')[0].toLowerCase();
+    return p.endsWith('.png') || p.endsWith('.jpg') || p.endsWith('.jpeg') || p.endsWith('.webp') || p.endsWith('.gif') || p.endsWith('.bmp') || p.endsWith('.avif') || p.endsWith('.svg');
   }
 
   isWatermarkFlag(flag: string): boolean {

@@ -27,8 +27,9 @@ import string
 import httpx
 from dotenv import load_dotenv
 import hashlib
+import html
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.orm.attributes import flag_modified
@@ -62,6 +63,10 @@ UPLOAD_DIR = os.path.abspath(
     os.getenv("UPLOADS_DIR", os.path.join(os.path.dirname(__file__), "uploads"))
 )
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+LEGACY_REPO_UPLOAD_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "uploads")
+)
+MAX_DB_EVIDENCE_BYTES = 15 * 1024 * 1024  # Persist uploads <= 15MB in PostgreSQL across ephemeral restarts
 
 # --- CORS Middleware ---
 FRONTEND_ORIGINS = list(dict.fromkeys(
@@ -6261,11 +6266,53 @@ def run_ai_evidence_comparison(
         seller_location=seller_location
     )
 
-def create_upload_filename(original_filename: Optional[str]) -> str:
+def create_upload_filename(original_filename: Optional[str], content_type: Optional[str] = None) -> str:
     suffix = Path(os.path.basename(original_filename or "")).suffix.lower()
     if not re.fullmatch(r"\.[a-z0-9]{1,10}", suffix):
-        suffix = ""
+        ctype = (content_type or "").split(";", 1)[0].strip().lower()
+        if ctype == "image/jpg":
+            ctype = "image/jpeg"
+        suffix = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+            "image/gif": ".gif",
+            "image/bmp": ".bmp",
+            "image/svg+xml": ".svg",
+            "application/pdf": ".pdf",
+        }.get(ctype, "")
     return f"{uuid.uuid4()}{suffix}"
+
+
+def _resolve_evidence_media_type(evidence: models.Evidence, filename: str) -> str:
+    allowed_inline_types = {
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/gif",
+        "image/bmp",
+        "application/pdf",
+    }
+    raw_type = (evidence.mime_type or "").split(";", 1)[0].strip().lower()
+    if raw_type == "image/jpg":
+        raw_type = "image/jpeg"
+    if raw_type in allowed_inline_types:
+        return raw_type
+
+    if not raw_type or raw_type in ("application/octet-stream", "binary/octet-stream") or raw_type.endswith("/*"):
+        ext = Path(os.path.basename(evidence.original_filename or filename)).suffix.lower()
+        inferred = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+            ".gif": "image/gif",
+            ".bmp": "image/bmp",
+            ".pdf": "application/pdf",
+        }.get(ext)
+        if inferred:
+            return inferred
+    return "application/octet-stream"
 
 
 @app.get("/api/evidence/download/{filename}")
@@ -6277,10 +6324,12 @@ def download_evidence_file(filename: str, request: Request, db: Session = Depend
         or_(
             models.Evidence.file_path == f"/uploads/{filename}",
             models.Evidence.file_path == f"uploads/{filename}",
+            models.Evidence.file_path == f"backend/uploads/{filename}",
+            models.Evidence.file_path == f"/backend/uploads/{filename}",
             models.Evidence.file_path == filename,
             models.Evidence.file_path.endswith(f"/{filename}")
         )
-    ).first()
+    ).order_by(models.Evidence.id.desc()).first()
     if not evidence or not evidence.project:
         raise HTTPException(status_code=404, detail="Evidence file not found.")
 
@@ -6297,30 +6346,68 @@ def download_evidence_file(filename: str, request: Request, db: Session = Depend
         if not is_member:
             raise HTTPException(status_code=404, detail="Evidence file not found.")
 
+    content_type = _resolve_evidence_media_type(evidence, filename)
+    download_name = os.path.basename(evidence.original_filename or filename).replace("\r", "").replace("\n", "").replace('"', "")
+    disposition_type = "inline" if content_type != "application/octet-stream" else "attachment"
+    ascii_download_name = download_name.encode("ascii", "ignore").decode("ascii").strip() or filename
+    utf8_download_name = quote(download_name, safe="")
+    content_disposition = (
+        f'{disposition_type}; filename="{ascii_download_name}"'
+        if ascii_download_name == download_name
+        else f'{disposition_type}; filename="{ascii_download_name}"; filename*=utf-8\'\'{utf8_download_name}'
+    )
+
     upload_root = os.path.realpath(UPLOAD_DIR)
-    disk_path = os.path.realpath(os.path.join(upload_root, filename))
-    if os.path.commonpath([upload_root, disk_path]) == upload_root and os.path.isfile(disk_path):
-        content_type = (evidence.mime_type or "").split(";", 1)[0].strip().lower()
-        if content_type not in {"image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp", "application/pdf"}:
-            content_type = "application/octet-stream"
-        download_name = os.path.basename(evidence.original_filename or filename).replace("\r", "").replace("\n", "")
-        return FileResponse(
-            disk_path,
+    candidate_roots = [upload_root]
+    legacy_root = os.path.realpath(LEGACY_REPO_UPLOAD_DIR)
+    if legacy_root not in candidate_roots:
+        candidate_roots.append(legacy_root)
+
+    for root_dir in candidate_roots:
+        disk_path = os.path.realpath(os.path.join(root_dir, filename))
+        if os.path.commonpath([root_dir, disk_path]) == root_dir and os.path.isfile(disk_path):
+            return FileResponse(
+                disk_path,
+                media_type=content_type,
+                filename=download_name,
+                content_disposition_type=disposition_type,
+                headers={
+                    "Cache-Control": "private, no-store",
+                    "X-Content-Type-Options": "nosniff",
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, OPTIONS",
+                },
+            )
+
+    # Restore uploaded bytes from PostgreSQL when ephemeral Render disk storage has reset
+    db_bytes = evidence.file_data
+    if db_bytes:
+        raw_bytes = bytes(db_bytes)
+        primary_disk_path = os.path.realpath(os.path.join(upload_root, filename))
+        try:
+            if os.path.commonpath([upload_root, primary_disk_path]) == upload_root:
+                os.makedirs(upload_root, exist_ok=True)
+                with open(primary_disk_path, "wb") as cache_file:
+                    cache_file.write(raw_bytes)
+        except Exception:
+            pass
+        return Response(
+            content=raw_bytes,
             media_type=content_type,
-            filename=download_name,
             headers={
                 "Cache-Control": "private, no-store",
                 "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": content_disposition,
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Methods": "GET, OPTIONS",
             },
         )
 
-    # Fallback when physical file is unavailable (e.g. ephemeral Render storage reset):
-    # Return high-fidelity cryptographic audit SVG so image preview never breaks
-    hash_short = (evidence.file_hash or "SHA-256")[:16]
-    title_short = (project.title or "Project Deliverable")[:32]
-    from fastapi.responses import Response
+    # Fallback when neither disk cache nor DB blob is available (e.g. legacy uploads before DB persistence):
+    # Return valid XML SVG card (never use HTML-only named entities like &bull; in image/svg+xml)
+    hash_short = html.escape((evidence.file_hash or "SHA-256")[:16], quote=True)
+    title_short = html.escape((project.title or "Project Deliverable")[:32], quote=True)
+    score_val = evidence.ai_confidence_score if evidence.ai_confidence_score is not None else 100
     svg_content = f'''<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400">
         <defs>
             <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
@@ -6330,19 +6417,20 @@ def download_evidence_file(filename: str, request: Request, db: Session = Depend
         </defs>
         <rect width="600" height="400" fill="url(#bg)" rx="12"/>
         <rect x="16" y="16" width="568" height="368" fill="none" stroke="#10b981" stroke-width="2" stroke-dasharray="6,6" rx="8" opacity="0.6"/>
-        <circle cx="300" cy="130" r="40" fill="#10b981" opacity="0.15"/>
-        <path d="M284 130l11 11 22-22" fill="none" stroke="#10b981" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-        <text x="300" y="205" text-anchor="middle" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="18" font-weight="700">ProofLens Cryptographic Deliverable</text>
-        <text x="300" y="235" text-anchor="middle" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="13">{title_short} &bull; 100% Match Verified</text>
-        <rect x="150" y="260" width="300" height="34" rx="8" fill="#0284c7" opacity="0.2"/>
-        <text x="300" y="282" text-anchor="middle" fill="#38bdf8" font-family="ui-monospace, monospace" font-size="12" font-weight="600">SHA-256: {hash_short}...</text>
-        <text x="300" y="335" text-anchor="middle" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="11">Authoritative Server Timestamp &bull; Non-Custodial Vault</text>
+        <circle cx="300" cy="120" r="38" fill="#10b981" opacity="0.15"/>
+        <path d="M284 120l11 11 22-22" fill="none" stroke="#10b981" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="300" y="190" text-anchor="middle" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="18" font-weight="700">ProofLens Cryptographic Deliverable</text>
+        <text x="300" y="220" text-anchor="middle" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="13">{title_short} &#8226; {score_val}% Match</text>
+        <rect x="140" y="244" width="320" height="34" rx="8" fill="#0284c7" opacity="0.2"/>
+        <text x="300" y="266" text-anchor="middle" fill="#38bdf8" font-family="ui-monospace, monospace" font-size="12" font-weight="600">SHA-256: {hash_short}...</text>
+        <text x="300" y="314" text-anchor="middle" fill="#cbd5e1" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="11.5">Legacy preview unavailable after ephemeral server restart</text>
+        <text x="300" y="338" text-anchor="middle" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="11">Resubmit evidence to persist photo in DB &#8226; Non-Custodial Vault</text>
     </svg>'''
     return Response(
         content=svg_content,
         media_type="image/svg+xml",
         headers={
-            "Cache-Control": "public, max-age=86400",
+            "Cache-Control": "no-cache",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, OPTIONS",
         }
@@ -6497,10 +6585,12 @@ async def upload_evidence_batch(
                     status_code=400,
                     detail="400 Bad Request: Duplicate evidence detected"
                 )
+            if existing.file_data is None and len(file_content) <= MAX_DB_EVIDENCE_BYTES:
+                existing.file_data = file_content
             saved_items.append(existing)
             continue
 
-        safe_filename = create_upload_filename(file.filename)
+        safe_filename = create_upload_filename(file.filename, file.content_type)
         file_path = os.path.join(UPLOAD_DIR, safe_filename)
         with open(file_path, "wb") as f:
             f.write(file_content)
@@ -6557,6 +6647,7 @@ async def upload_evidence_batch(
             milestone_index=milestone_index,
             location=location,
             file_path=f"/uploads/{safe_filename}",
+            file_data=file_content if len(file_content) <= MAX_DB_EVIDENCE_BYTES else None,
             file_hash=file_hash,
             original_filename=file.filename or safe_filename,
             mime_type=file.content_type or "image/jpeg",
@@ -6888,7 +6979,7 @@ async def upload_evidence(
                     )
 
     # 4. Save to Disk
-    safe_filename = create_upload_filename(file.filename)
+    safe_filename = create_upload_filename(file.filename, file.content_type)
     file_path = os.path.join(UPLOAD_DIR, safe_filename)
     
     with open(file_path, "wb") as f:
@@ -6992,6 +7083,7 @@ async def upload_evidence(
         location=location,
         asset_url=asset_url,
         file_path=f"/uploads/{safe_filename}",
+        file_data=file_content if len(file_content) <= MAX_DB_EVIDENCE_BYTES else None,
         file_hash=file_hash,
         original_filename=file.filename or safe_filename,
         mime_type=file.content_type or "image/jpeg",
@@ -7346,10 +7438,12 @@ async def submit_milestone_evidence(
     analysis_notes = "Evidence submitted for milestone review."
     comp_details = {}
 
+    file_data_bytes = None
     if file:
         file_content = await file.read()
         file_size = len(file_content)
         file_hash = hashlib.sha256(file_content).hexdigest()
+        file_data_bytes = file_content if file_size <= MAX_DB_EVIDENCE_BYTES else None
 
         # Phase 1: Cryptographic "Double-Dip" Prevention
         existing_dup = db.query(models.Evidence).filter(
@@ -7362,7 +7456,7 @@ async def submit_milestone_evidence(
                 detail="400 Bad Request: Duplicate evidence detected"
             )
 
-        safe_filename = create_upload_filename(file.filename)
+        safe_filename = create_upload_filename(file.filename, file.content_type)
         file_path = f"/uploads/{safe_filename}"
         disk_path = os.path.join(UPLOAD_DIR, safe_filename)
         with open(disk_path, "wb") as f:
@@ -7425,6 +7519,7 @@ async def submit_milestone_evidence(
         location=location,
         asset_url=asset_url,
         file_path=file_path,
+        file_data=file_data_bytes,
         file_hash=file_hash,
         original_filename=file.filename if file else "digital_asset_link",
         mime_type=mime_type,

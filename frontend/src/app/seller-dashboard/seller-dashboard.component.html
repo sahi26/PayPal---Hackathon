@@ -295,7 +295,7 @@
                       </span>
                     </div>
 
-                    @if (item.file_path && isPreviewableImage(item.file_path)) {
+                    @if (item.file_path && isPreviewableImage(item.file_path, item.mime_type)) {
                       <div class="w-full h-32 bg-slate-900 rounded overflow-hidden flex items-center justify-center">
 
                         <img [src]="getEvidenceUrl(item.file_path) | async" alt="Evidence" class="w-full h-full object-cover" (error)="onImageError($event)" />
@@ -811,7 +811,7 @@
               <div class="flex flex-col gap-2 mt-2">
                 @for (ev of drawerEvidenceList; track ev.id) {
                   <div class="p-2.5 bg-slate-50 border border-slate-200 rounded-lg flex items-center gap-3">
-                    @if (ev.file_path && isPreviewableImage(ev.file_path)) {
+                    @if (ev.file_path && isPreviewableImage(ev.file_path, ev.mime_type)) {
                       <div class="w-12 h-12 rounded bg-slate-800 overflow-hidden flex-shrink-0">
                         <img [src]="getEvidenceUrl(ev.file_path) | async" alt="Evidence" class="w-full h-full object-cover" (error)="onImageError($event)" />
                       </div>

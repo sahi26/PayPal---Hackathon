@@ -318,6 +318,11 @@ def run_migrations(target_engine):
                         conn.execute(text("ALTER TABLE evidence ADD COLUMN fraud_flags JSON;"))
                     except Exception:
                         conn.execute(text("ALTER TABLE evidence ADD COLUMN fraud_flags TEXT;"))
+                if "file_data" not in columns:
+                    if target_engine.dialect.name == "postgresql":
+                        conn.execute(text("ALTER TABLE evidence ADD COLUMN file_data BYTEA;"))
+                    else:
+                        conn.execute(text("ALTER TABLE evidence ADD COLUMN file_data BLOB;"))
                 
                 # Retroactively ensure any flagged screen/moire proof is accurately recorded
                 try:

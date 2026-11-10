@@ -527,6 +527,7 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
   }
 
   loadActiveEvidence(projectId: number) {
+    this.evidenceFiles.retryFailed();
     this.http.get<any[]>(`${API_BASE_URL}/api/projects/${projectId}/evidence`)
       .subscribe({
         next: (res) => {
@@ -536,10 +537,13 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
       });
   }
 
-  isPreviewableImage(path: string): boolean {
+  isPreviewableImage(path: string, mimeType?: string): boolean {
+    if (mimeType && /^image\/(?:jpeg|jpg|png|webp|gif|bmp|avif)$/i.test(mimeType.split(';')[0].trim())) {
+      return true;
+    }
     if (!path) return false;
-    const lower = path.toLowerCase();
-    return lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.webp') || lower.endsWith('.svg');
+    const lower = path.split('?')[0].split('#')[0].toLowerCase();
+    return lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.webp') || lower.endsWith('.gif') || lower.endsWith('.bmp') || lower.endsWith('.avif') || lower.endsWith('.svg');
   }
 
   isMilestoneApproved(ms: any): boolean {

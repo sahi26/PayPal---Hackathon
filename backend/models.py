@@ -1,8 +1,8 @@
 import enum
 import datetime
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Float, Enum, JSON, Boolean, Index, UniqueConstraint
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Float, Enum, JSON, Boolean, Index, UniqueConstraint, LargeBinary
+from sqlalchemy.orm import relationship, deferred
 from sqlalchemy.sql import func
 try:
     from database import Base
@@ -74,6 +74,7 @@ class Evidence(Base):
     evidence_type = Column(String, default="milestone_evidence") # "before_evidence" | "milestone_evidence"
     milestone_index = Column(Integer, nullable=True) # 0, 1, 2, ...
     file_path = Column(String)
+    file_data = deferred(Column(LargeBinary, nullable=True))
     file_hash = Column(String, index=True) # SHA-256 for duplicate detection
     original_filename = Column(String)
     mime_type = Column(String)

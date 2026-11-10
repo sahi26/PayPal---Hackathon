@@ -885,7 +885,7 @@
                             <div class="rejected-preview-card" style="margin: 12px 0; background: #fff5f5; border: 1px solid #fed7d7; border-radius: 8px; padding: 12px;">
                               <span class="rej-badge" style="display: inline-block; font-size: 11px; font-weight: 800; color: #c53030; text-transform: uppercase; margin-bottom: 6px;">Rejected Submission on Record:</span>
                               <div class="rej-content-row" style="display: flex; gap: 12px; align-items: flex-start;">
-                                @if (rejEv.file_path && isPreviewableImage(rejEv.file_path)) {
+                                @if (rejEv.file_path && isPreviewableImage(rejEv.file_path, rejEv.mime_type)) {
                                   <img [src]="getEvidenceUrl(rejEv.file_path) | async" alt="Rejected evidence preview" style="width: 80px; height: 60px; object-fit: cover; border-radius: 6px; border: 1px solid #feb2b2;" (error)="onImageError($event)" />
                                 }
                                 <div class="rej-info-block" style="font-size: 12px; color: #4a5568;">
@@ -1467,7 +1467,7 @@
                       <div class="cert-angles-strip">
                         @for (ev of milestoneEvList; track ev.id; let aIdx = $index) {
                           <div class="cert-angle-card">
-                            @if (ev.file_path && isPreviewableImage(ev.file_path)) {
+                            @if (ev.file_path && isPreviewableImage(ev.file_path, ev.mime_type)) {
                               <img [src]="getEvidenceUrl(ev.file_path) | async" alt="Deliverable {{ aIdx + 1 }}" class="cert-thumb" (error)="onImageError($event)" />
                             } @else {
                               <div class="cert-doc-thumb">
@@ -1571,7 +1571,7 @@
                             {{ (item.status === 'possible_mismatch' || isItemFlagged(item)) ? (item.ai_confidence_score + '% Match (FLAGGED)') : (item.ai_confidence_score + '% Match') }}
                           </span>
                         </div>
-                        @if (item.file_path && isPreviewableImage(item.file_path)) {
+                        @if (item.file_path && isPreviewableImage(item.file_path, item.mime_type)) {
                           <img [src]="getEvidenceUrl(item.file_path) | async" alt="Deliverable proof" class="item-media-preview" (error)="onImageError($event)" />
                         } @else {
                           <div class="item-doc-preview">
