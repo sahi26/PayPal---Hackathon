@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, HostListener } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -38,6 +38,7 @@ interface ProjectRow {
   styleUrl: './seller-dashboard.component.scss'
 })
 export class SellerDashboardComponent implements OnInit, OnDestroy {
+  isAuthenticated = false;
   Number = Number;
   projects: ProjectRow[] = [];
 
@@ -279,10 +280,35 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
     private evidenceFiles: EvidenceFileService
   ) {}
 
-  ngOnInit() {
+  @HostListener('window:pageshow')
+  onPageShow() {
+    this.checkAuth();
+  }
+
+  @HostListener('window:popstate')
+  onPopState() {
+    this.checkAuth();
+  }
+
+  private checkAuth(): boolean {
     const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('prooflens_user') : null;
     if (!stored) {
-      this.router.navigate(['/login'], { replaceUrl: true });
+      this.isAuthenticated = false;
+      this.projects = [];
+      this.filteredProjects = [];
+      if (typeof window !== 'undefined') {
+        window.location.replace('/login');
+      } else {
+        this.router.navigate(['/login'], { replaceUrl: true });
+      }
+      return false;
+    }
+    this.isAuthenticated = true;
+    return true;
+  }
+
+  ngOnInit() {
+    if (!this.checkAuth()) {
       return;
     }
     this.loadProjects();

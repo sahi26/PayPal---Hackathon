@@ -1,3 +1,4 @@
+@if (isAuthenticated) {
 <div class="seller-shell">
   <!-- Milestone Deadline Approaching Alert Ribbon (Collapsible Dropdown UX) -->
   @if (activeAlerts && activeAlerts.length > 0 && !isAlertsDismissed) {
@@ -931,3 +932,4 @@
     </div>
   }
 </div>
+}

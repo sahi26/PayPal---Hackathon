@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, OnInit, OnDestroy } from '@angular/core';
 import { Router, ActivatedRoute } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
@@ -23,7 +23,7 @@ interface CurrentUser {
   templateUrl: './login.component.html',
   styleUrl: './login.component.scss'
 })
-export class LoginComponent implements OnInit {
+export class LoginComponent implements OnInit, OnDestroy {
   readonly appLogo = PROOFLENS_LOGO_BASE64;
   selectedRole: 'buyer' | 'seller' = 'buyer';
   selectedRedirectUri: string = typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1' ? window.location.origin : 'http://localhost:4200';
@@ -34,6 +34,13 @@ export class LoginComponent implements OnInit {
   returnUrl: string | null = null;
   private handledCodes = new Set<string>();
 
+  private preventBackNavigation = () => {
+    const hasUser = typeof localStorage !== 'undefined' ? localStorage.getItem('prooflens_user') : null;
+    if (!hasUser && typeof history !== 'undefined') {
+      history.pushState(null, '', window.location.href);
+    }
+  };
+
   constructor(
     private route: ActivatedRoute,
     private router: Router,
@@ -42,6 +49,11 @@ export class LoginComponent implements OnInit {
   ) {}
 
   ngOnInit() {
+    // Trap browser back-navigation / trackpad swipe on login view when unauthenticated
+    if (typeof window !== 'undefined' && typeof history !== 'undefined') {
+      history.pushState(null, '', window.location.href);
+      window.addEventListener('popstate', this.preventBackNavigation);
+    }
     this.route.queryParamMap.subscribe(params => {
       const rawParam = params.get('returnUrl');
       const paramReturn = this.getSafeInviteReturnUrl(rawParam);
@@ -205,9 +217,23 @@ export class LoginComponent implements OnInit {
     return value && /^\/invite\/[^/?#]+$/.test(value) ? value : null;
   }
 
+  ngOnDestroy() {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('popstate', this.preventBackNavigation);
+    }
+  }
+
   logout() {
-    localStorage.removeItem('prooflens_user');
+    try {
+      localStorage.removeItem('prooflens_user');
+      localStorage.removeItem('prooflens_return_url');
+      localStorage.removeItem('prooflens_pending_role');
+      sessionStorage.clear();
+    } catch (_) {}
     this.currentUser = null;
     this.errorMessage = null;
+    if (typeof window !== 'undefined') {
+      window.location.replace('/login');
+    }
   }
 }
