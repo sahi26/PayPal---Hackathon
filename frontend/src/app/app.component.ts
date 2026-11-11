@@ -409,12 +409,30 @@ export class AppComponent implements OnInit, OnDestroy {
     }, 4000);
   }
 
+  @HostListener('window:pageshow', ['$event'])
+  onPageShow(event: PageTransitionEvent) {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('prooflens_user') : null;
+    if (!stored && !this.isLoginPage) {
+      this.currentUser = null;
+      this.router.navigate(['/login'], { replaceUrl: true });
+    }
+  }
+
+  @HostListener('window:popstate')
+  onPopState() {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('prooflens_user') : null;
+    if (!stored && !this.isLoginPage) {
+      this.currentUser = null;
+      this.router.navigate(['/login'], { replaceUrl: true });
+    }
+  }
+
   logout() {
     localStorage.removeItem('prooflens_user');
     this.currentUser = null;
     this.showAuthModal = false;
     this.closeMobileMenu();
-    this.router.navigate(['/login']);
+    this.router.navigate(['/login'], { replaceUrl: true });
     this.authNotification = {
       message: 'Signed out from PayPal session.',
       type: 'success'
