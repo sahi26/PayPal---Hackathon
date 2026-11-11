@@ -287,7 +287,7 @@ export class AppComponent implements OnInit, OnDestroy {
       error: () => {
         this.oauthConfig = {
           redirect_uri: effectiveRedirect,
-          oauth_url: `https://www.sandbox.paypal.com/connect?flowEntry=static&client_id=AXTjsjnN-jp1XjvX8PI-eE46ycgGDn6rZFvvIpoQGGpVQqj4PnlEqQ185sfTdsir_IbDx4CM7xdhZikc&response_type=code&scope=openid%20profile%20email&redirect_uri=${encodeURIComponent(effectiveRedirect)}`
+          oauth_url: `https://www.sandbox.paypal.com/connect?flowEntry=static&client_id=AXTjsjnN-jp1XjvX8PI-eE46ycgGDn6rZFvvIpoQGGpVQqj4PnlEqQ185sfTdsir_IbDx4CM7xdhZikc&response_type=code&scope=openid%20profile%20email&redirect_uri=${encodeURIComponent(effectiveRedirect)}&prompt=login`
         };
       }
     });
