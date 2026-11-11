@@ -137,6 +137,7 @@ html {
   font-size: 15px;
   scroll-behavior: smooth;
   text-size-adjust: 100%;
+  overscroll-behavior-x: none;
 }
 
 body {
@@ -150,6 +151,7 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: hidden;
+  overscroll-behavior-x: none;
   min-height: 100vh;
 }
 
