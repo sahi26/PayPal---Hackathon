@@ -364,7 +364,10 @@ async def require_authenticated_project_access(request: Request, call_next):
 
     request.state.user = user
     try:
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        return response
     except Exception as exc:
         import logging
         logging.getLogger("uvicorn.error").error(f"Unhandled middleware error on {request.method} {request.url.path}: {exc}", exc_info=True)

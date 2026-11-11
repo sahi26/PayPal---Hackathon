@@ -398,7 +398,11 @@ export class BuyerDashboardComponent implements OnInit, OnDestroy {
 
   ngOnInit() {
     const userEmail = this.getLoggedInEmail();
-    if (userEmail && !this.newProject.buyer_email) {
+    if (!userEmail) {
+      this.router.navigate(['/login'], { replaceUrl: true });
+      return;
+    }
+    if (!this.newProject.buyer_email) {
       this.newProject.buyer_email = userEmail;
     }
 

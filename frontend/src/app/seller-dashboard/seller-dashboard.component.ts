@@ -274,6 +274,11 @@ export class SellerDashboardComponent implements OnInit, OnDestroy {
   ) {}
 
   ngOnInit() {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('prooflens_user') : null;
+    if (!stored) {
+      this.router.navigate(['/login'], { replaceUrl: true });
+      return;
+    }
     this.loadProjects();
     this.projectRefreshInterval = setInterval(() => this.loadProjects(true), 15000);
     this.fetchPayPalBalances();
