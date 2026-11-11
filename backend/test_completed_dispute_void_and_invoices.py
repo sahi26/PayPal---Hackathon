@@ -1211,6 +1211,10 @@ class TestCompletedDisputeVoidAndInvoices(unittest.TestCase):
                 "redirect_uri=https%3A%2F%2Fpay-pal-hackathon-phi.vercel.app",
                 cfg_res.json()["oauth_url"],
             )
+            self.assertIn(
+                "prompt=login",
+                cfg_res.json()["oauth_url"],
+            )
 
 
 if __name__ == "__main__":
