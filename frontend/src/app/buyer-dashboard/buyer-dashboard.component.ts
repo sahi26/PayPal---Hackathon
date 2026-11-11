@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy } from '@angular/core';
+import { Component, OnInit, OnDestroy, HostListener } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -62,6 +62,7 @@ interface DraftChatResponse {
   styleUrl: './buyer-dashboard.component.scss'
 })
 export class BuyerDashboardComponent implements OnInit, OnDestroy {
+  isAuthenticated = false;
   currentView: 'dashboard' | 'create' = 'dashboard';
   wizardStep = 1;
 
@@ -396,12 +397,38 @@ export class BuyerDashboardComponent implements OnInit, OnDestroy {
     private evidenceFiles: EvidenceFileService
   ) {}
 
-  ngOnInit() {
+  @HostListener('window:pageshow')
+  onPageShow() {
+    this.checkAuth();
+  }
+
+  @HostListener('window:popstate')
+  onPopState() {
+    this.checkAuth();
+  }
+
+  private checkAuth(): boolean {
     const userEmail = this.getLoggedInEmail();
     if (!userEmail) {
-      this.router.navigate(['/login'], { replaceUrl: true });
+      this.isAuthenticated = false;
+      this.projects = [];
+      this.filteredProjects = [];
+      if (typeof window !== 'undefined') {
+        window.location.replace('/login');
+      } else {
+        this.router.navigate(['/login'], { replaceUrl: true });
+      }
+      return false;
+    }
+    this.isAuthenticated = true;
+    return true;
+  }
+
+  ngOnInit() {
+    if (!this.checkAuth()) {
       return;
     }
+    const userEmail = this.getLoggedInEmail();
     if (!this.newProject.buyer_email) {
       this.newProject.buyer_email = userEmail;
     }

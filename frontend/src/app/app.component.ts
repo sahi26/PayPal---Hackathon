@@ -263,6 +263,15 @@ export class AppComponent implements OnInit, OnDestroy {
     return false;
   }
 
+  get isInvitePage(): boolean {
+    if (typeof window !== 'undefined') {
+      const url = this.router.url;
+      const path = window.location.pathname;
+      return url.startsWith('/invite/') || path.startsWith('/invite/');
+    }
+    return false;
+  }
+
   loadStoredUser() {
     try {
       const stored = localStorage.getItem('prooflens_user');
@@ -383,33 +392,46 @@ export class AppComponent implements OnInit, OnDestroy {
   @HostListener('window:pageshow', ['$event'])
   onPageShow(event: PageTransitionEvent) {
     const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('prooflens_user') : null;
-    if (!stored && !this.isLoginPage) {
+    if (!stored && !this.isLoginPage && !this.isInvitePage) {
       this.currentUser = null;
-      this.router.navigate(['/login'], { replaceUrl: true });
+      if (typeof window !== 'undefined') {
+        window.location.replace('/login');
+      } else {
+        this.router.navigate(['/login'], { replaceUrl: true });
+      }
     }
   }
 
   @HostListener('window:popstate')
   onPopState() {
     const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('prooflens_user') : null;
-    if (!stored && !this.isLoginPage) {
+    if (!stored && !this.isLoginPage && !this.isInvitePage) {
       this.currentUser = null;
-      this.router.navigate(['/login'], { replaceUrl: true });
+      if (typeof window !== 'undefined') {
+        window.location.replace('/login');
+      } else {
+        this.router.navigate(['/login'], { replaceUrl: true });
+      }
     }
   }
 
   logout() {
-    localStorage.removeItem('prooflens_user');
+    try {
+      localStorage.removeItem('prooflens_user');
+      localStorage.removeItem('prooflens_return_url');
+      localStorage.removeItem('prooflens_pending_role');
+      sessionStorage.clear();
+    } catch (_) {}
     this.currentUser = null;
+    this.notifications = [];
+    this.unreadNotificationCount = 0;
     this.showAuthModal = false;
     this.closeMobileMenu();
-    this.router.navigate(['/login'], { replaceUrl: true });
-    this.authNotification = {
-      message: 'Signed out from PayPal session.',
-      type: 'success'
-    };
-    setTimeout(() => {
-      this.authNotification = null;
-    }, 4000);
+
+    if (typeof window !== 'undefined') {
+      window.location.replace('/login');
+    } else {
+      this.router.navigate(['/login'], { replaceUrl: true });
+    }
   }
 }

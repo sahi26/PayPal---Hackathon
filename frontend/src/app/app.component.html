@@ -325,7 +325,16 @@
 
   <!-- Main Application Content Area -->
   <main class="page-viewport">
-    <router-outlet></router-outlet>
+    @if (currentUser || isLoginPage || isInvitePage) {
+      <router-outlet></router-outlet>
+    } @else {
+      <div class="auth-redirect-fallback" style="min-height: 80vh; display: flex; align-items: center; justify-content: center; background: #f8fafc;">
+        <div style="text-align: center; color: #64748B;">
+          <div class="spinner" style="margin: 0 auto 16px;"></div>
+          <p style="font-weight: 600; font-size: 14px;">Redirecting to secure login...</p>
+        </div>
+      </div>
+    }
   </main>
 
   <!-- Enterprise Corporate Footer -->
