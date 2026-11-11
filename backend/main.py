@@ -9246,7 +9246,7 @@ def get_paypal_oauth_config(redirect_uri: Optional[str] = None):
         raise HTTPException(status_code=503, detail="PayPal sign-in is not configured.")
     scope = "openid%20profile%20email"
     paypal_web_base = "https://www.paypal.com" if paypal_service.PAYPAL_API_BASE == "https://api-m.paypal.com" else "https://www.sandbox.paypal.com"
-    oauth_url = f"{paypal_web_base}/connect?flowEntry=static&client_id={quote(client_id, safe='')}&response_type=code&scope={scope}&redirect_uri={quote(target_redirect, safe='')}"
+    oauth_url = f"{paypal_web_base}/connect?flowEntry=static&client_id={quote(client_id, safe='')}&response_type=code&scope={scope}&redirect_uri={quote(target_redirect, safe='')}&prompt=login"
     return {
         "client_id": client_id,
         "redirect_uri": target_redirect,

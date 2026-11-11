@@ -1,8 +1,13 @@
-import { HttpInterceptorFn } from '@angular/common/http';
+import { inject } from '@angular/core';
+import { Router } from '@angular/router';
+import { HttpErrorResponse, HttpInterceptorFn } from '@angular/common/http';
+import { catchError, throwError } from 'rxjs';
 import { API_BASE_URL } from './api.config';
 import { getStoredAccessToken, shouldAttachAuthToken } from './runtime-config.mjs';
 
 export const authInterceptor: HttpInterceptorFn = (request, next) => {
+  const router = inject(Router);
+
   if (!shouldAttachAuthToken(request.url, API_BASE_URL) || typeof localStorage === 'undefined') {
     return next(request);
   }
@@ -15,7 +20,23 @@ export const authInterceptor: HttpInterceptorFn = (request, next) => {
   }
 
   const accessToken = getStoredAccessToken(serializedUser);
-  return next(accessToken
+  const authReq = accessToken
     ? request.clone({ setHeaders: { Authorization: `Bearer ${accessToken}` } })
-    : request);
+    : request;
+
+  return next(authReq).pipe(
+    catchError((error: unknown) => {
+      if (error instanceof HttpErrorResponse && error.status === 401) {
+        try {
+          localStorage.removeItem('prooflens_user');
+        } catch (_) {}
+
+        const currentUrl = router.url || '';
+        if (!currentUrl.startsWith('/login') && currentUrl !== '/') {
+          router.navigate(['/login'], { replaceUrl: true });
+        }
+      }
+      return throwError(() => error);
+    })
+  );
 };
